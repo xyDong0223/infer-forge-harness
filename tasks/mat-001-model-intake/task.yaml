@@ -1,0 +1,31 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-001-model-intake
+  task_type: model_intake
+  version: 0.1.0
+context:
+  model:
+    id: ${MODEL_ID}
+    source: ${MODEL_SOURCE}
+    revision: ${MODEL_REVISION}
+  target:
+    vllm_kunlun_commit: ${VLLM_KUNLUN_COMMIT}
+    hardware: Kunlunxin-3-P800
+actions:
+  - resolve_model_revision
+  - validate_model_request
+  - create_model_request_artifact
+acceptance:
+  required_fields:
+    - model.id
+    - model.source
+    - model.revision
+    - target.vllm_kunlun_commit
+artifacts:
+  - model_request.yaml
+  - resolved_revision.json
+exit_states:
+  pass: INTAKE_READY
+  invalid: CONTRACT_INVALID
+  unavailable: MODEL_UNAVAILABLE

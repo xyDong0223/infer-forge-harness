@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Runtime state and large artifacts
+runs/
+artifacts/
+.worktrees/
+*.trace
+*.trace.json
+*.trace.json.gz
+*.log
+.env
+.env.*
+
+# Local model/cache material
+models/
+checkpoints/
+.huggingface/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store

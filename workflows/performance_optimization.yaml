@@ -1,0 +1,20 @@
+api_version: infer.kunlun/v1alpha1
+kind: Workflow
+metadata:
+  name: performance_optimization
+spec:
+  description: Baseline, profile, candidate validation, and evidence-driven performance loop.
+  entry_task: kdp-001-deployment-proof
+  nodes:
+    - id: kdp-001-deployment-proof
+      task: tasks/kdp-001-deployment-proof/task.yaml
+      on_success: perf-001-baseline
+    - id: perf-001-baseline
+      task: tasks/kdp-001-deployment-proof/task.yaml
+      on_success: perf-002-profile
+    - id: perf-002-profile
+      task: tasks/kdp-001-deployment-proof/task.yaml
+      on_success: perf-003-candidate-validation
+    - id: perf-003-candidate-validation
+      task: tasks/kdp-001-deployment-proof/task.yaml
+      on_success: performance_validator

@@ -1,0 +1,47 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: kdp-001-deployment-proof
+  task_type: deployment_proof
+  version: 0.1.0
+context:
+  model:
+    name: Qwen3-8B
+    path: ${MODEL_PATH}
+  target:
+    hardware: Kunlunxin-3-P800
+    device_count: 8
+    namespace: ${KUNLUN_NAMESPACE}
+  repository:
+    vllm_kunlun_commit: ${VLLM_KUNLUN_COMMIT}
+actions:
+  - preflight
+  - prepare_environment
+  - start_server
+  - poll_health
+  - run_chat_smoke
+  - collect_artifacts
+acceptance:
+  pod_ready: true
+  health_check: 200
+  chat_completion: non_empty
+  expected_backend: kunlun
+  unexpected_fallback: false
+  startup_timeout_seconds: 900
+artifacts:
+  - deployment_manifest
+  - pod_spec
+  - environment_versions
+  - install_log
+  - server_log
+  - health_result
+  - chat_result
+  - reproduce_command
+exit_states:
+  pass: DEPLOYMENT_READY
+  install_failed: INSTALL_FAILED
+  startup_failed: SERVER_START_FAILED
+  health_timeout: READINESS_TIMEOUT
+  api_failed: API_SMOKE_FAILED
+  fallback_detected: UNEXPECTED_FALLBACK
+  needs_human: NEEDS_HUMAN

@@ -1,0 +1,30 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Kunlun Artifact Manifest
+type: object
+required:
+  - api_version
+  - task_id
+  - status
+  - artifacts
+properties:
+  api_version: {type: string}
+  task_id: {type: string, minLength: 1}
+  status: {type: string, minLength: 1}
+  workflow_version: {type: string}
+  contract_version: {type: string}
+  environment: {type: object}
+  reproduce_command: {type: string}
+  artifacts:
+    type: array
+    items:
+      type: object
+      required: [name, path]
+      properties:
+        name: {type: string}
+        path: {type: string}
+        sha256: {type: string}
+        media_type: {type: string}
+  limitations:
+    type: array
+    items: {type: string}
+additionalProperties: false

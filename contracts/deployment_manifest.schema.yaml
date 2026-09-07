@@ -1,0 +1,31 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Kunlun Deployment Manifest
+type: object
+required:
+  - api_version
+  - kind
+  - metadata
+  - spec
+properties:
+  api_version:
+    type: string
+  kind:
+    const: Deployment
+  metadata:
+    type: object
+    required: [name]
+    properties:
+      name: {type: string, minLength: 1}
+  spec:
+    type: object
+    required: [image, model, hardware, versions, server, readiness]
+    properties:
+      image: {type: string, minLength: 1}
+      model: {type: object}
+      hardware: {type: object}
+      versions: {type: object}
+      server: {type: object}
+      readiness: {type: object}
+      smoke_test: {type: object}
+      artifacts: {type: object}
+additionalProperties: false

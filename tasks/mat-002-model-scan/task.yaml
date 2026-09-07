@@ -1,0 +1,36 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-002-model-scan
+  task_type: model_scan
+  version: 0.1.0
+context:
+  input_artifact: model_request.yaml
+  target:
+    hardware: Kunlunxin-3-P800
+    vllm_kunlun_commit: ${VLLM_KUNLUN_COMMIT}
+actions:
+  - inspect_model_config
+  - scan_model_modules
+  - identify_runtime_features
+  - package_support_card
+acceptance:
+  required_fields:
+    - model_type
+    - architectures
+    - attention_variant
+    - moe_variant
+    - quantization
+    - multimodal_components
+    - dynamic_shape_risks
+  evidence_required: true
+artifacts:
+  - model_config.json
+  - module_tree.json
+  - feature_inventory.json
+  - model_support_card.md
+exit_states:
+  pass: SCAN_READY
+  unavailable: MODEL_UNAVAILABLE
+  unsupported_format: UNSUPPORTED_FORMAT
+  invalid: CONTRACT_INVALID

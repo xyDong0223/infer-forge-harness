@@ -1,0 +1,30 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Kunlun Task Status
+type: object
+required:
+  - task_id
+  - state
+  - updated_at
+properties:
+  task_id: {type: string, minLength: 1}
+  state:
+    type: string
+    enum:
+      - PENDING
+      - PLANNED
+      - RUNNING
+      - DEPLOYMENT_READY
+      - VALIDATED
+      - PASS
+      - REWORK
+      - NO_GO
+      - NEEDS_HUMAN
+      - FAILED
+  updated_at: {type: string, minLength: 1}
+  reason: {type: string}
+  checks: {type: object}
+  artifacts:
+    type: array
+    items: {type: string}
+  next_task: {type: string}
+additionalProperties: false

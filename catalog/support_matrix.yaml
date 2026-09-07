@@ -1,0 +1,10 @@
+api_version: infer.kunlun/v1alpha1
+kind: SupportMatrix
+entries:
+  - model: Qwen3-8B
+    hardware: Kunlunxin-3-P800
+    vllm_kunlun: unknown
+    status: not_yet_validated
+    evidence: []
+    limitations:
+      - Replace with an immutable deployment result before claiming support.

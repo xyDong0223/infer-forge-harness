@@ -1,0 +1,17 @@
+api_version: infer.kunlun/v1alpha1
+kind: Workflow
+metadata:
+  name: test_release
+spec:
+  description: Independent validation and reviewable release evidence.
+  entry_task: test-001-functional
+  nodes:
+    - id: test-001-functional
+      validator: validators/deployment_validator.py
+      on_success: test-002-accuracy
+    - id: test-002-accuracy
+      validator: validators/accuracy_validator.py
+      on_success: test-003-performance
+    - id: test-003-performance
+      validator: validators/performance_validator.py
+      on_success: create_draft_pr
