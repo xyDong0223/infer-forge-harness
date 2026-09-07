@@ -1,0 +1,20 @@
+api_version: infer.kunlun/v1alpha1
+kind: DeviceSpecs
+# Device facts the vendored capacity planner cannot know: its gpu-specs.json
+# only covers NVIDIA parts, so a P800 log falls back to a guessed HBM size.
+# Every number here must be observable from the cluster, not from a datasheet.
+entries:
+  p800:
+    display_name: Kunlunxin P800 OAM
+    hbm_mib: 98304
+    hbm_gib: 96
+    l3_mib: 96
+    power_cap_w: 400
+    evidence:
+      source: xpu_smi
+      pod: dongxinyu03-kdp001-qwen3-8b-7c969df894-hsz7d-0
+      observed_at: '2026-09-07T15:38:52+08:00'
+      line: '| N/A   36C  N/A     86W / 400W |  90440MiB / 98304MiB |      0%      Default |'
+    limitations:
+      - Compute and bandwidth figures are deliberately absent; nothing in this
+        repository has measured them, and the planner only needs capacity.

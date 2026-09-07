@@ -124,6 +124,51 @@ class KunlunP800Adapter:
             timeout=timeout,
         )
 
+    def xpu_smi(self, pod: str) -> list[dict[str, int]]:
+        """Per-card memory from `xpu_smi -m`, the P800 counterpart of nvidia-smi."""
+        result = self.exec(pod, "xpu_smi -m")
+        if result.returncode != 0:
+            raise RuntimeError(f"xpu_smi failed on {pod}: {result.stderr.strip()}")
+        cards = self.parse_xpu_smi(result.stdout)
+        if not cards:
+            raise RuntimeError(f"xpu_smi returned no parsable card on {pod}")
+        return cards
+
+    @staticmethod
+    def parse_xpu_smi(text: str) -> list[dict[str, int]]:
+        """Parse `xpu_smi -m` output.
+
+        Machine-readable columns are positional, as documented by `xpu_smi -h`:
+        index 2 is dev_id, 17 is Memory_used in MB and 18 is Memory_size in MB.
+        Only these three are read — column 21 (`model`) is an unquoted string
+        with a space in it ("P800 OAM"), so nothing after it can be addressed by
+        position.
+        """
+        cards: list[dict[str, int]] = []
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 19:
+                continue
+            try:
+                index, used, total = int(fields[2]), int(fields[17]), int(fields[18])
+            except ValueError:
+                continue
+            cards.append(
+                {"index": index, "used_mib": used, "total_mib": total, "free_mib": total - used}
+            )
+        return sorted(cards, key=lambda card: card["index"])
+
+    @staticmethod
+    def as_nvidia_smi_csv(cards: list[dict[str, int]]) -> str:
+        """Render cards the way `nvidia-smi --format=csv,noheader` would.
+
+        Lets the vendored capacity analyzer cross-validate a P800 deployment
+        without teaching it about XPUs.
+        """
+        return "".join(
+            f"{card['index']}, {card['used_mib']} MiB, {card['free_mib']} MiB\n" for card in cards
+        )
+
     def http_probe(self, pod: str, path: str, port: int) -> tuple[int, str]:
         """Probe an in-pod endpoint. Returns (status_code, body)."""
         url = f"http://127.0.0.1:{port}{path}"
