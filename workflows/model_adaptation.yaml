@@ -40,7 +40,7 @@ spec:
       on_success: kdp-001b-service-proof
     - id: kdp-001b-service-proof
       task: tasks/kdp-001b-service-proof/task.yaml
-      on_success: NEEDS_HUMAN
+      on_success: mem-001-memory-budget
       # A start failure is an input to triage, not the end of the graph. This
       # edge is the one that used to be a dead end.
       on_failure: mat-006-failure-triage
@@ -56,8 +56,16 @@ spec:
     # one; it still needs a placement decision among the four override mechanisms
     # and a numerical comparison against the vendor kernel.
     - id: mat-007-patch-placement
-      task: PLANNED
+      task: tasks/mat-007-patch-placement/task.yaml
       on_success: kdp-001b-service-proof
+      on_failure: NEEDS_HUMAN
+    # Read-only and downstream of a successful service proof. Kept out of
+    # KDP-001b because a capacity threshold must not be able to fail a
+    # deployment that is, in fact, serving.
+    - id: mem-001-memory-budget
+      task: tasks/mem-001-memory-budget/task.yaml
+      on_success: NEEDS_HUMAN
+      on_failure: NEEDS_HUMAN
   notes:
     - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
       the environment proof's pod.

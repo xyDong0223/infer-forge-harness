@@ -1,0 +1,93 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mem-001-memory-budget
+  family: memory
+  task_type: memory_budget
+  version: 0.1.0
+spec:
+  question: where did this deployment's HBM go, and is the budget acceptable
+  produces: MemoryBudget
+  # Needs a serving deployment, and the log of the process that is currently
+  # serving it. Not folded into KDP-001b on purpose: a deployment at 92%
+  # utilisation is still a successful deployment, so a capacity threshold must not
+  # be able to fail a service proof. Record and gate stay separate.
+  consumes: [DeploymentProof]
+  runs_with: |
+    export AI_INFRA_SKILLS_DIR=/path/to/AI-Infra-Auto-Driven-SKILLS
+    python3 tools/memory_budget.py \
+      --pod <pod from the service proof> \
+      --server-log <execution.server_log from the deployment contract> \
+      --out <artifacts>/mem-001
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+    device: p800
+  input_artifacts:
+    - service proof status.json
+    - the running server's log
+execution:
+  mode: execute
+  scope: running_deployment
+  tool: tools/memory_budget.py
+  # Read-only against the cluster: xpu_smi and cat on a log. Restarting a server
+  # to obtain a cleaner log would invalidate the snapshot meant to explain it.
+  read_only: true
+  external_dependency:
+    repo: https://github.com/BBuf/AI-Infra-Auto-Driven-SKILLS
+    skill: llm-serving-capacity-planner
+    # Located by --analyzer or AI_INFRA_SKILLS_DIR; no clone path is hardcoded,
+    # and the upstream is not vendored (it carries no licence file).
+    pinned_commit: c7b785777ab6a7d8a8f03602e90cdba1c69f4542
+actions:
+  - snapshot_device_counters
+  - decompose_server_log
+  - reconcile_against_cards
+  - package_memory_budget
+checks:
+  reconciliation:
+    # The analyzer folds `smi_used - sum_of_known` into its `other` bucket, which
+    # makes that number a claim rather than a measurement. It is recomputed from
+    # xpu_smi and the two must agree within rounding.
+    recompute_remainder: true
+    tolerance_mib: 32
+  thresholds:
+    # Defaults for a single-model deployment on one 98304 MiB card. An instance
+    # may override them; the Validator reads whatever is here.
+    min_free_mib: 4096
+    max_utilization_pct: 95
+    min_kv_cache_tokens: 100000
+    max_card_spread_mib: 512
+acceptance:
+  # A budget with no device snapshot behind it is arithmetic, not evidence.
+  require_device_snapshot: true
+  # On P800 the driver and XPU runtime always hold something; a zero remainder
+  # means the log and the snapshot describe different processes.
+  min_unattributed_mib: 64
+  evidence_required: true
+artifacts:
+  - xpu_smi.csv
+  - capacity_planner.json
+  - memory_budget.json
+  - memory_budget.md
+  - budget_status.json
+exit_states:
+  pass: BUDGET_ACCEPTABLE
+  over_threshold: BUDGET_REJECTED
+  unreconciled: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/memory_validator.py:validate_memory_budget
+findings:
+  - model: MiniMax-M2.5-W8A8-INT8-Dynamic
+    hardware: 8x P800
+    observed_at: '2026-09-07'
+    breakdown_mib:
+      model_weights: 27832
+      kv_pool: 59412
+      graph_capture: 61
+      unattributed: 3134
+      free: 7864
+    kv_cache_tokens: 1962496
+    card_spread_mib: 0
+    note: framework reads 0 because current vLLM logs no initial-free-memory line;
+      that memory is inside the unattributed remainder, not missing

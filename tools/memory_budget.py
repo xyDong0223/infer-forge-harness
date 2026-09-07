@@ -28,8 +28,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from validators.memory_validator import validate_memory_budget  # noqa: E402
 
 SPECS_PATH = REPO_ROOT / "catalog" / "xpu_specs.yaml"
+CONTRACT = REPO_ROOT / "tasks" / "mem-001-memory-budget" / "task.yaml"
 ANALYZER_RELATIVE = Path("skills/llm-serving-capacity-planner/scripts/capacity_analyzer.py")
 MIB_PER_GIB = 1024
 
@@ -246,7 +248,26 @@ def main() -> int:
     text = render(budget, cards)
     (out / "memory_budget.md").write_text(text, encoding="utf-8")
     print(text, end="")
-    return 0
+
+    # The Tool does not judge its own output: thresholds come from the Task
+    # contract, so tightening the contract tightens the verdict.
+    import yaml
+
+    contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    thresholds = (contract.get("checks") or {}).get("thresholds") or {}
+    gate = validate_memory_budget(budget, thresholds)
+    state = "BUDGET_ACCEPTABLE" if not gate else "BUDGET_REJECTED"
+    (out / "budget_status.json").write_text(
+        json.dumps(
+            {"state": state, "thresholds": thresholds, "validator": {"passed": not gate, "errors": gate}},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"state: {state}")
+    for error in gate:
+        print(f"  - {error}")
+    return 0 if not gate else 6
 
 
 if __name__ == "__main__":

@@ -105,6 +105,23 @@ class MemoryValidatorTest(unittest.TestCase):
         self.budget = reconcile(PLANNER_REPORT, cards, load_device_spec("p800"))
         self.budget["evidence"] = {"xpu_smi": "memory/xpu_smi.csv"}
 
+    def contract_thresholds(self) -> dict:
+        import yaml
+
+        contract = yaml.safe_load(
+            (ROOT / "tasks" / "mem-001-memory-budget" / "task.yaml").read_text(encoding="utf-8")
+        )
+        return (contract.get("checks") or {}).get("thresholds") or {}
+
+    def test_the_contract_thresholds_accept_the_observed_minimax_budget(self):
+        """The Task's own thresholds must pass the deployment they were written for."""
+        self.assertEqual(validate_memory_budget(self.budget, self.contract_thresholds()), [])
+
+    def test_tightening_the_contract_tightens_the_verdict(self):
+        thresholds = {**self.contract_thresholds(), "max_utilization_pct": 90}
+        errors = validate_memory_budget(self.budget, thresholds)
+        self.assertTrue(any("utilization" in error for error in errors), errors)
+
     def test_observed_minimax_budget_passes(self):
         self.assertEqual(validate_memory_budget(self.budget), [])
 
