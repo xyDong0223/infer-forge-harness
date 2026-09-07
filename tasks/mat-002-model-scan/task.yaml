@@ -2,35 +2,76 @@ api_version: infer.kunlun/v1alpha1
 kind: Task
 metadata:
   name: mat-002-model-scan
+  family: model_adaptation
   task_type: model_scan
-  version: 0.1.0
+  version: 0.2.0
+spec:
+  question: which implementation will actually run this architecture, and if none, where does one exist
+  produces: ModelSupportCard
+  # The pod comes from the environment proof, the identity from intake. This Task
+  # creates nothing and needs no launch parameter.
+  consumes: [ModelRequest, EnvironmentProof]
+  runs_with: |
+    python3 tools/scan_model_support.py \
+      --model-request <artifacts>/mat-001/model_request.yaml \
+      --env-status <artifacts>/kdp-001a/status.json \
+      --out <artifacts>/mat-002
 context:
-  input_artifact: model_request.yaml
+  input_artifacts:
+    - model_request.yaml
+    - environment proof status.json
   target:
     hardware: Kunlunxin-3-P800
-    vllm_kunlun_commit: ${VLLM_KUNLUN_COMMIT}
+execution:
+  mode: execute
+  # Scans the installed runtime, not a checkout: vLLM-Kunlun can override models
+  # four different ways (module redirection, post-import patching, OOT
+  # registration, install-time overwrite), so a repository and an installation
+  # can disagree about what is registered.
+  scope: installed_runtime
+  probe: tools/probe/model_support_probe.py
+  tool: tools/scan_model_support.py
+  # The pod reaches GitHub through the same proxy the operator host uses, so the
+  # upstream lookups run where the registry evidence is gathered.
+  upstream_lookup:
+    - installed vllm_kunlun OOT registry
+    - installed vllm ModelRegistry
+    - vLLM main branch registry.py
+    - open vLLM pull requests
 actions:
-  - inspect_model_config
-  - scan_model_modules
-  - identify_runtime_features
+  - read_model_request
+  - scan_installed_registries
+  - escalate_to_upstream_main
+  - escalate_to_open_pull_requests
   - package_support_card
+checks:
+  verdicts:
+    # Five answers, not two. An architecture missing from the Kunlun registry is
+    # usually not a gap — the upstream generic implementation is used, and a
+    # failure then belongs to an operator, not to networking.
+    - KUNLUN_OOT
+    - UPSTREAM_GENERIC
+    - MAIN_ONLY
+    - PR_PENDING
+    - ABSENT
+  unreachable_upstream:
+    # Absence can only be concluded from lookups that ran.
+    verdict: UNKNOWN_UPSTREAM
+    never_downgrade_to: ABSENT
 acceptance:
   required_fields:
-    - model_type
-    - architectures
-    - attention_variant
-    - moe_variant
-    - quantization
-    - multimodal_components
-    - dynamic_shape_risks
+    - architecture
+    - verdict
+    - meaning
+  require_installed_registry_evidence: true
   evidence_required: true
 artifacts:
-  - model_config.json
-  - module_tree.json
-  - feature_inventory.json
+  - model_support.json
   - model_support_card.md
+  - scan_status.json
 exit_states:
   pass: SCAN_READY
-  unavailable: MODEL_UNAVAILABLE
-  unsupported_format: UNSUPPORTED_FORMAT
+  scan_failed: SCAN_FAILED
   invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/scan_validator.py:validate_support_card
