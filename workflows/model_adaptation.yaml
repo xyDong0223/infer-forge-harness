@@ -32,12 +32,18 @@ spec:
       task: tasks/mat-003-capability-match/task.yaml
       on_success: mat-004-gap-classification
       on_failure: NEEDS_HUMAN
+    # Offline: it reads two static findings and routes. NO_STATIC_GAP means the
+    # remaining question can only be answered by deploying.
     - id: mat-004-gap-classification
-      task: PLANNED
+      task: tasks/mat-004-gap-classification/task.yaml
       on_success: mat-005-deployment-plan
+      on_failure: NEEDS_HUMAN
+    # Derives the launch parameters that used to be typed by hand, each with the
+    # upstream fact it came from.
     - id: mat-005-deployment-plan
-      task: PLANNED
+      task: tasks/mat-005-deployment-plan/task.yaml
       on_success: kdp-001b-service-proof
+      on_failure: NEEDS_HUMAN
     - id: kdp-001b-service-proof
       task: tasks/kdp-001b-service-proof/task.yaml
       on_success: mem-001-memory-budget
@@ -51,7 +57,8 @@ spec:
     - id: mat-006-failure-triage
       task: tasks/mat-006-failure-triage/task.yaml
       on_success: mat-007-patch-placement
-      on_failure: NEEDS_HUMAN
+      # A binary-layer verdict has nowhere else to go, and that is a delivery.
+      on_failure: mat-020-vendor-handoff
     # Where a fix is allowed to live. patches/torch_paged_decode.py is the first
     # one; it still needs a placement decision among the four override mechanisms
     # and a numerical comparison against the vendor kernel.
@@ -65,6 +72,11 @@ spec:
     - id: mem-001-memory-budget
       task: tasks/mem-001-memory-budget/task.yaml
       on_success: NEEDS_HUMAN
+      on_failure: NEEDS_HUMAN
+    # Terminal, not a failure: the deliverable is a ticket someone else can act on.
+    - id: mat-020-vendor-handoff
+      task: tasks/mat-020-vendor-handoff/task.yaml
+      on_success: DELIVERED
       on_failure: NEEDS_HUMAN
   notes:
     - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses

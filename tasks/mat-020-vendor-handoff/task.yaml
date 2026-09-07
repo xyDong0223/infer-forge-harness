@@ -1,0 +1,58 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-020-vendor-handoff
+  family: model_adaptation
+  task_type: vendor_handoff
+  version: 0.1.0
+spec:
+  question: what does the vendor need in order to act on this
+  produces: VendorHandoff
+  consumes: [FailureTriage]
+  offline: true
+  # A terminal state, not a failure. When triage lands on a binary layer there is
+  # nothing left to fix here, and the deliverable is a package someone else can
+  # work from.
+  terminal: true
+  runs_with: |
+    python3 tools/vendor_handoff.py \
+      --triage <artifacts>/mat-006/triage_report.json \
+      --environment <fingerprint from the environment proof> \
+      --out <artifacts>/mat-020
+context:
+  input_artifacts:
+    - triage_report.json
+  eligible_layers:
+    # Only layers that ship as binaries. A plugin defect is our work.
+    - kunlun_ops_vendor
+    - torch_xmlir_vendor
+actions:
+  - check_layer_is_not_ours
+  - assemble_reproduction
+  - state_isolation_result
+  - list_what_was_ruled_out
+checks:
+  isolation_statement_required: true
+  # The failure this exists to prevent: a ticket that reads as standalone
+  # reproducible when it is not. The vendor tries the arguments directly, they
+  # pass, and the ticket is closed with the real problem untouched.
+  never_imply_standalone_reproduction_when_absent: true
+acceptance:
+  require_environment_fingerprint: true
+  require_ruled_out: true
+  evidence_required: true
+artifacts:
+  - vendor_ticket.json
+  - vendor_ticket.md
+  - handoff_status.json
+exit_states:
+  pass: HANDOFF_READY
+  not_a_handoff: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/handoff_validator.py:validate_handoff
+findings:
+  - symbol: kunlun_ops.speculative_attention
+    layer: kunlun_ops_vendor
+    reproduces_in_isolation: false
+    note: 47 of 49 swept cases pass standalone with the identical arguments, so the
+      ticket states that reproduction requires the full serving run
