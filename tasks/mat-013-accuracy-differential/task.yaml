@@ -1,0 +1,72 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-013-accuracy-differential
+  family: model_adaptation
+  task_type: accuracy_differential
+  version: 0.1.0
+spec:
+  question: is the served model still computing the model
+  produces: AccuracyDifferential
+  consumes: [DeploymentProof, ModelRequest]
+  # A deployment proof shows the server answers. It does not show the answer is
+  # right, and a wrong attention kernel produces fluent text — which is exactly the
+  # risk after replacing a decode kernel with a torch fallback.
+  runs_with: |
+    python3 tools/accuracy_differential.py \
+      --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
+      --served-model-name <name> --port <port> --out <artifacts>/mat-013
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tool: tools/accuracy_differential.py
+  probe: tools/probe/cpu_reference_logits_probe.py
+  reference:
+    # transformers on CPU, on the same weights: slow, and independent of the
+    # accelerator, which is the only property that makes disagreement meaningful.
+    implementation: transformers
+    device: cpu
+    # float32 on purpose: the reference should not inherit the candidate's reduced
+    # precision, or the two would agree by sharing an error.
+    dtype: float32
+    must_not_see_accelerator: true
+actions:
+  - collect_candidate_distributions
+  - collect_reference_distributions
+  - compare_distributions
+  - package_accuracy_report
+checks:
+  method:
+    # Distributions, not strings. Generated text is weaker (a rank-3 swap deep in a
+    # sentence is invisible) and unstable (any sampling difference reads as a
+    # failure).
+    comparison: top-k next-token distribution after a single forward pass
+    decoding: greedy
+    forbid_text_only_comparison: true
+  thresholds:
+    # Top-1 must match on every prompt; tail rank noise is bf16 rounding, not a
+    # defect, so only the top-5 set is required to overlap.
+    require_top1_match_on_all_cases: true
+    min_top5_overlap: 3
+acceptance:
+  require_reference_provenance: true
+  require_case_level_evidence: true
+  # Without a threshold source a report is an opinion.
+  require_threshold_source: true
+artifacts:
+  - accuracy_differential.json
+  - accuracy_status.json
+exit_states:
+  pass: ACCURACY_PASS
+  fail: ACCURACY_FAIL
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/accuracy_validator.py:validate_accuracy_report
+limitations:
+  - Three short prompts are a smoke-level differential, not an evaluation. A
+    dataset-level score belongs to a separate Task and must not be inferred from
+    this one.
+  - The reference runs on CPU in float32 while the candidate serves in bfloat16, so
+    exact logprob equality is not expected and is not required.

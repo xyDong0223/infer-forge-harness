@@ -46,7 +46,7 @@ spec:
       on_failure: NEEDS_HUMAN
     - id: kdp-001b-service-proof
       task: tasks/kdp-001b-service-proof/task.yaml
-      on_success: mem-001-memory-budget
+      on_success: mat-013-accuracy-differential
       # A start failure is an input to triage, not the end of the graph. This
       # edge is the one that used to be a dead end.
       on_failure: mat-006-failure-triage
@@ -69,9 +69,21 @@ spec:
     # Read-only and downstream of a successful service proof. Kept out of
     # KDP-001b because a capacity threshold must not be able to fail a
     # deployment that is, in fact, serving.
+    # Correctness before capacity: a wrong kernel produces fluent text, so the
+    # differential runs before anything is claimed about the deployment.
+    - id: mat-013-accuracy-differential
+      task: tasks/mat-013-accuracy-differential/task.yaml
+      on_success: mem-001-memory-budget
+      on_failure: mat-006-failure-triage
     - id: mem-001-memory-budget
       task: tasks/mem-001-memory-budget/task.yaml
-      on_success: NEEDS_HUMAN
+      on_success: mat-016-support-matrix
+      on_failure: mat-016-support-matrix
+    # Writes the only artifact people read instead of the evidence, so it runs last
+    # and refuses to claim more than the recorded facts support.
+    - id: mat-016-support-matrix
+      task: tasks/mat-016-support-matrix/task.yaml
+      on_success: DELIVERED
       on_failure: NEEDS_HUMAN
     # Terminal, not a failure: the deliverable is a ticket someone else can act on.
     - id: mat-020-vendor-handoff

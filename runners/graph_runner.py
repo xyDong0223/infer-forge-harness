@@ -70,6 +70,10 @@ NODES: dict[str, dict] = {
         "produces": "DeploymentPlan",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
                   "--classification": "fact:GapClassification:gap_classification.json"},
+        # Optional, and it matters: without the placed patch the plan reports
+        # enforce_eager=False, and the support matrix then records a condition the
+        # deployment did not actually run under.
+        "optional": {"--placed-patch": "fact:PlacedPatch:placement_report.json"},
         "command": ["python3", "tools/plan_deployment.py", "--out", "{artifacts}"],
         "state_file": "plan_status.json",
     },
@@ -92,6 +96,30 @@ NODES: dict[str, dict] = {
             "--server-log", "{server_log}", "--out", "{artifacts}",
         ],
         "state_file": "budget_status.json",
+    },
+    "accuracy_differential": {
+        "produces": "AccuracyDifferential",
+        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
+        "command": [
+            "python3", "tools/accuracy_differential.py", "--pod", "{pod}",
+            "--served-model-name", "{served_model_name}", "--port", "{port}",
+            "--out", "{artifacts}",
+        ],
+        "state_file": "accuracy_status.json",
+    },
+    "support_matrix": {
+        "produces": "SupportMatrixEntry",
+        "needs": {"--accuracy": "fact:AccuracyDifferential:accuracy_differential.json"},
+        "optional": {
+            "--deployment-status": "fact:DeploymentProof:status.json",
+            "--budget-status": "fact:MemoryBudget:budget_status.json",
+            "--plan": "fact:DeploymentPlan:deployment_plan.json",
+        },
+        "command": [
+            "python3", "tools/update_support_matrix.py", "--subject", "{subject}",
+            "--out", "{artifacts}",
+        ],
+        "state_file": "matrix_status.json",
     },
     "vendor_handoff": {
         "produces": "VendorHandoff",
@@ -148,6 +176,11 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict) -> list
                 "run the node that produces it first"
             )
         command += [flag, str(Path(hit["artifacts"]) / filename)]
+    for flag, reference in (spec.get("optional") or {}).items():
+        _, kind, filename = reference.split(":", 2)
+        hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
+        if hit:
+            command += [flag, str(Path(hit["artifacts"]) / filename)]
     return command
 
 

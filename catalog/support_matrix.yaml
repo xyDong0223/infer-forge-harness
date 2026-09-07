@@ -1,10 +1,21 @@
 api_version: infer.kunlun/v1alpha1
 kind: SupportMatrix
 entries:
-  - model: Qwen3-8B
-    hardware: Kunlunxin-3-P800
-    vllm_kunlun: unknown
-    status: not_yet_validated
-    evidence: []
-    limitations:
-      - Replace with an immutable deployment result before claiming support.
+- model: Qwen3-8B
+  hardware: Kunlunxin-3-P800
+  status: validated
+  revision: e962c91b1987a03d133ba4e4712107fa3af4408bb39e75e91a4260a443b93872
+  stack_commit: 3ced109af2510479e1b2eb846a8aca1fbdcbdf62
+  conditions:
+  - dtype=bfloat16
+  - tensor_parallel_size=1
+  - max_model_len=40960
+  - enforce_eager=True
+  evidence:
+    deployment_proof: DEPLOYMENT_READY
+    accuracy_differential: ACCURACY_PASS
+    memory_budget: BUDGET_ACCEPTABLE
+  limitations:
+  - 'eager execution only: the decode fallback is shape-dynamic and cannot be captured
+    in a FULL graph'
+  - accuracy is a 3-prompt differential, not a dataset score

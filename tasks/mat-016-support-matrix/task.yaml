@@ -1,0 +1,52 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-016-support-matrix
+  family: model_adaptation
+  task_type: support_matrix
+  version: 0.1.0
+spec:
+  question: what may the catalog claim about this model on this hardware
+  produces: SupportMatrixEntry
+  consumes: [DeploymentProof, AccuracyDifferential]
+  consumes_optional: [MemoryBudget, DeploymentPlan]
+  offline: true
+  # The matrix is the artifact people read instead of reading evidence, so a row
+  # must carry what it is true of. Writing without --apply prints the row and
+  # validates it; the catalog only changes when asked.
+  runs_with: |
+    python3 tools/update_support_matrix.py --subject Qwen3-8B \
+      --deployment-status <artifacts>/kdp-001b/status.json \
+      --accuracy <artifacts>/mat-013/accuracy_differential.json \
+      --budget-status <artifacts>/mem-001/budget_status.json \
+      --plan <artifacts>/mat-005/deployment_plan.json \
+      --out <artifacts>/mat-016 --apply
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+actions:
+  - read_recorded_facts
+  - derive_status_from_evidence
+  - record_validity_conditions
+  - update_catalog
+checks:
+  status_requires:
+    # Nothing is inferred: a missing fact leaves the status where it was.
+    validated: [deployment_proof, accuracy_differential]
+    runs_unverified_accuracy: [deployment_proof]
+    not_yet_validated: []
+  # A server that answers is not a server that is right, so serving alone can
+  # never reach `validated`.
+  serving_alone_is_not_validated: true
+acceptance:
+  require_validity_conditions: true
+  require_limitations_when_conditional: true
+  evidence_required: true
+artifacts:
+  - matrix_entry.json
+  - matrix_status.json
+exit_states:
+  pass: MATRIX_READY
+  rejected: MATRIX_REJECTED
+  invalid: CONTRACT_INVALID
+validator: validators/matrix_validator.py:validate_matrix_entry
