@@ -93,7 +93,22 @@ class KunlunP800Adapter:
             text=True,
             capture_output=True,
             timeout=timeout or self.timeout,
+            env=self._env(),
         )
+
+    @staticmethod
+    def _env() -> dict[str, str]:
+        """kubectl must never go through the external HTTP proxy.
+
+        Reaching GitHub in the same process requires http(s)_proxy to be set, and
+        with it exported the API server call fails with `Unable to connect to the
+        server: EOF` — the proxy accepts the CONNECT and then drops it.
+        """
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
+        }
 
     # ---- reads ------------------------------------------------------------
     def can_create_pods(self) -> bool:
@@ -207,6 +222,7 @@ class KunlunP800Adapter:
             text=True,
             capture_output=True,
             timeout=300,
+            env=self._env(),
         )
 
     def delete(self, kind: str, name: str, confirmed: bool = False) -> subprocess.CompletedProcess[str]:
@@ -214,3 +230,36 @@ class KunlunP800Adapter:
         if not confirmed:
             raise SafetyViolation("delete requires an explicit human gate: pass confirmed=True")
         return self.run(["delete", kind, name], timeout=300)
+
+    def delete_ephemeral(
+        self, kind: str, name: str, task_id: str, attempt_id: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Delete a throwaway resource this run created, without a human gate.
+
+        The human gate on `delete` exists because the namespace holds other
+        engineers' live services. A probe Pod is different: it is created and
+        removed inside one Task, and leaving it behind wastes shared quota. The
+        exemption is therefore narrowed by what the cluster itself reports, not
+        by what the caller claims — the resource must be owner-prefixed, carry
+        `infer.kunlun/ephemeral=true`, and match this attempt's labels. Anything
+        else, including a missing label, falls back to the gate.
+        """
+        self.assert_owned(name)
+        result = self.get(kind, name, output="jsonpath={.metadata.labels}")
+        if result.returncode != 0:
+            raise SafetyViolation(f"cannot read labels of {kind}/{name}: {result.stderr.strip()}")
+        import json
+
+        labels = json.loads(result.stdout or "{}")
+        expected = {
+            "infer.kunlun/ephemeral": "true",
+            "infer.kunlun/task-id": task_id,
+            "infer.kunlun/attempt-id": attempt_id,
+        }
+        mismatched = {key: labels.get(key) for key, value in expected.items() if labels.get(key) != value}
+        if mismatched:
+            raise SafetyViolation(
+                f"refusing to auto-delete {kind}/{name}: it is not this attempt's ephemeral "
+                f"resource (labels {mismatched} do not match {expected})"
+            )
+        return self.run(["delete", kind, name, "--wait=false"], timeout=300)
