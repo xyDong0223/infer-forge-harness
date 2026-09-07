@@ -1,0 +1,34 @@
+api_version: infer.kunlun/v1alpha1
+kind: HarnessConfig
+metadata:
+  name: p800-pd-test
+cluster:
+  kubeconfig: /ssd1/dongxinyu03/vLLM-Kunlun-AI/kconf_p800.txt
+  context: pd-test@kubernetes
+  namespace: pd-test
+  container: model-server
+  # The namespace is shared with other engineers' live services, and the
+  # service account has no cluster-scoped permission (`get nodes` is denied).
+  # Every write must therefore target a resource owned by this operator.
+  resource_prefix: dongxinyu03-
+  deployment_kind: feddeployments.eks.baidu.com
+network:
+  # No direct egress from the cluster or this host.
+  http_proxy: http://agent.baidu.com:8891
+  https_proxy: http://agent.baidu.com:8891
+  no_proxy: localhost,127.0.0.1,.baidu-int.com,.bcebos.com,.baidubce.com
+runtime:
+  image: iregistry.baidu-int.com/hac_test/aiak-inference-llm:vLLM-Kunlun-Base
+  venv: /opt/vllm_kunlun
+  workdir: /workspace
+  install_guide: https://github.com/baidu/vLLM-Kunlun/blob/v0.25.1-dev/docs/source/installation.md
+  install_script: tools/install_vllm_kunlun.sh
+artifacts:
+  # Runtime state stays outside the repository.
+  root: /ssd1/dongxinyu03/kunlun-agent-artifacts
+safety:
+  human_gate:
+    - delete
+    - scale
+  forbid_wildcard_selectors: true
+  fail_closed: true
