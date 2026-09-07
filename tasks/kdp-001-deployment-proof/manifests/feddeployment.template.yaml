@@ -1,0 +1,122 @@
+## Rendered by the Runner: every placeholder comes from the Task Contract.
+## Derived from the working dev manifest; metadata labels are required by the
+## FedDeployment controller and must not be edited.
+apiVersion: eks.baidu.com/v1
+kind: FedDeployment
+metadata:
+  labels:
+    cce.baidubce.com/managed-by: deploytask
+    ernie-ops.baidu-int.com/feddeploy-name: ${RESOURCE_NAME}
+    ernie-ops.baidu-int.com/inference-service-name: ${RESOURCE_NAME}
+    ernie-ops.baidu-int.com/model-name: ${MODEL_NAME}
+    ernie-ops.baidu-int.com/platform: ONLINE
+    infer.kunlun/task-id: ${TASK_ID}
+    infer.kunlun/attempt-id: ${ATTEMPT_ID}
+  name: ${RESOURCE_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  minReadySeconds: 30
+  replicas: 1
+  selector:
+    matchLabels:
+      ernie-ops.baidu-int.com/feddeploy-name: ${RESOURCE_NAME}
+      ernie-ops.baidu-int.com/inference-service-name: ${RESOURCE_NAME}
+      ernie-ops.baidu-int.com/model-name: ${MODEL_NAME}
+      ernie-ops.baidu-int.com/platform: ONLINE
+  strategy:
+    canary:
+      maxSurge: 100%
+      maxUnavailable: 100%
+      steps:
+      - pause: {}
+        setWeight: 100
+  template:
+    metadata:
+      labels:
+        ernie-ops.baidu-int.com/feddeploy-name: ${RESOURCE_NAME}
+        ernie-ops.baidu-int.com/inference-service-name: ${RESOURCE_NAME}
+        ernie-ops.baidu-int.com/model-name: ${MODEL_NAME}
+        ernie-ops.baidu-int.com/platform: ONLINE
+    spec:
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            ernie-ops.baidu-int.com/feddeploy-name: ${RESOURCE_NAME}
+            ernie-ops.baidu-int.com/inference-service-name: ${RESOURCE_NAME}
+            ernie-ops.baidu-int.com/model-name: ${MODEL_NAME}
+            ernie-ops.baidu-int.com/platform: ONLINE
+            infer.kunlun/task-id: ${TASK_ID}
+            infer.kunlun/attempt-id: ${ATTEMPT_ID}
+          annotations:
+            scheduling.volcano.sh/queue-name: ${VOLCANO_QUEUE}
+        spec:
+          containers:
+          ## The base image does not contain vllm-kunlun, so the container idles
+          ## and the Runner performs install + serve as recorded Task actions.
+          - command:
+            - /bin/sh
+            - -c
+            - |
+              mkdir -p ${WORKDIR}
+              sleep infinity
+            env:
+            - name: XPU_VISIBLE_DEVICES
+              value: "0,1,2,3,4,5,6,7"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0,1,2,3,4,5,6,7"
+            - name: CUDA_DEVICE_ORDER
+              value: "OAM_ID"
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            image: ${IMAGE}
+            imagePullPolicy: IfNotPresent
+            name: model-server
+            ports:
+            - containerPort: ${SERVER_PORT}
+              protocol: TCP
+            ## No probes on purpose: an idle container has no /health and kubelet
+            ## would restart it. Readiness is proven by the Task's own checks.
+            resources:
+              limits:
+                kunlunxin.com/xpu: "${XPU_COUNT}"
+                rdma/hca: "1"
+              requests:
+                kunlunxin.com/xpu: "${XPU_COUNT}"
+                rdma/hca: "1"
+            securityContext:
+              capabilities:
+                add:
+                - SYS_PTRACE
+                - SYS_ADMIN
+              runAsUser: 0
+            volumeMounts:
+            - mountPath: /dev/shm
+              name: shm-cache
+            - mountPath: /mnt/cluster
+              name: pvc-model
+          dnsPolicy: ClusterFirst
+          hostNetwork: true
+          nodeSelector:
+            aihc.baidu.com/dedicated-pool: ${DEDICATED_POOL}
+          restartPolicy: Always
+          schedulerName: volcano
+          securityContext: {}
+          shareProcessNamespace: true
+          terminationGracePeriodSeconds: 60
+          volumes:
+          - emptyDir:
+              medium: Memory
+              sizeLimit: 64Gi
+            name: shm-cache
+          - name: pvc-model
+            persistentVolumeClaim:
+              claimName: ${MODEL_PVC}

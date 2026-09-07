@@ -1,0 +1,142 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: kdp-001-minimax-m25-w8a8-p800
+  task_type: deployment_proof
+  version: 0.1.0
+  owner: dongxinyu03
+
+context:
+  model:
+    name: MiniMax-M2.5-W8A8-INT8-Dynamic
+    # 125 safetensors shards, 215 GiB, INT8 dynamic W8A8, remote code required.
+    path: /mnt/cluster/MiniMax-M2.5-W8A8-INT8-Dynamic
+    pvc: rapidfs-baige-v3-pvc
+  target:
+    hardware: Kunlunxin-3-P800
+    device_count: 8
+    namespace: pd-test
+    volcano_queue: aihcq-8vcrxly8ieyn
+    dedicated_pool: aihcq-sirzhpwo0g1u
+  repository:
+    vllm_kunlun_ref: v0.25.1-dev
+  software:
+    install_guide: https://github.com/baidu/vLLM-Kunlun/blob/v0.25.1-dev/docs/source/installation.md
+    image: iregistry.baidu-int.com/hac_test/aiak-inference-llm:vLLM-Kunlun-Base
+    vllm_version: 0.25.1
+    torch_version: 2.9.0
+  server:
+    host: 0.0.0.0
+    port: 8356
+    served_model_name: MiniMax-2.5
+    # Unlike Qwen3-8B this needs the full node: 215 GiB of weights over 8 XPUs.
+    tensor_parallel_size: 8
+    max_model_len: 196608
+    max_num_batched_tokens: 32768
+    max_num_seqs: 312
+    block_size: 128
+    dtype: float16
+    gpu_memory_utilization: 0.92
+
+actions:
+  - preflight
+  - prepare_environment
+  - start_server
+  - poll_health
+  - run_chat_smoke
+  - collect_artifacts
+
+acceptance:
+  pod_ready: true
+  health_check: 200
+  chat_completion: non_empty
+  expected_backend: kunlun
+  unexpected_fallback: false
+  startup_timeout_seconds: 2700
+
+execution:
+  mode: plan_only
+  namespace: pd-test
+  resource_name: dongxinyu03-kdp001-minimax-m25
+  manifest: tasks/kdp-001-deployment-proof/manifests/feddeployment.template.yaml
+  # 215 GiB of INT8 weights over 8 XPUs loads far slower than an 8B model.
+  startup_timeout_seconds: 2700
+  health_interval_seconds: 15
+  health_successes_required: 3
+  retain_on_failure: true
+  server_log: /workspace/server_minimax.log
+  commands:
+    install:
+      - bash /workspace/install_vllm_kunlun.sh
+    setup:
+      # Kunlun/XMLIR tuning flags carried over from the operator's validated
+      # MiniMax launch script (/ssd1/dongxinyu03/run_minimax.sh).
+      - source /workspace/vLLM-Kunlun/setup_env.sh
+      - export XPU_USE_MOE_SORTED_THRES=1
+      - export XFT_USE_FAST_SWIGLU=1
+      - export XPU_USE_FAST_SWIGLU=1
+      - export XMLIR_CUDNN_ENABLED=1
+      - export XPU_USE_DEFAULT_CTX=1
+      - export XMLIR_FORCE_USE_XPU_GRAPH=1
+      - export XMLIR_ENABLE_MOCK_TORCH_COMPILE=false
+      - export XMLIR_DYNAMO_WORKAROUND=1
+      - export VLLM_HOST_IP=$(hostname -i)
+    serve:
+      - >-
+        python -m vllm.entrypoints.openai.api_server
+        --host 0.0.0.0
+        --port 8356
+        --model /mnt/cluster/MiniMax-M2.5-W8A8-INT8-Dynamic
+        --gpu-memory-utilization 0.92
+        --max-model-len 196608
+        --max_num_batched_tokens 32768
+        --trust-remote-code
+        --tensor-parallel-size 8
+        --dtype float16
+        --max_num_seqs 312
+        --block-size 128
+        --served-model-name MiniMax-2.5
+        --enable-auto-tool-choice
+        --tool-call-parser minimax_m2
+        --reasoning-parser minimax_m2
+
+checks:
+  health:
+    path: /health
+    expected_status: 200
+  chat:
+    path: /v1/chat/completions
+    method: POST
+    expected_non_empty_text: true
+    payload:
+      model: MiniMax-2.5
+      messages:
+        - role: user
+          content: Say hello in one short sentence.
+      max_tokens: 512
+  backend:
+    expected: kunlun
+    reject_unexpected_fallback: true
+
+artifacts:
+  directory: /ssd1/dongxinyu03/kunlun-agent-artifacts/kdp-001-minimax-m25-w8a8-p800
+  collect:
+    - deployment_manifest
+    - task_contract
+    - pod_spec
+    - environment_versions
+    - install_log
+    - server_log
+    - health_result
+    - chat_result
+    - reproduce_command
+
+exit_states:
+  pass: DEPLOYMENT_READY
+  install_failed: INSTALL_FAILED
+  startup_failed: SERVER_START_FAILED
+  health_timeout: READINESS_TIMEOUT
+  api_failed: API_SMOKE_FAILED
+  fallback_detected: UNEXPECTED_FALLBACK
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
