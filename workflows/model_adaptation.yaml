@@ -24,8 +24,17 @@ spec:
     # what will actually run.
     - id: mat-002-model-scan
       task: tasks/mat-002-model-scan/task.yaml
-      on_success: mat-005-deployment-plan
+      on_success: mat-003-capability-match
       on_failure: NEEDS_HUMAN
+    # Static only: it can say a requirement is missing, never that the model
+    # runs. Its MATCHED verdict on Qwen3-8B coexists with a failing server.
+    - id: mat-003-capability-match
+      task: tasks/mat-003-capability-match/task.yaml
+      on_success: mat-004-gap-classification
+      on_failure: NEEDS_HUMAN
+    - id: mat-004-gap-classification
+      task: PLANNED
+      on_success: mat-005-deployment-plan
     - id: mat-005-deployment-plan
       task: PLANNED
       on_success: kdp-001b-service-proof

@@ -1,0 +1,78 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-003-capability-match
+  family: model_adaptation
+  task_type: capability_match
+  version: 0.1.0
+spec:
+  question: which capabilities does this model demand, and does the installation provide them
+  produces: CapabilityMatch
+  # Needs the scan first: matching capabilities before knowing which
+  # implementation runs would compare requirements against the wrong code path.
+  consumes: [ModelRequest, ModelSupportCard, EnvironmentProof]
+  runs_with: |
+    python3 tools/match_capabilities.py \
+      --model-request <artifacts>/mat-001/model_request.yaml \
+      --support-card <artifacts>/mat-002/model_support.json \
+      --env-status <artifacts>/kdp-001a/status.json \
+      --out <artifacts>/mat-003
+  # What this Task is not: a support statement. Qwen3-8B matches every axis on
+  # P800 and still fails in kunlun_ops.speculative_attention during decode
+  # warmup. MATCHED means "no requirement is known to be missing".
+  non_goal: concluding that the model runs
+context:
+  input_artifacts:
+    - model_request.yaml
+    - model_support.json
+    - environment proof status.json
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  scope: installed_runtime
+  probe: tools/probe/capability_match_probe.py
+  tool: tools/match_capabilities.py
+actions:
+  - derive_required_capabilities
+  - inventory_provided_capabilities
+  - match_axes
+  - package_capability_match
+checks:
+  axes:
+    # Derived from the checkpoint's own config, the way vLLM-Kunlun keys on
+    # config attributes rather than architecture names.
+    - attention
+    - quantization
+    - moe
+    - multimodal
+    - speculative_decode
+  evidence_grades:
+    # Strongest first. A module on disk does not mean its operators work on this
+    # hardware, so it can only support PROVIDED_MODULE_ONLY.
+    - REGISTRY
+    - MODULE
+    - ABSENT
+  require_graded_evidence: true
+  runtime_verified: false
+acceptance:
+  required_fields:
+    - axis
+    - required
+    - evidence
+    - verdict
+  # An axis nobody introspected must read UNKNOWN and reach MAT-004 as an open
+  # question, never as a silent pass.
+  unknown_axes_must_surface: true
+  evidence_required: true
+artifacts:
+  - capability_match.json
+  - capability_match_card.md
+  - match_status.json
+exit_states:
+  pass: MATCH_READY
+  mismatch: MATCH_READY
+  match_failed: MATCH_FAILED
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/capability_validator.py:validate_capability_match
