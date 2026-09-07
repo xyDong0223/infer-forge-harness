@@ -166,6 +166,13 @@ def node_task_type(node: dict) -> str | None:
 
 
 def resolve(spec: dict, context: dict, journal: Path, environment: dict) -> list[str]:
+    if "contract_instance" not in context:
+        # The plan renders the instance the service proof runs, so the graph can
+        # supply it rather than asking an operator to copy a path.
+        plan = journal_module.latest(journal, "DeploymentPlan", subject=context["subject"],
+                                     environment=environment)
+        if plan:
+            context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
     command = [part.format(**context) for part in spec["command"]]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
