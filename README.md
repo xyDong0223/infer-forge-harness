@@ -51,6 +51,10 @@ python -m compileall runners validators tools
 
 The P800 integration suite is opt-in and must never be run against a shared cluster without an explicit environment configuration.
 
+## OpenWiki reference
+
+The [`openwiki/`](openwiki/) directory contains the OpenWiki reference copied from the vLLM-Kunlun `v0.25.1-dev` branch. Its provenance and source revision are recorded in [`openwiki/SOURCE.md`](openwiki/SOURCE.md). Use it as runtime and architecture reference material; platform contracts and executable Task definitions in this repository remain the source of truth for the Agent platform.
+
 ## Status
 
 This is an initial public scaffold. Runtime adapters and real P800 execution are intentionally added incrementally behind contracts, fake adapters, and independent validators.
