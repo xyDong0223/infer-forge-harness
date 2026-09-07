@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 
@@ -44,11 +45,22 @@ class TestSafetyGuard(unittest.TestCase):
 
 
 class TestHarnessConfig(unittest.TestCase):
-    def test_repository_config_loads(self) -> None:
+    def test_repository_config_loads_with_env_kubeconfig(self) -> None:
+        os.environ["KUBECONFIG"] = __file__  # any existing readable path
         config = ClusterConfig.load(CONFIG)
         self.assertEqual(config.namespace, "pd-test")
         self.assertEqual(config.resource_prefix, "dongxinyu03-")
         self.assertTrue(config.deployment_kind.startswith("feddeployments"))
+
+    def test_missing_env_kubeconfig_is_refused(self) -> None:
+        os.environ.pop("KUBECONFIG", None)
+        with self.assertRaises(ValueError) as ctx:
+            ClusterConfig.load(CONFIG)
+        self.assertIn("KUBECONFIG", str(ctx.exception))
+
+    def test_config_holds_no_credential_path(self) -> None:
+        """A public repository must not point at a credential file."""
+        self.assertNotIn("kconf", CONFIG.read_text(encoding="utf-8").lower())
 
 
 if __name__ == "__main__":

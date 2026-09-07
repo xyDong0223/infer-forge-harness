@@ -3,7 +3,10 @@ kind: HarnessConfig
 metadata:
   name: p800-pd-test
 cluster:
-  kubeconfig: /ssd1/dongxinyu03/vLLM-Kunlun-AI/kconf_p800.txt
+  # Resolved from the environment on purpose: a credential path is
+  # deployment-specific and does not belong in a public repository.
+  #   export KUBECONFIG=/path/to/your/kubeconfig
+  kubeconfig: ${KUBECONFIG}
   context: pd-test@kubernetes
   namespace: pd-test
   container: model-server

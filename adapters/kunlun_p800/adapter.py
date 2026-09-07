@@ -8,6 +8,7 @@ configured operator prefix.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -36,15 +37,23 @@ class ClusterConfig:
 
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         cluster = raw.get("cluster", {})
+        # Credential paths come from the environment, never from the repository.
+        kubeconfig = os.path.expandvars(str(cluster.get("kubeconfig", "")))
+        if "${" in kubeconfig or not kubeconfig:
+            raise ValueError(
+                "cluster.kubeconfig is unresolved: export KUBECONFIG before running a task"
+            )
+        if not Path(kubeconfig).exists():
+            raise ValueError(f"kubeconfig does not exist: {kubeconfig}")
         missing = [
             key
-            for key in ("kubeconfig", "namespace", "container", "resource_prefix", "deployment_kind")
+            for key in ("namespace", "container", "resource_prefix", "deployment_kind")
             if not cluster.get(key)
         ]
         if missing:
             raise ValueError(f"harness config is missing cluster.{', cluster.'.join(missing)}")
         return cls(
-            kubeconfig=cluster["kubeconfig"],
+            kubeconfig=kubeconfig,
             namespace=cluster["namespace"],
             container=cluster["container"],
             resource_prefix=cluster["resource_prefix"],
