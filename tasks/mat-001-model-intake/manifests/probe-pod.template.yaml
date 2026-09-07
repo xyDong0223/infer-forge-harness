@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${RESOURCE_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    infer.kunlun/task-id: ${TASK_ID}
+    infer.kunlun/attempt-id: ${ATTEMPT_ID}
+    # This label is the delete permit: the adapter refuses to auto-delete any
+    # resource that does not carry it, so a probe Pod can never be used as a
+    # path to removing a real deployment.
+    infer.kunlun/ephemeral: 'true'
+spec:
+  # A bare Pod, not a FedDeployment: nothing should restart or reschedule this,
+  # and deletion must be immediate and complete.
+  restartPolicy: Never
+  # Every field below was arrived at by elimination against this cluster:
+  #
+  # 1. Default scheduler, not volcano. Under `schedulerName: volcano` a
+  #    standalone Pod is treated as a one-task gang and stays Pending with
+  #    `1/1 tasks in gang unschedulable: pod group is not ready`.
+  # 2. No nodeSelector. With `aihc.baidu.com/dedicated-pool` as a selector the
+  #    scheduler reports `83 node(s) didn't match Pod's node affinity/selector`
+  #    — the label is not visible as a selector target here, only as a taint.
+  #    Tolerating that taint is what lets the Pod land.
+  # 3. hostNetwork. Without it the sandbox fails with
+  #    `ipam server allocate IP error: exceed max ip num 16 for node`.
+  # 4. The volume is not marked readOnly, only the mount is: a read-only volume
+  #    makes the CSI driver fail with `MountVolume.NodeExpandVolume failed ...
+  #    requested read-only file system`.
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  tolerations:
+    - key: aihc.baidu.com/dedicated-pool
+      operator: Equal
+      value: ${DEDICATED_POOL}
+      effect: NoSchedule
+  containers:
+    - name: model-server
+      image: ${IMAGE}
+      imagePullPolicy: IfNotPresent
+      # Reads a shared PVC only. No XPU is requested on purpose: fingerprinting
+      # is pure filesystem work, and asking for cards would make intake compete
+      # with real deployments for the scarce resource.
+      command: ['bash', '-lc', 'sleep ${TTL_SECONDS}']
+      resources:
+        limits:
+          cpu: '4'
+          memory: 8Gi
+        requests:
+          cpu: '1'
+          memory: 2Gi
+      volumeMounts:
+        - mountPath: /mnt/cluster
+          name: pvc-model
+          readOnly: true
+  volumes:
+    - name: pvc-model
+      persistentVolumeClaim:
+        claimName: ${MODEL_PVC}

@@ -2,30 +2,89 @@ api_version: infer.kunlun/v1alpha1
 kind: Task
 metadata:
   name: mat-001-model-intake
+  family: model_adaptation
   task_type: model_intake
-  version: 0.1.0
+  version: 0.2.0
+spec:
+  # Intake pins identity only. Every runtime decision (dtype, TP, max_model_len)
+  # is made later with evidence; recording a guess here would let it be mistaken
+  # for a fact about the checkpoint.
+  question: which model, which revision, where, against which stack commit
+  produces: ModelRequest
+  consumes: []
 context:
   model:
     id: ${MODEL_ID}
-    source: ${MODEL_SOURCE}
-    revision: ${MODEL_REVISION}
+    # In-container path on the shared PVC. Weights are not visible from the
+    # operator host, which is why this Task needs a Pod at all.
+    source: ${MODEL_PATH}
+    pvc: ${MODEL_PVC}
   target:
-    vllm_kunlun_commit: ${VLLM_KUNLUN_COMMIT}
     hardware: Kunlunxin-3-P800
+    # A branch moves. Intake resolves the ref and records the commit; downstream
+    # Tasks must cite the commit, never the ref.
+    vllm_kunlun_ref: ${VLLM_KUNLUN_REF}
+execution:
+  mode: execute
+  probe:
+    # An XPU-free throwaway Pod: fingerprinting is filesystem work, so intake
+    # must not compete for cards with real deployments.
+    kind: ephemeral_pod
+    manifest: tasks/mat-001-model-intake/manifests/probe-pod.template.yaml
+    xpu_count: 0
+    ttl_seconds: 900
+    auto_delete: true
+    # The exemption from the delete gate is narrowed by cluster-reported labels:
+    # owner prefix + infer.kunlun/ephemeral=true + this attempt's ids.
+    delete_permit_labels:
+      - infer.kunlun/ephemeral
+      - infer.kunlun/task-id
+      - infer.kunlun/attempt-id
+  tool: tools/model_intake.py
 actions:
-  - resolve_model_revision
-  - validate_model_request
+  - resolve_stack_commit
+  - create_probe_pod
+  - fingerprint_checkpoint
+  - delete_probe_pod
   - create_model_request_artifact
+checks:
+  revision:
+    method: structure-sha256 + head/tail 1MiB per shard
+    # A full hash of 214 GiB across 125 shards costs tens of minutes of shared
+    # PVC IO; sampling catches re-quantised or truncated shards, which is the
+    # real failure mode here.
+    reject_full_hash_claim: true
+  format:
+    require_config_json: true
+    # /mnt/cluster holds mcore training checkpoints under model-like names.
+    # Picking by name alone selects the wrong directory.
+    reject_mcore_markers: true
 acceptance:
   required_fields:
     - model.id
     - model.source
     - model.revision
+    - model.revision_method
     - target.vllm_kunlun_commit
+    - identity.architectures
+    - identity.torch_dtype
+  forbidden_fields:
+    - dtype
+    - tensor_parallel_size
+    - max_model_len
+  evidence_required: true
 artifacts:
-  - model_request.yaml
-  - resolved_revision.json
+  directory: ${ARTIFACT_DIR}
+  files:
+    - model_request.yaml
+    - resolved_revision.json
+    - probe_pod.yaml
 exit_states:
   pass: INTAKE_READY
   invalid: CONTRACT_INVALID
   unavailable: MODEL_UNAVAILABLE
+  # A directory that exists but is not a servable HuggingFace checkpoint.
+  unsupported_format: UNSUPPORTED_FORMAT
+  # Downloading absent weights from HuggingFace/ModelScope writes hundreds of
+  # GiB to shared storage over an external proxy, so it is never automatic.
+  needs_download: NEEDS_HUMAN
