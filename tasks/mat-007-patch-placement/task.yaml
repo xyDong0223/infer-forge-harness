@@ -1,0 +1,76 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-007-patch-placement
+  family: model_adaptation
+  task_type: patch_placement
+  version: 0.1.0
+spec:
+  question: where may this fix live, and is it still the same computation
+  produces: PlacedPatch
+  consumes: [FailureTriage, EnvironmentProof]
+  runs_with: |
+    python3 tools/apply_torch_decode_patch.py --pod <pod>
+    # rerun kdp-001b-service-proof, then to reproduce the original failure:
+    #   KDP_DECODE_KERNEL=speculative
+    python3 tools/apply_torch_decode_patch.py --pod <pod> --remove
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tool: tools/apply_torch_decode_patch.py
+  patch: patches/torch_paged_decode.py
+checks:
+  mechanisms:
+    # vLLM-Kunlun offers four; the choice is part of the deliverable because a
+    # wrongly placed patch fails silently on the next upgrade.
+    - id: post_import_patch
+      chosen: true
+      why: appended to the plugin's own register(), which already runs in every
+        worker process, and wraps the vendor symbol so both call sites are covered
+    - id: install_time_file_edit
+      chosen: false
+      why: invisible, unversioned, and lost on reinstall
+    - id: oot_model_registration
+      chosen: false
+      why: wrong layer — the model loads correctly, the decode kernel does not
+    - id: module_redirection
+      chosen: false
+      why: replaces more of the backend than the one failing call
+  scope:
+    # qlen > 1 keeps the vendor kernel: the fallback does not implement
+    # speculative decode, and pretending otherwise would silently change results.
+    routes_only: qlen == 1
+  reversibility:
+    backup_required: true
+    runtime_switch: KDP_DECODE_KERNEL
+    # A patch that cannot be turned off cannot be compared against.
+    must_reproduce_original_failure: true
+  numerical_equivalence:
+    # Correctness is established where the vendor kernel works — in isolation.
+    # Agreement there is what licenses using the fallback where it does not.
+    reference: kunlun_ops.speculative_attention
+    metric: cosine_similarity
+    threshold: 0.9999
+acceptance:
+  require_numerical_evidence: true
+  require_server_validation: true
+  require_reversibility: true
+artifacts:
+  - numerical_comparison.txt
+  - placement_report.json
+exit_states:
+  pass: PATCH_PLACED
+  numerical_mismatch: PATCH_REJECTED
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/patch_validator.py:validate_patch_placement
+findings:
+  - model: Qwen3-8B
+    patch: patches/torch_paged_decode.py
+    # Measured 2026-09-07 against the vendor kernel across eight geometries
+    # (batch 1-64, context 1-4096, block_size 16/64/128).
+    numerical: cosine 0.999998-1.000000, max relative error 0.0074, exact at context_len 1
+    server: health 200, coherent generation, KV cache 504,976 tokens, engine init 6.70s
+    limitation: shape-dynamic span requires --enforce-eager until the span is static
