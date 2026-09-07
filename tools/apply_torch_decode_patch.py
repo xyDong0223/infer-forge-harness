@@ -57,10 +57,15 @@ def _kdp_install_torch_decode():
     _vendor = kunlun_ops.speculative_attention
 
     def _dispatch(**kwargs):
-        # Only regular decode is rerouted; the speculative path (qlen > 1) keeps
-        # the vendor kernel, which this fallback does not implement.
+        # Only regular decode is rerouted, and the fallback refuses anything it
+        # would compute incorrectly (sliding window, attention sinks). Both cases
+        # fall back to the vendor kernel rather than to a wrong answer, which is
+        # what makes this safe for models other than the one it was written for.
         if kwargs.get("qlen") == 1:
-            return torch_paged_decode(**kwargs)
+            try:
+                return torch_paged_decode(**kwargs)
+            except NotImplementedError:
+                pass
         return _vendor(**kwargs)
 
     _dispatch._kdp_wrapped = True

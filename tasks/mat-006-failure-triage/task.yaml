@@ -35,8 +35,10 @@ execution:
     # arguments cannot be reproduced by anyone else.
     - tools/instrument_kernel_trace.py
     # Replays those arguments outside the server and sweeps around them, which is
-    # what turns a symptom into a boundary.
-    - tools/probe/kernel_ut_speculative_attention.py
+    # what turns a symptom into a boundary. The geometry comes from the trace, so
+    # the sweep is not tied to any one model, and --kernel selects whichever
+    # vendor symbol the triage landed on.
+    - tools/probe/kernel_ut_replay.py
   restore_required: true
 actions:
   - locate_failing_symbol

@@ -37,8 +37,10 @@ REPORT = {
         "cases": 49,
         "passed": 47,
         "hard_constraints": [
-            "dtype=float32 -> speculative_attention unimplemented",
             "context_lens must be int32",
+            # float32 is not uniformly unimplemented: it failed at block_size 64
+            # and passed at block_size 16, so the constraint is geometry-dependent.
+            "dtype=float32 rejected at block_size 64, accepted at block_size 16",
         ],
     },
     "workaround": {

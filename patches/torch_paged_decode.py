@@ -12,6 +12,13 @@ onto their KV head, softmax in float32, and masking by each request's context
 length. The layout is vLLM-Kunlun's own paged cache,
 `(num_blocks, num_kv_heads, block_size, head_size)`.
 
+Model coverage is deliberately narrow and enforced rather than assumed: sliding
+windows, attention sinks and speculative decode raise `UnsupportedDecode` so the
+caller keeps the vendor kernel instead of getting a quietly different result.
+Plain MHA/GQA models with a paged cache — Qwen3, Llama-style, most dense decoders
+— are covered. MLA models are not: they use a different cache layout and their own
+kernel family.
+
 Install into a running pod with `tools/apply_torch_decode_patch.py`; select at
 runtime with `KDP_DECODE_KERNEL=torch|decode_paged|speculative`, which keeps the
 failing vendor path one environment variable away for reproduction.
@@ -29,8 +36,29 @@ import torch
 GATHER_BUDGET_ELEMENTS = 1 << 24
 
 
+class UnsupportedDecode(NotImplementedError):
+    """Raised when this fallback would silently compute the wrong attention.
+
+    Qwen3-8B needs neither a sliding window nor attention sinks, so an early
+    version simply ignored both arguments. That is safe for Qwen3 and wrong for
+    any model that uses them — a sliding-window model would attend to the whole
+    context and a sink model would lose its sink. Refusing is the only honest
+    behaviour: the caller then keeps the vendor kernel, which does implement them.
+    """
+
+
 def torch_paged_decode(**kwargs: object) -> int:
     """Drop-in replacement for the qlen==1 branch of `speculative_attention`."""
+    window = kwargs.get("max_window_size", -1)
+    if window is not None and int(window) >= 0:  # type: ignore[arg-type]
+        raise UnsupportedDecode(
+            f"sliding window {window} is not implemented here; keep the vendor kernel"
+        )
+    if kwargs.get("sink") is not None:
+        raise UnsupportedDecode("attention sinks are not implemented here; keep the vendor kernel")
+    if int(kwargs.get("qlen", 1)) != 1:  # type: ignore[arg-type]
+        raise UnsupportedDecode("only regular decode (qlen == 1) is implemented here")
+
     out: torch.Tensor = kwargs["out"]  # type: ignore[assignment]
     query_in: torch.Tensor = kwargs["q"]  # type: ignore[assignment]
     k_cache: torch.Tensor = kwargs["k_cache"]  # type: ignore[assignment]
