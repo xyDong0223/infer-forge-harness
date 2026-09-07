@@ -25,6 +25,34 @@ def validate_task_contract(contract: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_executable(contract: dict[str, Any]) -> list[str]:
+    """Extra requirements a contract must satisfy before leaving PLAN_ONLY.
+
+    `actions` and `acceptance` state intent; `execution` and `checks` carry the
+    cluster identity and the observable evidence a Validator will judge.
+    """
+    errors = validate_task_contract(contract)
+    execution = contract.get("execution")
+    if not isinstance(execution, dict):
+        errors.append("execution is required to run a task")
+    else:
+        for field in ("mode", "namespace", "resource_name"):
+            if not execution.get(field):
+                errors.append(f"execution.{field} is required")
+        if execution.get("mode") not in (None, "plan_only", "execute"):
+            errors.append("execution.mode must be plan_only or execute")
+    checks = contract.get("checks")
+    if not isinstance(checks, dict):
+        errors.append("checks is required to run a task")
+    else:
+        health = checks.get("health") or {}
+        if not health.get("path") or not health.get("expected_status"):
+            errors.append("checks.health needs path and expected_status")
+        if not (checks.get("chat") or {}).get("path"):
+            errors.append("checks.chat.path is required")
+    return errors
+
+
 def find_placeholders(value: Any, path: str = "$") -> list[str]:
     if isinstance(value, str):
         return [path] if _PLACEHOLDER.search(value) else []
