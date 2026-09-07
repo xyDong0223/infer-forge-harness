@@ -1,0 +1,65 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-004-gap-classification
+  family: model_adaptation
+  task_type: gap_classification
+  version: 0.1.0
+spec:
+  question: what kind of gap is this, and therefore what is the next action
+  produces: GapClassification
+  consumes: [ModelSupportCard, CapabilityMatch]
+  # Reads two static findings and executes nothing, so it runs off the artifacts
+  # alone — no pod, no cluster.
+  offline: true
+  runs_with: |
+    python3 tools/classify_gaps.py \
+      --support-card <artifacts>/mat-002/model_support.json \
+      --capability-match <artifacts>/mat-003/capability_match.json \
+      --out <artifacts>/mat-004
+  non_goal: deciding whether the model runs
+context:
+  input_artifacts:
+    - model_support.json
+    - capability_match.json
+actions:
+  - read_static_findings
+  - classify_each_gap
+  - choose_next_action
+  - package_classification
+checks:
+  classes:
+    # Each class exists because its next action differs. Collapsing them would
+    # send someone to write a model file for what is really a version lag.
+    - id: REGISTRATION_MISSING
+      next_action: write a model implementation
+    - id: VERSION_LAG
+      next_action: upgrade or cherry-pick from upstream
+    - id: CAPABILITY_MISSING
+      next_action: implement or route around the missing path
+    - id: UNVERIFIED
+      next_action: introspect or reach upstream, then re-classify
+    - id: NO_STATIC_GAP
+      # The Qwen3-8B case: nothing is missing statically and the server still
+      # fails. This class routes to a deployment attempt and then to triage.
+      next_action: attempt a deployment, then triage the failure
+  action_must_follow_class: true
+acceptance:
+  require_input_provenance: true
+  runtime_verified: false
+  evidence_required: true
+artifacts:
+  - gap_classification.json
+  - gap_classification.md
+  - classification_status.json
+exit_states:
+  pass: CLASSIFICATION_READY
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/gap_validator.py:validate_gap_classification
+findings:
+  - model: Qwen3-8B
+    classification: NO_STATIC_GAP
+    note: scan says UPSTREAM_GENERIC and every capability axis matches, yet the
+      server dies in kunlun_ops.speculative_attention — which is exactly why this
+      class routes onward instead of concluding support

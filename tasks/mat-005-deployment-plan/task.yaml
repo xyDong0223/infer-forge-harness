@@ -1,0 +1,72 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-005-deployment-plan
+  family: model_adaptation
+  task_type: deployment_plan
+  version: 0.1.0
+spec:
+  question: which launch parameters follow from what has been established
+  produces: DeploymentPlan
+  # PlacedPatch is optional and matters: a shape-dynamic fallback forces eager
+  # execution, so the patch's limitations change the plan.
+  consumes: [ModelRequest, GapClassification]
+  consumes_optional: [PlacedPatch]
+  offline: true
+  runs_with: |
+    python3 tools/plan_deployment.py \
+      --model-request <artifacts>/mat-001/model_request.yaml \
+      --classification <artifacts>/mat-004/gap_classification.json \
+      --placed-patch <artifacts>/mat-007/placement_report.json \
+      --out <artifacts>/mat-005
+  # This closes the last hand-typed step. Launch parameters were being written by
+  # a human into instance contracts, where they became indistinguishable from
+  # measured values.
+  replaces: hand-written KDP instance contracts
+context:
+  input_artifacts:
+    - model_request.yaml
+    - gap_classification.json
+    - placement report (optional)
+actions:
+  - derive_parameters_from_established_facts
+  - flag_unsupported_values_as_assumptions
+  - render_kdp_instance
+checks:
+  provenance:
+    # Every parameter names where it came from; anything without an upstream fact
+    # is labelled an assumption instead of being dressed up as a derivation.
+    every_parameter_has_source: true
+    assumptions_declared: true
+  derivations:
+    dtype: mat-001 identity.torch_dtype
+    max_model_len: mat-001 identity.max_position_embeddings
+    tensor_parallel_size: weight bytes per card against catalog hbm_mib, and must
+      divide num_attention_heads
+    block_size: 64 for MLA, 16 otherwise (openwiki/platform-contract.md)
+    trust_remote_code: mat-001 model.trust_remote_code_required
+    enforce_eager: mat-007 patch limitations
+  memory_arithmetic_required: true
+acceptance:
+  require_stack_pin: true
+  require_revision: true
+  evidence_required: true
+artifacts:
+  - deployment_plan.json
+  - kdp_instance.yaml
+  - plan_status.json
+exit_states:
+  pass: PLAN_READY
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/plan_validator.py:validate_deployment_plan
+findings:
+  - model: Qwen3-8B
+    derived:
+      dtype: bfloat16
+      tensor_parallel_size: 1
+      max_model_len: 40960
+      block_size: 16
+      enforce_eager: true
+    note: enforce_eager is true only because the placed torch decode patch is
+      shape-dynamic; remove the patch and the same plan yields false
