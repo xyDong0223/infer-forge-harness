@@ -44,9 +44,20 @@ spec:
       # A start failure is an input to triage, not the end of the graph. This
       # edge is the one that used to be a dead end.
       on_failure: mat-006-failure-triage
+    # Attribution, not repair: it decides which of the four layers owns the
+    # failure and whether a workaround is possible. Qwen3-8B's first pass landed
+    # on RUNTIME_STATE_DEPENDENT — both vendor decode kernels fail in the server
+    # and accept identical arguments outside it.
     - id: mat-006-failure-triage
+      task: tasks/mat-006-failure-triage/task.yaml
+      on_success: mat-007-patch-placement
+      on_failure: NEEDS_HUMAN
+    # Where a fix is allowed to live. patches/torch_paged_decode.py is the first
+    # one; it still needs a placement decision among the four override mechanisms
+    # and a numerical comparison against the vendor kernel.
+    - id: mat-007-patch-placement
       task: PLANNED
-      on_success: PLANNED
+      on_success: kdp-001b-service-proof
   notes:
     - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
       the environment proof's pod.

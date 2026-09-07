@@ -1,0 +1,83 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-006-failure-triage
+  family: model_adaptation
+  task_type: failure_triage
+  version: 0.1.0
+spec:
+  question: which layer owns this failure, and can we fix it or must the vendor
+  produces: FailureTriage
+  # Consumes a failed service proof. This Task is the reason KDP-001b's failure
+  # edge is not a dead end.
+  consumes: [ServiceProofFailure, CapabilityMatch, EnvironmentProof]
+  layers:
+    # Attribution matters because the four layers have different owners: the
+    # first two are modifiable here, the last two ship as binaries.
+    - vllm_upstream
+    - vllm_kunlun_plugin
+    - kunlun_ops_vendor
+    - torch_xmlir_vendor
+  runs_with: |
+    python3 tools/instrument_kernel_trace.py --pod <pod> --call speculative_attention
+    # rerun the service proof, then read the captured arguments
+    python3 tools/instrument_kernel_trace.py --pod <pod> --restore
+context:
+  input_artifacts:
+    - service proof status.json and server_log.txt
+    - environment proof status.json
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tools:
+    # Records the real arguments of a failing vendor call; a symptom without
+    # arguments cannot be reproduced by anyone else.
+    - tools/instrument_kernel_trace.py
+    # Replays those arguments outside the server and sweeps around them, which is
+    # what turns a symptom into a boundary.
+    - tools/probe/kernel_ut_speculative_attention.py
+  restore_required: true
+actions:
+  - locate_failing_symbol
+  - capture_real_arguments
+  - reproduce_in_isolation
+  - sweep_for_boundary
+  - attribute_layer
+  - propose_workaround
+checks:
+  isolated_reproduction:
+    # The two outcomes are different findings, not degrees of the same one.
+    reproduced: VENDOR_KERNEL_GAP
+    not_reproduced: RUNTIME_STATE_DEPENDENT
+  workaround:
+    # Isolation already passed in the RUNTIME_STATE_DEPENDENT case, so only the
+    # server can validate a fix.
+    must_be_validated_in_server: true
+acceptance:
+  require_captured_arguments: true
+  require_owner: true
+  evidence_required: true
+artifacts:
+  - kernel_failure_arguments.jsonl
+  - kernel_unit_test_matrix.txt
+  - triage_report.json
+exit_states:
+  pass: TRIAGE_READY
+  triage_failed: TRIAGE_FAILED
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+validator: validators/triage_validator.py:validate_triage
+findings:
+  # The first real result, kept as a worked example rather than a claim of
+  # capability. Both vendor decode kernels fail in-server at Qwen3-8B's decode
+  # geometry and accept identical arguments in isolation.
+  - model: Qwen3-8B
+    revision: e962c91b1987a03d133ba4e4712107fa3af4408bb39e75e91a4260a443b93872
+    stack_commit: 3ced109af2510479e1b2eb846a8aca1fbdcbdf62
+    failing_symbols:
+      - kunlun_ops.speculative_attention
+      - kunlun_ops.decode_paged_attention
+    verdict: RUNTIME_STATE_DEPENDENT
+    owner: vendor_with_local_workaround
+    workaround: patches/torch_paged_decode.py
