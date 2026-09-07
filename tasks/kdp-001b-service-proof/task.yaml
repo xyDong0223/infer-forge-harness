@@ -1,0 +1,51 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: kdp-001b-service-proof
+  family: deployment
+  task_type: service_proof
+  version: 0.1.0
+spec:
+  question: does this model serve on this proven environment
+  produces: DeploymentProof
+  # The launch parameters come from the deployment plan, not from a guess here;
+  # the pod comes from the environment proof. Both are imported, and this Task
+  # refuses to create a pod of its own — doing so would reinstall the runtime and
+  # invalidate the environment proof it is supposed to build on.
+  consumes: [EnvironmentProof, DeploymentPlan]
+  runs_with: |
+    python3 runners/task_runner.py \
+      tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase service \
+      --attach-pod <pod from the environment proof's status.json>
+  instances_shared_with: kdp-001a-environment-proof
+context:
+  model:
+    name: ${MODEL_NAME}
+    path: ${MODEL_PATH}
+  target:
+    hardware: Kunlunxin-3-P800
+    namespace: ${KUNLUN_NAMESPACE}
+actions:
+  - start_server
+  - poll_health
+  - run_chat_smoke
+  - verify_backend
+  - collect_artifacts
+acceptance:
+  health_check: 200
+  chat_completion: non_empty
+  expected_backend: kunlun
+  unexpected_fallback: false
+artifacts:
+  - server_log
+  - health_result
+  - chat_result
+  - reproduce_command
+exit_states:
+  pass: DEPLOYMENT_READY
+  startup_failed: SERVER_START_FAILED
+  health_timeout: READINESS_TIMEOUT
+  api_failed: API_SMOKE_FAILED
+  fallback_detected: UNEXPECTED_FALLBACK
+  needs_human: NEEDS_HUMAN
+validator: validators/deployment_validator.py:validate_deployment_status

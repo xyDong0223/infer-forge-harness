@@ -72,6 +72,7 @@ class DeploymentProofRunner:
         workdir: str = "/workspace",
         image: str = "",
         attach_pod: str | None = None,
+        phase: str = "all",
     ) -> None:
         self.contract = contract
         self.adapter = adapter
@@ -81,6 +82,12 @@ class DeploymentProofRunner:
         self.image = image
         self.attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.attach_pod = attach_pod
+        # "environment" proves the stack without launch parameters, "service"
+        # proves the server given a prepared pod, "all" keeps the original
+        # single-shot behaviour.
+        if phase not in ("all", "environment", "service"):
+            raise ActionFailed("CONTRACT_INVALID", f"unknown phase {phase!r}")
+        self.phase = phase
         self.pod: str | None = None
         self.records: list[dict[str, Any]] = []
         self.checks: dict[str, Any] = {}
@@ -282,6 +289,10 @@ class DeploymentProofRunner:
             "task_id": self.contract["metadata"]["name"],
             "state": state,
             "updated_at": now(),
+            # The pod is part of the deliverable: the service phase imports this
+            # exact pod, and a scan Task runs inside it.
+            "pod": self.pod,
+            "phase": self.phase,
             "checks": self.checks,
             "artifacts": sorted(str(p.name) for p in self.artifact_dir.iterdir()),
         }
@@ -296,6 +307,15 @@ class DeploymentProofRunner:
     # ---- main loop --------------------------------------------------------
     def run(self) -> dict[str, Any]:
         try:
+            if self.phase == "service" and not self.attach_pod:
+                # Checked before anything is created: preparing a fresh pod here
+                # would reinstall the runtime and invalidate the environment proof
+                # this phase is supposed to import.
+                raise ActionFailed(
+                    "CONTRACT_INVALID",
+                    "the service phase needs a prepared pod: pass --attach-pod with the pod "
+                    "recorded by the environment phase",
+                )
             if self.attach_pod:
                 # Imported Context: the Pod and its runtime were prepared by an
                 # earlier attempt, so those two actions are not re-proven here.
@@ -309,6 +329,13 @@ class DeploymentProofRunner:
             else:
                 self.preflight()
                 self.prepare_environment()
+            if self.phase == "environment":
+                # Stop before the server on purpose. A proven environment is what
+                # later Tasks import, and it is provable without knowing a single
+                # launch parameter — which is exactly why the model scan can run
+                # here, before any parameter has been decided.
+                self.verify_runtime_importable()
+                return self.collect_artifacts("ENVIRONMENT_READY")
             self.start_server()
             self.poll_health()
             self.run_chat_smoke()
@@ -321,6 +348,52 @@ class DeploymentProofRunner:
             self.record("outcome", False, f"command timed out: {timeout.cmd}")
             return self.collect_artifacts("NEEDS_HUMAN", f"command timed out after {timeout.timeout}s")
         return self.collect_artifacts("DEPLOYMENT_READY")
+
+    def verify_runtime_importable(self) -> None:
+        """Prove the stack is usable, not merely installed.
+
+        `uv pip list` showing vllm-kunlun proves nothing: the 2026-09-03 failure
+        had the package present while `import vllm_kunlun` died on a C++ extension
+        built by the wrong compiler. Importing is the cheapest check that
+        separates a broken environment from a model problem, and proving it here
+        means a later kernel failure cannot be blamed on the install.
+        """
+        pod = self.pod or ""
+        script = (
+            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            'python3 -c "import json, torch, vllm, vllm_kunlun; '
+            "print(json.dumps({'torch': torch.__version__, 'vllm': vllm.__version__, "
+            "'vllm_kunlun': getattr(vllm_kunlun, '__version__', 'unknown')}))\""
+        )
+        result = self.adapter.exec(pod, script, timeout=600)
+        self.write("runtime_import.txt", result.stdout + result.stderr)
+        if result.returncode != 0:
+            self.checks["runtime_importable"] = False
+            raise ActionFailed("INSTALL_FAILED", f"import failed: {result.stderr.strip()[-1500:]}")
+        self.checks["runtime_importable"] = True
+        self.record("verify_runtime_importable", True, result.stdout.strip()[-300:])
+        self.collect_environment_fingerprint()
+
+    def collect_environment_fingerprint(self) -> None:
+        """Record what this conclusion is only true of.
+
+        Every adaptation claim holds for one combination of stack, vendor kernels
+        and driver. Without the fingerprint, "it worked yesterday" cannot be told
+        apart from "something under us moved".
+        """
+        pod = self.pod or ""
+        script = (
+            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            "echo '## packages'; uv pip list | grep -iE "
+            "'^(vllm|vllm-kunlun|torch|torch-xmlir|kunlun-ops|xspeedgate-ops|triton) '; "
+            f"echo '## vllm-kunlun commit'; (cd {self.workdir}/vLLM-Kunlun && git rev-parse HEAD); "
+            "echo '## driver'; xpu_smi | sed -n '3p'; "
+            "echo '## device'; xpu_smi -m | head -1; "
+            "echo '## os'; . /etc/os-release && echo \"$PRETTY_NAME\"; gcc --version | head -1"
+        )
+        result = self.adapter.exec(pod, script, timeout=300)
+        self.write("environment_fingerprint.txt", result.stdout + result.stderr)
+        self.record("environment_fingerprint", result.returncode == 0)
 
 
 

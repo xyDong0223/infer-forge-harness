@@ -1,0 +1,49 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: kdp-001a-environment-proof
+  family: deployment
+  task_type: environment_proof
+  version: 0.1.0
+spec:
+  question: does this stack actually run on this hardware
+  produces: EnvironmentProof
+  consumes: [ModelRequest]
+  # This half needs no launch parameter, which is the whole point of splitting
+  # it out: everything downstream that inspects the runtime — model scan,
+  # failure triage, operator coverage — can run before any parameter is chosen.
+  # It also means a later kernel failure cannot be blamed on the install.
+  runs_with: |
+    python3 runners/task_runner.py \
+      tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase environment
+  instances_shared_with: kdp-001b-service-proof
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+    namespace: ${KUNLUN_NAMESPACE}
+  repository:
+    vllm_kunlun_ref: ${VLLM_KUNLUN_REF}
+actions:
+  - preflight
+  - prepare_environment
+  - verify_runtime_importable
+  - collect_environment_fingerprint
+acceptance:
+  pod_ready: true
+  # `uv pip list` showing the package proves nothing: on 2026-09-03 vllm_kunlun
+  # was installed and `import vllm_kunlun` still died on a C++ extension built
+  # by gcc 9 against a -std=c++20 source.
+  runtime_importable: true
+  fingerprint_required: true
+artifacts:
+  - deployment_manifest
+  - pod_spec
+  - install_log
+  - runtime_import
+  - environment_fingerprint
+exit_states:
+  pass: ENVIRONMENT_READY
+  install_failed: INSTALL_FAILED
+  pod_timeout: READINESS_TIMEOUT
+  needs_human: NEEDS_HUMAN
+validator: validators/deployment_validator.py:validate_environment_status

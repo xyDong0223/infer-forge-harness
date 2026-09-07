@@ -16,7 +16,10 @@ from validators.contract_validator import (
     validate_contract_file,
     validate_executable,
 )
-from validators.deployment_validator import validate_deployment_status
+from validators.deployment_validator import (
+    validate_deployment_status,
+    validate_environment_status,
+)
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -47,6 +50,7 @@ def execute(
     contract_path: Path,
     artifact_dir: Path | None,
     attach_pod: str | None = None,
+    phase: str = "all",
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
     from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter
@@ -57,7 +61,11 @@ def execute(
     if errors:
         print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
         return 2
-    if contract["metadata"]["task_type"] != "deployment_proof":
+    task_type = contract["metadata"]["task_type"]
+    # environment_proof and service_proof are the two halves of a deployment
+    # proof: the same executor, stopped at a different exit criterion.
+    phase = {"environment_proof": "environment", "service_proof": "service"}.get(task_type, phase)
+    if task_type not in ("deployment_proof", "environment_proof", "service_proof"):
         print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "message": "no executor for this task_type"}, indent=2))
         return 4
 
@@ -82,9 +90,14 @@ def execute(
         repo_root=repo_root,
         artifact_dir=target_dir,
         attach_pod=attach_pod,
+        phase=phase,
     )
     status = runner.run()
-    gate = validate_deployment_status(status)
+    gate = (
+        validate_environment_status(status)
+        if phase == "environment"
+        else validate_deployment_status(status)
+    )
     status["validator"] = {"passed": not gate, "errors": gate}
     print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0 if not gate else 6
@@ -96,6 +109,12 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="Run against the real cluster")
     parser.add_argument("--output", type=Path, help="Where to write the plan (plan mode)")
     parser.add_argument("--artifact-dir", type=Path, help="Override the contract artifact directory")
+    parser.add_argument(
+        "--phase",
+        choices=["all", "environment", "service"],
+        default="all",
+        help="Which half of the proof to run; a contract's task_type overrides this",
+    )
     parser.add_argument(
         "--attach-pod",
         help="Prove against an already prepared Pod instead of creating one (Imported Context)",
@@ -112,7 +131,7 @@ def main() -> int:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3
     if args.execute:
-        return execute(contract, args.contract, args.artifact_dir, args.attach_pod)
+        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase)
 
     plan = build_plan(contract)
     rendered = json.dumps(plan, indent=2)

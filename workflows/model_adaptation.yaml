@@ -6,17 +6,42 @@ spec:
   description: Evidence-driven model adaptation for vLLM-Kunlun.
   entry_task: mat-001-model-intake
   nodes:
+    # Cheapest gate first. Intake reads the PVC with no XPU and stops a wrong
+    # directory — an mcore training checkpoint under a model-like name — before
+    # eight cards are ever requested.
     - id: mat-001-model-intake
       task: tasks/mat-001-model-intake/task.yaml
+      on_success: kdp-001a-environment-proof
+      on_failure: NEEDS_HUMAN
+    # Deploy the pod and the stack before deciding anything about the model. This
+    # proves the base environment and produces the pod that the scan runs inside,
+    # which is why no separate throwaway pod is needed from here on.
+    - id: kdp-001a-environment-proof
+      task: tasks/kdp-001a-environment-proof/task.yaml
       on_success: mat-002-model-scan
+      on_failure: NEEDS_HUMAN
+    # Scanning the installed runtime, not a checkout: what is registered here is
+    # what will actually run.
     - id: mat-002-model-scan
       task: tasks/mat-002-model-scan/task.yaml
-      on_success: kdp-001-deployment-proof
-    - id: kdp-001-deployment-proof
-      task: tasks/kdp-001-deployment-proof/task.yaml
+      on_success: mat-005-deployment-plan
+      on_failure: NEEDS_HUMAN
+    - id: mat-005-deployment-plan
+      task: PLANNED
+      on_success: kdp-001b-service-proof
+    - id: kdp-001b-service-proof
+      task: tasks/kdp-001b-service-proof/task.yaml
       on_success: NEEDS_HUMAN
-      on_failure: REWORK
+      # A start failure is an input to triage, not the end of the graph. This
+      # edge is the one that used to be a dead end.
+      on_failure: mat-006-failure-triage
+    - id: mat-006-failure-triage
+      task: PLANNED
+      on_success: PLANNED
   notes:
-    - Static scan precedes any source patching.
-    - Deployment readiness is a hard gate for runtime adaptation.
-    - Gap classification and patch tasks will be added only with validators.
+    - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
+      the environment proof's pod.
+    - The environment half is provable without launch parameters, so the scan runs
+      before any parameter is chosen.
+    - Nodes marked PLANNED have no validator yet and must not be claimed as
+      capabilities.

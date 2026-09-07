@@ -23,3 +23,27 @@ def validate_deployment_status(status: dict[str, Any]) -> list[str]:
     if not status.get("artifacts"):
         errors.append("artifacts must contain at least one evidence path")
     return errors
+
+
+def validate_environment_status(status: dict[str, Any]) -> list[str]:
+    """Acceptance for the environment half of the proof.
+
+    Deliberately says nothing about a server. What this phase delivers is a pod
+    whose stack actually imports, plus the fingerprint that says which stack —
+    and downstream Tasks (model scan, failure triage) run inside that pod, so the
+    pod name and the fingerprint are part of the deliverable, not decoration.
+    """
+    errors: list[str] = []
+    if status.get("state") != "ENVIRONMENT_READY":
+        errors.append("state must be ENVIRONMENT_READY")
+    checks = status.get("checks", {})
+    for key in ("pod_ready", "runtime_importable"):
+        if checks.get(key) is not True:
+            errors.append(f"checks.{key} must be True")
+    if not status.get("pod"):
+        errors.append("pod must be recorded so a later phase can import it")
+    artifacts = status.get("artifacts") or []
+    for required in ("environment_fingerprint.txt", "runtime_import.txt"):
+        if required not in artifacts:
+            errors.append(f"{required} must be part of the evidence bundle")
+    return errors
