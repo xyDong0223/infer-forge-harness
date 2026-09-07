@@ -30,8 +30,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from adapters.kunlun_p800.adapter import KunlunP800Adapter, SafetyViolation  # noqa: E402
 from runners.deployment_proof import render_manifest  # noqa: E402
+from validators.intake_validator import validate_model_request  # noqa: E402
 
 PROBE = REPO_ROOT / "tools" / "probe" / "model_fingerprint_probe.py"
+CONTRACT = REPO_ROOT / "tasks" / "mat-001-model-intake" / "task.yaml"
 POD_TEMPLATE = REPO_ROOT / "tasks" / "mat-001-model-intake" / "manifests" / "probe-pod.template.yaml"
 TASK_ID = "mat-001-model-intake"
 UPSTREAM = "https://github.com/baidu/vLLM-Kunlun"
@@ -214,6 +216,19 @@ def main() -> int:
     (out / "model_request.yaml").write_text(
         yaml.safe_dump(request, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
+
+    # The Tool does not get to declare its own output acceptable. The contract is
+    # the source of the rules, and the artifact is written before the verdict so
+    # a rejection stays inspectable.
+    contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    gate = validate_model_request(request, contract, probe)
+    (out / "intake_status.json").write_text(
+        json.dumps({"state": "INTAKE_READY", "validator": {"passed": not gate, "errors": gate}}, indent=2),
+        encoding="utf-8",
+    )
+    if gate:
+        raise IntakeFailed("CONTRACT_INVALID", "; ".join(gate))
+
     print(f"INTAKE_READY {args.model_id} revision={probe['revision'][:16]} stack={stack_commit[:12]}")
     print(f"artifacts: {out}/model_request.yaml, {out}/resolved_revision.json")
     return 0

@@ -78,7 +78,9 @@ artifacts:
   files:
     - model_request.yaml
     - resolved_revision.json
+    - intake_status.json
     - probe_pod.yaml
+validator: validators/intake_validator.py
 exit_states:
   pass: INTAKE_READY
   invalid: CONTRACT_INVALID
