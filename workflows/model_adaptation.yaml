@@ -86,6 +86,14 @@ spec:
       on_failure: mat-006-failure-triage
     - id: mem-001-memory-budget
       task: tasks/mem-001-memory-budget/task.yaml
+      on_success: mat-009-api-conformance
+      on_failure: mat-009-api-conformance
+    # Its own family: the numbers can be right and the response still wrong, with
+    # reasoning_content empty or tool_calls unparsed. Both edges lead to the matrix
+    # for the same reason mem-001's do — the matrix records what the evidence supports
+    # and refuses to over-claim, so a parser defect belongs in it rather than blocking it.
+    - id: mat-009-api-conformance
+      task: tasks/mat-009-api-conformance/task.yaml
       on_success: mat-016-support-matrix
       on_failure: mat-016-support-matrix
     # Writes the only artifact people read instead of the evidence, so it runs last

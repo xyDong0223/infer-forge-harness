@@ -150,6 +150,18 @@ NODES: dict[str, dict] = {
         ],
         "state_file": "evaluation_status.json",
     },
+    # A different question from every numerical node: whether the response has the
+    # right shape. Needs a pod but not a running server, because parsers are pure text
+    # transforms.
+    "api_conformance": {
+        "produces": "ApiConformance",
+        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
+        "command": [
+            "python3", "tools/check_api_conformance.py", "--subject", "{subject}",
+            "--pod", "{pod}", "--out", "{artifacts}",
+        ],
+        "state_file": "conformance_status.json",
+    },
 }
 
 # Nodes that are deliberately not single commands. Triage needs a server rerun
