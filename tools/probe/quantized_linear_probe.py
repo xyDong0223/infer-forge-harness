@@ -32,22 +32,66 @@ import argparse
 import json
 
 
-def load_pair(model_path: str, tensor: str) -> tuple:
+def weight_map(model_path: str) -> dict:
+    import os
+
+    index_path = os.path.join(model_path, "model.safetensors.index.json")
+    with open(index_path, encoding="utf-8") as handle:
+        return json.load(handle)["weight_map"]
+
+
+def resolve_tensor(mapping: dict, requested: str) -> str:
+    """Pick a quantized linear to exercise, by name or by discovery.
+
+    `auto` exists because the name is model-specific in a way that fails silently:
+    MiniMax-M2.5 stores `model.layers.0.self_attn.q_proj`, while the M3 checkpoint
+    nests the language model and the same layer is
+    `language_model.model.layers.0.self_attn.q_proj`. Discovery takes the first
+    layer-0 scale in sorted order, so it stays deterministic, and skips experts —
+    those are the MoE dimension's business.
+    """
+    if requested and requested != "auto":
+        return requested
+    candidates = sorted(key[: -len(".weight_scale")] for key in mapping
+                        if key.endswith(".weight_scale") and ".layers.0." in key
+                        and "expert" not in key)
+    if not candidates:
+        raise SystemExit("no quantized layer-0 linear in the checkpoint index")
+    return candidates[0]
+
+
+def precision_map(mapping: dict) -> dict:
+    """Which top-level module prefixes are quantized and which are not.
+
+    A W8A8 checkpoint is not uniformly int8: M3's quantization `ignore` list excludes
+    the vision tower, the projector, the patch-merge MLP and the MoE gate, so those
+    stay bfloat16. Recording the split makes the mixed-precision boundary a measured
+    fact rather than an assumption — and that boundary is what a loader gets wrong.
+    """
+    prefixes: dict[str, dict] = {}
+    for key in mapping:
+        entry = prefixes.setdefault(key.split(".")[0], {"tensors": 0, "scales": 0})
+        entry["tensors"] += 1
+        if key.endswith(".weight_scale"):
+            entry["scales"] += 1
+    for entry in prefixes.values():
+        entry["quantized"] = entry["scales"] > 0
+    return prefixes
+
+
+def load_pair(model_path: str, tensor: str, mapping: dict) -> tuple:
     """Read one quantized weight and its scale, without loading a whole shard."""
     import os
 
     from safetensors import safe_open
 
-    index_path = os.path.join(model_path, "model.safetensors.index.json")
-    with open(index_path, encoding="utf-8") as handle:
-        weight_map = json.load(handle)["weight_map"]
     weight_key, scale_key = f"{tensor}.weight", f"{tensor}.weight_scale"
     for key in (weight_key, scale_key):
-        if key not in weight_map:
+        if key not in mapping:
             raise SystemExit(f"{key} is not in the checkpoint index")
-    if weight_map[weight_key] != weight_map[scale_key]:
+    if mapping[weight_key] != mapping[scale_key]:
         raise SystemExit(f"{weight_key} and its scale live in different shards")
-    shard = os.path.join(model_path, weight_map[weight_key])
+    shard = os.path.join(model_path, mapping[weight_key])
     with safe_open(shard, framework="pt") as handle:
         return handle.get_tensor(weight_key), handle.get_tensor(scale_key)
 
@@ -110,7 +154,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
-    parser.add_argument("--tensor", required=True, help="e.g. model.layers.0.self_attn.q_proj")
+    parser.add_argument("--tensor", default="auto",
+                        help="a quantized linear, or 'auto' to discover the first layer-0 one")
     parser.add_argument("--tokens", type=int, default=17)
     parser.add_argument("--device", default="cuda", help="the plugin claims to be CUDA")
     parser.add_argument("--seed", type=int, default=20260908)
@@ -122,7 +167,10 @@ def main() -> int:
     import vllm  # noqa: F401  - registers the _C namespace and activates the plugin
     import vllm._custom_ops  # noqa: F401
 
-    w_q, w_s = load_pair(args.model_path, args.tensor)
+    mapping = weight_map(args.model_path)
+    tensor = resolve_tensor(mapping, args.tensor)
+    precision = precision_map(mapping)
+    w_q, w_s = load_pair(args.model_path, tensor, mapping)
     out_features, in_features = w_q.shape
     # The kernel wants a max; the checkpoint stores a scale. This is the line under
     # test, reproduced here rather than imported so the control can omit it.
@@ -140,7 +188,14 @@ def main() -> int:
 
     result: dict = {
         "dimension": "quantization",
-        "tensor": args.tensor,
+        "tensor": tensor,
+        "tensor_selection": "declared" if args.tensor and args.tensor != "auto"
+                            else "discovered_from_the_index",
+        # A W8A8 checkpoint is not uniformly int8, and the boundary is where a loader
+        # goes wrong: M3 leaves the vision tower, projector, patch-merge MLP and MoE
+        # gate in bfloat16 via the quantization `ignore` list.
+        "precision_by_prefix": precision,
+        "mixed_precision": len({entry["quantized"] for entry in precision.values()}) > 1,
         "shape": {"in_features": int(in_features), "out_features": int(out_features),
                   "tokens": int(args.tokens)},
         "weight": {"dtype": str(w_q.dtype), "scale_dtype": str(w_s.dtype),
