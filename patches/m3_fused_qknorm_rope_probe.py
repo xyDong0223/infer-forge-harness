@@ -8,14 +8,21 @@ Kunlun plugin does not register, so every attention layer dies with
     AttributeError: '_OpNamespace' '_C' object has no attribute
                     'fused_minimax_m3_qknorm_rope_kv_insert'
 
-This registers a torch implementation of the *dense* branch — per-head Gemma RMSNorm
-on q and k, then partial NeoX RoPE — which is all the leading dense layers use. It is
-not a port: it exists to answer what breaks next, and it deliberately refuses the
-paged-cache and index branches instead of guessing a cache layout, so the sparse
-layers fail loudly rather than quietly computing the wrong thing.
+This registers a torch implementation of all three branches the op has: the *dense*
+one (per-head Gemma RMSNorm on q and k, then partial NeoX RoPE), the *paged insert*
+(normed and roped k/v scattered into the main cache by slot_mapping) and the
+*lightning index* one (index_q/index_k read out of the same fused tensor, normed and
+roped, with index_k scattered into the index cache). It is still not a port — the
+arithmetic is torch, not kunlun_ops — but it is verified rather than assumed:
+`tools/probe/m3_qknorm_rope_insert_probe.py` reads every value back out of the caches
+and grades it against a float32 reference, with a control that omits RoPE.
+
+What it refuses is a quantized cache (`kv_cache_dtype` other than "auto"), because
+writing unconverted values into one is wrong quietly instead of loudly.
 
 Semantics come from the wrapper's own docstring at `vllm/_custom_ops.py:2465` and from
-the AMD triton norm (`out = x * rstd * (1.0 + w)`, fp32).
+the AMD triton norm (`out = x * rstd * (1.0 + w)`, fp32). The cache layout is the
+platform's: `(2, num_blocks, num_kv_heads, block_size, head_size)`.
 """
 
 from __future__ import annotations
@@ -56,6 +63,35 @@ def _neox_partial_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
     return torch.cat([out.to(x.dtype), passthrough], dim=-1)
 
 
+def _slots(slot_mapping: torch.Tensor, block_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    flat = slot_mapping.view(-1).to(torch.long)
+    return flat // block_size, flat % block_size
+
+
+def _insert(cache: torch.Tensor, which: int, values: torch.Tensor,
+            slot_mapping: torch.Tensor, block_size: int) -> None:
+    """Scatter [N, heads, dim] into a paged cache by slot.
+
+    The layout is the platform's, not upstream's. vLLM-Kunlun allocates
+    ``(2, num_blocks, num_kv_heads, block_size, head_size)`` — BHLD, key and value
+    split by the leading dimension (`vllm_kunlun/ops/paged_attn.py:43`), which is also
+    exactly what the msa_* kernels read. Upstream M3 instead assumes
+    ``(num_blocks, 2, 128, num_kv_heads, head_dim)``, so the two disagree and the model
+    code is what has to change, not the cache. A 4-D cache (no leading 2) is accepted
+    for the index cache, which only ever stores keys.
+    """
+    blocks, offsets = _slots(slot_mapping, block_size)
+    target = cache[which] if cache.dim() == 5 else cache
+    if target.dim() != 4:
+        raise NotImplementedError(
+            f"unsupported cache rank {tuple(cache.shape)}; expected "
+            "(2, blocks, heads, block_size, dim) or (blocks, heads, block_size, dim)"
+        )
+    stored = values.to(target.dtype)
+    for token in range(stored.shape[0]):
+        target[blocks[token], :, offsets[token], :] = stored[token]
+
+
 def fused_minimax_m3_qknorm_rope_kv_insert(
     qkv: torch.Tensor,
     q_norm_weight: torch.Tensor,
@@ -78,15 +114,26 @@ def fused_minimax_m3_qknorm_rope_kv_insert(
     index_q_out: torch.Tensor | None = None,
     kv_cache_dtype: str = "auto",
 ) -> None:
-    if kv_cache is not None or index_cache is not None or num_index_heads:
+    if kv_cache_dtype not in ("auto", ""):
+        # A quantized cache is a conversion this stand-in does not do, and writing
+        # unconverted values into it would be silently wrong rather than loud.
         raise NotImplementedError(
-            "this probe implements the dense branch only; the paged-cache and "
-            "lightning-index branches need the real cache layout and belong to a port"
+            f"kv_cache_dtype={kv_cache_dtype!r} needs the cache conversion path"
         )
 
     head_dim = q_norm_weight.shape[-1]
     q_size, kv_size = num_heads * head_dim, num_kv_heads * head_dim
-    q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
+    sizes = [q_size, kv_size, kv_size]
+    index_dim = 0
+    if num_index_heads:
+        if index_q_norm_weight is None or index_k_norm_weight is None:
+            raise ValueError("a sparse layer needs both index norm weights")
+        index_dim = index_q_norm_weight.shape[-1]
+        # The index branch is read straight out of the same fused tensor:
+        # [q | k | v | index_q | index_k], and index_k is single-head.
+        sizes += [num_index_heads * index_dim, index_dim]
+    parts = qkv.split(sizes, dim=-1)
+    q, k, v = parts[0], parts[1], parts[2]
 
     cos_sin = cos_sin_cache.index_select(0, positions.view(-1).to(torch.long))
     cos, sin = cos_sin.chunk(2, dim=-1)
@@ -101,6 +148,35 @@ def fused_minimax_m3_qknorm_rope_kv_insert(
     k.copy_(k_heads.reshape(k.shape))
     if q_out is not None:
         q_out.copy_(q_heads.reshape(q_out.shape))
+
+    index_k_heads = None
+    if num_index_heads:
+        index_q, index_k = parts[3], parts[4]
+        index_q_heads = _gemma_norm_per_head(
+            index_q.view(-1, num_index_heads, index_dim), index_q_norm_weight, eps)
+        index_k_heads = _gemma_norm_per_head(
+            index_k.view(-1, 1, index_dim), index_k_norm_weight, eps)
+        index_q_heads = _neox_partial_rope(index_q_heads, cos, sin, rotary_dim)
+        index_k_heads = _neox_partial_rope(index_k_heads, cos, sin, rotary_dim)
+        index_k.copy_(index_k_heads.reshape(index_k.shape))
+        if index_q_out is not None:
+            index_q_out.copy_(index_q_heads.reshape(index_q_out.shape).to(index_q_out.dtype))
+        else:
+            index_q.copy_(index_q_heads.reshape(index_q.shape))
+
+    if kv_cache is not None and kv_cache.numel():
+        if slot_mapping is None or not block_size:
+            raise ValueError("inserting into a paged cache needs slot_mapping and block_size")
+        _insert(kv_cache, 0, k_heads, slot_mapping, block_size)
+        _insert(kv_cache, 1, v.reshape(-1, num_kv_heads, head_dim), slot_mapping, block_size)
+    if index_cache is not None and index_cache.numel():
+        if index_k_heads is None:
+            raise ValueError("an index cache was given but num_index_heads is 0")
+        # Upstream: "if index_slot_mapping is omitted, slot_mapping is used for both".
+        mapping = index_slot_mapping if index_slot_mapping is not None else slot_mapping
+        if mapping is None or not block_size:
+            raise ValueError("inserting into the index cache needs a slot mapping")
+        _insert(index_cache, 0, index_k_heads, mapping, block_size)
 
 
 def register() -> None:
