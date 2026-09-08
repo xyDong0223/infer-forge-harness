@@ -252,6 +252,20 @@ class ContractTest(unittest.TestCase):
         # No weights: the window lives in the kernel and the mask, not in a checkpoint.
         self.assertNotIn("--model-path", argv)
 
+    def test_the_moe_geometry_straddles_the_preprocessing_switch(self):
+        """fused_moe switches preprocessing at M*top_k > 768. If both token counts land
+        on the same side, the two cases exercise one implementation twice."""
+        geometry = CONTRACT["checks"]["dimensions"]["moe"]["geometry"]
+        top_k = geometry["top_k"]
+        self.assertLessEqual(geometry["tokens_below"] * top_k, 768)
+        self.assertGreater(geometry["tokens_above"] * top_k, 768)
+
+    def test_the_moe_dimension_is_declared_tensor_parallel_only(self):
+        text = (ROOT / "tasks" / "mat-008-capability-evaluation" / "task.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("TP first", text)
+
 
 class WindowMaskTest(unittest.TestCase):
     """The mask is the whole sliding-window implementation, so it is worth pinning."""
@@ -306,6 +320,59 @@ class FallbackRefusalTest(unittest.TestCase):
 
         with self.assertRaises(UnsupportedDecode):
             torch_paged_decode(max_window_size=0, qlen=1)
+
+
+class MoeReferenceTest(unittest.TestCase):
+    """The reference is CPU-only, so its routing logic can be tested here."""
+
+    def payload(self, scores_row, top_k):
+        import torch
+
+        from tools.probe.moe_layer_probe import torch_reference
+
+        experts = len(scores_row)
+        # One token, identity-ish experts: expert e scales the input by (e + 1), so the
+        # output says which experts were selected.
+        x = torch.ones(1, 2)
+        w13 = torch.zeros(experts, 4, 2)
+        w2 = torch.zeros(experts, 2, 2)
+        for expert in range(experts):
+            w13[expert, 0, 0] = 1.0
+            w13[expert, 2, 0] = float(expert + 1)
+            w2[expert, 0, 0] = 1.0
+        logits = torch.log(torch.tensor([scores_row], dtype=torch.float32))
+        return torch_reference(x, w13, w2, logits, top_k, True)
+
+    def test_an_exact_tie_at_the_cut_is_reported(self):
+        _, tied = self.payload([0.4, 0.2, 0.2, 0.2], 2)
+        self.assertTrue(bool(tied[0]))
+
+    def test_a_clear_ordering_is_not_reported_as_tied(self):
+        _, tied = self.payload([0.4, 0.3, 0.2, 0.1], 2)
+        self.assertFalse(bool(tied[0]))
+
+    def test_a_tie_below_the_cut_does_not_count(self):
+        """Ties only matter when they decide which experts are selected."""
+        _, tied = self.payload([0.4, 0.3, 0.15, 0.15], 2)
+        self.assertFalse(bool(tied[0]))
+
+    def test_the_control_selects_the_least_scored_experts(self):
+        import torch
+
+        from tools.probe.moe_layer_probe import torch_reference
+
+        x = torch.ones(1, 2)
+        experts = 4
+        w13 = torch.zeros(experts, 4, 2)
+        w2 = torch.zeros(experts, 2, 2)
+        for expert in range(experts):
+            w13[expert, 0, 0] = 1.0
+            w13[expert, 2, 0] = float(expert + 1)
+            w2[expert, 0, 0] = 1.0
+        logits = torch.log(torch.tensor([[0.4, 0.3, 0.2, 0.1]], dtype=torch.float32))
+        top, _ = torch_reference(x, w13, w2, logits, 2, True, select="top")
+        bottom, _ = torch_reference(x, w13, w2, logits, 2, True, select="bottom")
+        self.assertFalse(torch.allclose(top, bottom))
 
 
 if __name__ == "__main__":
