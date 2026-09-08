@@ -48,6 +48,7 @@ PROBES: dict[str, str] = {
     "quantization": "tools/probe/quantized_linear_probe.py",
     "msa": "tools/probe/sliding_window_decode_probe.py",
     "moe": "tools/probe/moe_layer_probe.py",
+    "block_sparse": "tools/probe/block_sparse_attention_probe.py",
 }
 
 # Files a probe needs next to it in the pod. The msa probe grades the patch we
@@ -74,6 +75,11 @@ def dimensions_for(match: dict) -> list[str]:
             selected.append(name)
         if axis.get("axis") == "attention" and axis.get("required") == "sliding_window":
             selected.append("msa")
+        # Two different capabilities share the "attention" axis: a window is a
+        # parameter on a dense kernel, block-sparse selection is three kernels and a
+        # cache of its own, so they cannot be one dimension.
+        if axis.get("axis") == "attention" and axis.get("required") == "block_sparse":
+            selected.append("block_sparse")
     return selected
 
 
@@ -196,6 +202,20 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--tokens-above", str(geometry["tokens_above"]),
             "--n-group", str(geometry["n_group"]),
             "--topk-group", str(geometry["topk_group"]),
+        ] + common
+    if dimension == "block_sparse":
+        # Two geometries in one contract entry: the indexer's and the main heads'.
+        # topk has to stay below the block count or sparse and dense coincide.
+        geometry = thresholds["geometry"]
+        return [
+            "--index-heads", str(geometry["index_heads"]),
+            "--heads", str(geometry["heads"]),
+            "--head-dim", str(geometry["head_dim"]),
+            "--page-size", str(geometry["page_size"]),
+            "--block-size", str(geometry["block_size"]),
+            "--batch", str(geometry["batch"]),
+            "--context-len", str(geometry["context_len"]),
+            "--topk", str(geometry["topk"]),
         ] + common
     raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
 

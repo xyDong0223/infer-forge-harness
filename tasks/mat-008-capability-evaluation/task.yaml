@@ -30,7 +30,7 @@ context:
   # smallest unit that still carries the convention risk, the operators the serving
   # path uses, a float32 reference off the accelerator, and a control — so four
   # near-identical contracts would only drift apart.
-  dimensions_declared: [quantization, msa, moe, multimodal]
+  dimensions_declared: [quantization, msa, moe, block_sparse, multimodal]
 execution:
   mode: execute
   tool: tools/evaluate_capability.py
@@ -38,6 +38,7 @@ execution:
     quantization: tools/probe/quantized_linear_probe.py
     msa: tools/probe/sliding_window_decode_probe.py
     moe: tools/probe/moe_layer_probe.py
+    block_sparse: tools/probe/block_sparse_attention_probe.py
   reference:
     implementation: torch
     device: cpu
@@ -156,6 +157,54 @@ checks:
       # differently. One tied token moved a 384-token batch from 0.009 to 0.031, so the
       # probe reports ties and excludes those tokens.
       router_ties: excluded_and_counted
+    block_sparse:
+      # MiniMax-M3's MSA path. Upstream implements it in triton, shared by the nvidia
+      # and amd variants, so it has no execution path here — but the vendor library
+      # already ships all three kernels, unused by the plugin. Unused means their
+      # conventions are documented and unverified, and wiring a model against an
+      # unverified kernel yields a service that runs and is wrong.
+      operators: [kunlun_ops::msa_block_score, kunlun_ops::msa_block_score_topk_transform,
+                  kunlun_ops::msa_sparse_attention]
+      geometry:
+        # Two geometries, because the path has two stages against two caches: the
+        # lightning indexer scores against a single-head index cache, then the main
+        # heads attend against the paged K/V cache. Upstream sets num_idx_heads ==
+        # num_kv_heads, so index_heads doubles as the main kv head count.
+        index_heads: 4
+        heads: 16
+        head_dim: 128
+        page_size: 64
+        block_size: 64
+        batch: 2
+        context_len: 512
+        # Must stay below context_len / block_size, or every block is selected and
+        # sparse attention is dense attention — the gate would then pass for free.
+        topk: 4
+      min_cosine: 0.9999
+      # Measured 2026-09-08: block scores 3.7e-4, sparse attention 1.6e-3 against the
+      # same selected blocks, while the same output is 0.99 away from dense attention.
+      max_relative_l2: 0.02
+      control: grade the kernel against attention over a block set shifted by one
+      # Measured conventions, each of which silently changes the answer if assumed:
+      conventions:
+        # tl.max(qk, axis=1) upstream, and the scale is applied here even though
+        # upstream's decode kernel drops it (ordering is scale-invariant, so both are
+        # correct and only one matches numerically).
+        block_score_reduction: max_over_block_of_scaled_qk
+        # 0.375 of rows matched a plain top-k; reserving the local block matched all of
+        # them. Without it the selected set is wrong in most rows.
+        topk_reserves_local_block: true
+        # The kernels are token-major, upstream's triton is head-major. A transpose is
+        # part of the port, not an optimisation.
+        topk_idx_layout: total_q_heads_topk
+        index_cache_kv_heads: 1
+        head_dim_v: must_be_passed_explicitly
+      known_blockers:
+        - msa_block_score accepts head_num_kv == 1 only; any other value returns
+          ret=1 before any arithmetic, so the index cache has to be single-head
+        - msa_block_score's optional attention output stays all-zero at score_type=0,
+          so the fused "scores plus attention" form advertised in its docstring is not
+          available on this build
     multimodal:
       operators: []
       min_cosine: 0.9999
@@ -180,9 +229,9 @@ limitations:
   - EXERCISED covers one layer under one shape. It says the operators compute the
     right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
     that claim.
-  - Only the quantization, msa and moe dimensions have probes. multimodal reports
-    EVALUATION_UNIMPLEMENTED, which is a fact about this repo and not a verdict about
-    the platform.
+  - Only the quantization, msa, moe and block_sparse dimensions have probes.
+    multimodal reports EVALUATION_UNIMPLEMENTED, which is a fact about this repo and
+    not a verdict about the platform.
   - The moe dimension covers the tensor-parallel path only. fused_moe_ep is a separate
     call and is not exercised, so nothing here says anything about expert parallel.
   - The moe dimension uses synthetic bfloat16 experts, which keeps it independent of
@@ -190,6 +239,10 @@ limitations:
     (compressed_tensors_moe.py) and is not covered.
   - The msa dimension exercises decode only. Prefill takes the window through
     swa_left/swa_right on a different call and is not covered here.
+  - The block_sparse dimension also exercises decode only, and it verifies the three
+    kernels in isolation against synthetic caches. It says nothing about the index
+    cache being *written* correctly — that belongs to the fused qk-norm/RoPE/insert op
+    — and nothing about M3's own layer wiring.
   - The quantization weights may differ from the subject's. A dense bf16 model has no
     quantized layer to exercise, so the dimension is only selected when the
     CapabilityMatch says the model demands it.
