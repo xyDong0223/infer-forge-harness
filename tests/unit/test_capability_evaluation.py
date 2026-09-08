@@ -203,6 +203,20 @@ class EvaluationValidatorTest(unittest.TestCase):
         self.assertTrue(any("contradicts its state" in e
                             for e in validate_evaluation(report, CONTRACT)))
 
+    def test_a_blocker_must_name_who_it_affects_and_where_it_lives(self):
+        """A path that cannot run must stay actionable rather than sit behind a pass for
+        the paths that did."""
+        report = passing_report(blockers=[{"path": "fused_moe(sigmoid)",
+                                          "error": "TypeError: ..."}])
+        errors = validate_evaluation(report, CONTRACT)
+        self.assertTrue(any("missing affected" in e for e in errors))
+        self.assertTrue(any("missing call_sites" in e for e in errors))
+        report = passing_report(blockers=[{"path": "fused_moe(sigmoid)",
+                                          "error": "TypeError: ...",
+                                          "affected": ["sigmoid MoE"],
+                                          "call_sites": ["_kunlun_ops.py:426"]}])
+        self.assertEqual(validate_evaluation(report, CONTRACT), [])
+
 
 class ContractTest(unittest.TestCase):
     def test_the_contract_forbids_a_cosine_only_gate(self):
@@ -259,6 +273,16 @@ class ContractTest(unittest.TestCase):
         top_k = geometry["top_k"]
         self.assertLessEqual(geometry["tokens_below"] * top_k, 768)
         self.assertGreater(geometry["tokens_above"] * top_k, 768)
+
+    def test_the_quantization_tensor_is_discovered_not_hardcoded(self):
+        """A fixed name fails silently on the next model: M2.5 has
+        model.layers.0.self_attn.q_proj, M3 nests it under language_model."""
+        self.assertEqual(CONTRACT["checks"]["dimensions"]["quantization"]["tensor"], "auto")
+
+    def test_the_moe_dimension_records_the_sigmoid_blocker(self):
+        moe = CONTRACT["checks"]["dimensions"]["moe"]
+        self.assertTrue(moe["known_blockers"])
+        self.assertIn("block_static", " ".join(moe["known_blockers"]))
 
     def test_the_moe_dimension_is_declared_tensor_parallel_only(self):
         text = (ROOT / "tasks" / "mat-008-capability-evaluation" / "task.yaml").read_text(
