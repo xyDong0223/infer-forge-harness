@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from runners.graph_runner import NODES, Unresolved, fan_out_plan  # noqa: E402
-from tools.evaluate_capability import aggregate, dimensions_for  # noqa: E402
+from tools.evaluate_capability import PROBES, aggregate, dimensions_for, probe_argv  # noqa: E402
 from tools.journal import record  # noqa: E402
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
 
@@ -222,6 +222,90 @@ class ContractTest(unittest.TestCase):
         )
         self.assertIn("scale_mm.py", text)
         self.assertIn("127", text)
+
+    def test_the_msa_geometry_makes_the_window_observable(self):
+        """context_len <= window makes windowed and unwindowed decode the same
+        computation, so the probe would pass while measuring nothing."""
+        geometry = CONTRACT["checks"]["dimensions"]["msa"]["geometry"]
+        self.assertGreater(geometry["context_len"], geometry["window"])
+
+    def test_every_registered_probe_has_an_argument_mapping(self):
+        class Args:
+            model_path = "/mnt/cluster/whatever"
+            tensor = None
+            tokens = None
+
+        for dimension in PROBES:
+            with self.subTest(dimension=dimension):
+                argv = probe_argv(dimension, Args(), CONTRACT["checks"]["dimensions"][dimension])
+                self.assertIn("--max-relative-l2", argv)
+
+    def test_the_msa_probe_takes_its_geometry_from_the_contract(self):
+        class Args:
+            model_path = None
+            tensor = None
+            tokens = None
+
+        argv = probe_argv("msa", Args(), CONTRACT["checks"]["dimensions"]["msa"])
+        geometry = CONTRACT["checks"]["dimensions"]["msa"]["geometry"]
+        self.assertIn(str(geometry["window"]), argv)
+        # No weights: the window lives in the kernel and the mask, not in a checkpoint.
+        self.assertNotIn("--model-path", argv)
+
+
+class WindowMaskTest(unittest.TestCase):
+    """The mask is the whole sliding-window implementation, so it is worth pinning."""
+
+    def mask(self, lengths, window):
+        import torch
+
+        from patches.torch_paged_decode import window_mask
+
+        span = max(lengths)
+        return window_mask(torch.arange(span), torch.tensor(lengths), window)
+
+    def test_without_a_window_only_the_context_length_masks(self):
+        mask = self.mask([3, 5], -1)
+        self.assertEqual(mask[0].tolist(), [False, False, False, True, True])
+        self.assertEqual(mask[1].tolist(), [False] * 5)
+
+    def test_a_window_keeps_the_last_window_positions_inclusive(self):
+        mask = self.mask([5], 2)
+        # Positions 3 and 4 stay: the current token plus one before it.
+        self.assertEqual(mask[0].tolist(), [True, True, True, False, False])
+
+    def test_a_window_at_least_as_long_as_the_context_masks_nothing_extra(self):
+        self.assertEqual(self.mask([4], 4)[0].tolist(), [False] * 4)
+        self.assertEqual(self.mask([4], 99)[0].tolist(), [False] * 4)
+
+    def test_the_current_position_is_never_masked_out(self):
+        for length in (1, 2, 7):
+            for window in (1, 2, 3):
+                with self.subTest(length=length, window=window):
+                    self.assertFalse(bool(self.mask([length], window)[0, length - 1]))
+
+    def test_rows_are_masked_independently(self):
+        mask = self.mask([6, 2], 2)
+        self.assertEqual(mask[0].tolist(), [True, True, True, True, False, False])
+        self.assertEqual(mask[1].tolist(), [False, False, True, True, True, True])
+
+
+class FallbackRefusalTest(unittest.TestCase):
+    def test_sinks_are_still_refused(self):
+        """A per-head sink logit joins the softmax denominator and there is no sink
+        model here to check an implementation against."""
+        import torch
+
+        from patches.torch_paged_decode import UnsupportedDecode, torch_paged_decode
+
+        with self.assertRaises(UnsupportedDecode):
+            torch_paged_decode(sink=torch.zeros(4), max_window_size=-1, qlen=1)
+
+    def test_a_zero_window_is_refused_rather_than_guessed(self):
+        from patches.torch_paged_decode import UnsupportedDecode, torch_paged_decode
+
+        with self.assertRaises(UnsupportedDecode):
+            torch_paged_decode(max_window_size=0, qlen=1)
 
 
 if __name__ == "__main__":
