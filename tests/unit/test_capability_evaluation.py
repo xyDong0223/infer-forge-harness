@@ -53,6 +53,120 @@ class DimensionSelectionTest(unittest.TestCase):
                  "verdict": "PROVIDED_MODULE_ONLY"}]
         self.assertEqual(dimensions_for(match_payload(axes)), ["msa"])
 
+    def test_block_sparse_is_a_different_dimension_from_a_window(self):
+        """Both live on the attention axis and they are not the same capability: a
+        window is a parameter on a dense kernel, block-sparse selection is three
+        kernels and an index cache of its own."""
+        axes = [{"axis": "attention", "required": "block_sparse",
+                 "verdict": "PROVIDED_MODULE_ONLY"}]
+        self.assertEqual(dimensions_for(match_payload(axes)), ["block_sparse"])
+        self.assertIn("block_sparse", PROBES)
+
+
+class BlockSparseReferenceTest(unittest.TestCase):
+    """The probe's own reference arithmetic, on the CPU, with no accelerator."""
+
+    def geometry(self):
+        import torch
+
+        from tools.probe.block_sparse_attention_probe import reference_block_scores
+
+        torch.manual_seed(3)
+        batch, heads, length, dim, page = 1, 2, 8, 4, 4
+        case = {
+            "batch": batch, "heads": heads, "kv_heads": 1, "dim": dim, "page": page,
+            "context_len": length, "scale": 0.5,
+            "q": torch.randn(batch, heads, dim),
+            "k_cache": torch.randn(length // page, 1, page, dim),
+            "v_cache": torch.randn(length // page, 1, page, dim),
+            "block_tables": torch.arange(length // page, dtype=torch.int32).reshape(batch, -1),
+        }
+        return case, reference_block_scores
+
+    def test_a_block_score_is_the_max_of_its_token_scores(self):
+        import torch
+
+        case, reference_block_scores = self.geometry()
+        from tools.probe.block_sparse_attention_probe import token_scores
+
+        per_token = token_scores(case)
+        scores = reference_block_scores(case, 4, "max")
+        self.assertEqual(tuple(scores.shape), (1, 2, 2))
+        for head in range(2):
+            for block in range(2):
+                expected = per_token[0, head, block * 4:(block + 1) * 4].max()
+                self.assertTrue(torch.allclose(scores[0, head, block], expected))
+
+    def test_the_unscaled_variant_differs_by_the_scale(self):
+        case, reference_block_scores = self.geometry()
+        scaled = reference_block_scores(case, 4, "max")
+        unscaled = reference_block_scores(case, 4, "max_unscaled")
+        # Same ordering, different magnitude: which is why relative L2 can tell them
+        # apart and cosine cannot.
+        self.assertTrue(bool((scaled - unscaled * case["scale"]).abs().max() < 1e-5))
+
+    def test_reserving_the_local_block_changes_the_selection(self):
+        import torch
+
+        from tools.probe.block_sparse_attention_probe import reference_topk, set_agreement
+
+        # The last block scores worst, so a plain top-k drops it and a reserved local
+        # block keeps it. If these two agreed, the probe could not tell them apart.
+        scores = torch.tensor([[[5.0, 4.0, 3.0, 0.0]]])
+        plain = reference_topk(scores, 2, 4, False)
+        reserved = reference_topk(scores, 2, 4, True)
+        self.assertEqual(sorted(plain[0, 0].tolist()), [0, 1])
+        self.assertEqual(sorted(reserved[0, 0].tolist()), [0, 3])
+        self.assertEqual(set_agreement(plain, reserved)["exact_set_match_fraction"], 0.0)
+        self.assertEqual(set_agreement(plain, plain)["exact_set_match_fraction"], 1.0)
+
+
+class BlockSparseContractTest(unittest.TestCase):
+    """Invariants the geometry has to keep, or the dimension measures nothing."""
+
+    def setUp(self) -> None:
+        self.entry = CONTRACT["checks"]["dimensions"]["block_sparse"]
+        self.geometry = self.entry["geometry"]
+
+    def test_topk_leaves_blocks_unselected(self):
+        blocks = self.geometry["context_len"] // self.geometry["block_size"]
+        self.assertLess(
+            self.geometry["topk"], blocks,
+            "with topk >= blocks sparse attention is dense attention and the gate passes for free",
+        )
+
+    def test_index_heads_divide_the_main_heads(self):
+        self.assertEqual(self.geometry["heads"] % self.geometry["index_heads"], 0)
+
+    def test_the_measured_conventions_are_recorded(self):
+        conventions = self.entry["conventions"]
+        self.assertEqual(conventions["block_score_reduction"], "max_over_block_of_scaled_qk")
+        # Measured: a plain top-k matched 0.375 of rows, reserving the local block
+        # matched all of them. Assuming the wrong one silently changes the selection.
+        self.assertTrue(conventions["topk_reserves_local_block"])
+        self.assertEqual(conventions["index_cache_kv_heads"], 1)
+
+    def test_the_gate_is_not_cosine_only(self):
+        self.assertEqual(CONTRACT["checks"]["method"]["gate_metric"], "relative_l2")
+        self.assertIn("max_relative_l2", self.entry)
+
+    def test_blockers_say_what_breaks_and_where(self):
+        for blocker in self.entry["known_blockers"]:
+            self.assertTrue(len(blocker) > 40, blocker)
+
+    def test_probe_arguments_come_from_the_contract(self):
+        class Args:
+            model_path = None
+            tensor = None
+            tokens = None
+
+        argv = probe_argv("block_sparse", Args(), self.entry)
+        for flag, key in (("--index-heads", "index_heads"), ("--heads", "heads"),
+                          ("--topk", "topk"), ("--context-len", "context_len")):
+            self.assertIn(flag, argv)
+            self.assertEqual(argv[argv.index(flag) + 1], str(self.geometry[key]))
+
+
 
 class FanOutTest(unittest.TestCase):
     def context(self, artifacts: Path) -> dict:
