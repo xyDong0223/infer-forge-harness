@@ -47,8 +47,10 @@ class M3PackageTest(unittest.TestCase):
         self.assertEqual(self.package["routing"]["upstream"], ["M3-03"])
 
     def test_measured_and_predicted_stay_separable(self) -> None:
-        self.assertEqual(self.package["observed"], 4)
-        self.assertEqual(self.package["unreached"], 2)
+        # M3-05 moved from unreached to observed once it was measured: the activation
+        # turned out to need no work at all, which is a finding and not a non-finding.
+        self.assertEqual(self.package["observed"], 5)
+        self.assertEqual(self.package["unreached"], 1)
         for finding in self.package["findings"]:
             if finding["kind"] == "unreached_dependency":
                 self.assertNotIn("error_text", finding)

@@ -137,24 +137,37 @@ findings:
       attention output on relative L2.
 
   - id: M3-05
-    symbol: swiglu_oai
+    symbol: swiglu_oai (SiluAndMulWithClamp)
     layer: vllm_upstream
     owner: us
-    kind: unreached_dependency
-    site: vllm/models/minimax_m3/nvidia/model.py:134
-    blocked_by: M3-04, which sits earlier in the same decoder layer
-    cause: M3's MLP uses the OAI swiglu variant (alpha and a clamp limit), not plain swiglu.
+    kind: observed_failure
+    site: vllm/model_executor/layers/activation.py:183
+    error_text: >-
+      none. Measured on P800: the layer runs and matches a float32 reference at relative
+      L2 0.0017 with 22.8% of lanes clamped.
+    reproduces_in_isolation: true
+    cause: >-
+      earlier note in this file was wrong, and this entry corrects it. kunlun_ops really
+      has no swigluoai_and_mul — only swiglu, swiglu_bias, swiglu_ep, swiglu_ffn_block,
+      swiglu_unt, swiglustep — and that was read as a gap to be filled by composing the
+      clamp with the existing kernel. But SiluAndMulWithClamp binds
+      torch.ops._C.silu_and_mul_with_clamp only under is_cuda_alike(), which is False
+      here, so dispatch falls through to CustomOp.forward_oot and lands on the native
+      torch path, which is upstream's own reference formula.
     finding: >-
-      confirmed absent on this build: kunlun_ops exposes swiglu, swiglu_bias, swiglu_ep,
-      swiglu_ffn_block, swiglu_unt and swiglustep, and no symbol containing "oai". Earlier
-      notes assumed swigluoai_and_mul existed; it does not.
+      not a correctness gap. Nothing has to be written for M3's activation to be right.
+      What is open is speed: the native path is elementwise torch rather than a fused
+      kernel, and no measurement here says whether that matters.
     minimal_fix: >-
-      compose it in the plugin from the clamp plus the existing swiglu rather than asking for a
-      kernel: the difference is an alpha scale and a limit clamp on the gate.
+      nothing for correctness. For performance, register a Kunlun OOT SiluAndMulWithClamp
+      the way the plugin already registers KunlunSiluAndMul; note the alpha of 1.702
+      means plain swiglu cannot be reused as-is, since kunlun_ops.swiglu implements
+      alpha=1 and beta=0.
     verified_against: >-
-      torch reference of the clamped variant off the accelerator, relative L2; a control that
-      omits the clamp has to miss the gate, otherwise the check proves nothing.
-
+      gate * sigmoid(alpha * gate) * (up + beta) in float32 off the accelerator, with the
+      gate clamped from above only and up clamped symmetrically. The control drops the
+      clamp and misses the gate at 0.364, so the check can tell swigluoai from plain
+      swiglu. MAT-008 dimension swiglu_oai, EXERCISED_PASS.
   - id: M3-06
     symbol: kunlun_ops.moe_sigmoid_group_topk_norm
     layer: vllm_kunlun_plugin
