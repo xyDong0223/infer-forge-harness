@@ -36,8 +36,17 @@ spec:
     # remaining question can only be answered by deploying.
     - id: mat-004-gap-classification
       task: tasks/mat-004-gap-classification/task.yaml
-      on_success: mat-005-deployment-plan
+      on_success: mat-008-capability-evaluation
       on_failure: NEEDS_HUMAN
+    # The first node whose width depends on an upstream artifact: it fans out over
+    # exactly the dimensions the CapabilityMatch says this model demands. Placed
+    # before the deployment plan because a capability that is numerically wrong at
+    # one layer will not become right at eight cards, and this costs one pod-exec.
+    - id: mat-008-capability-evaluation
+      task: tasks/mat-008-capability-evaluation/task.yaml
+      on_success: mat-005-deployment-plan
+      # A dimension that computes the wrong numbers is a triage input, not a stop.
+      on_failure: mat-006-failure-triage
     # Derives the launch parameters that used to be typed by hand, each with the
     # upstream fact it came from.
     - id: mat-005-deployment-plan

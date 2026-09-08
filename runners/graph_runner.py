@@ -130,6 +130,26 @@ NODES: dict[str, dict] = {
         ],
         "state_file": "handoff_status.json",
     },
+    # The first node whose width is not known until an upstream artifact is read:
+    # which capability dimensions are worth exercising depends on what the model
+    # demands. `list` prints a JSON array, one child runs per element, and `aggregate`
+    # is the fan-in — the tool owns the artifact format, the executor only walks.
+    "capability_evaluation": {
+        "produces": "CapabilityEvaluation",
+        "needs": {"--capability-match": "fact:CapabilityMatch:capability_match.json"},
+        "fan_out": {
+            "var": "dimension",
+            "list": ["python3", "tools/evaluate_capability.py", "--list-dimensions"],
+            "aggregate": ["python3", "tools/evaluate_capability.py", "--aggregate",
+                          "--out", "{artifacts}"],
+        },
+        "command": [
+            "python3", "tools/evaluate_capability.py", "--dimension", "{dimension}",
+            "--subject", "{subject}", "--pod", "{pod}", "--model-path", "{weights}",
+            "--out", "{artifacts}",
+        ],
+        "state_file": "evaluation_status.json",
+    },
 }
 
 # Nodes that are deliberately not single commands. Triage needs a server rerun
@@ -165,7 +185,8 @@ def node_task_type(node: dict) -> str | None:
     return contract["metadata"]["task_type"]
 
 
-def resolve(spec: dict, context: dict, journal: Path, environment: dict) -> list[str]:
+def resolve(spec: dict, context: dict, journal: Path, environment: dict,
+            command: list[str] | None = None, include_optional: bool = True) -> list[str]:
     if "contract_instance" not in context:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
@@ -173,7 +194,7 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict) -> list
                                      environment=environment)
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
-    command = [part.format(**context) for part in spec["command"]]
+    command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
         hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
@@ -183,12 +204,63 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict) -> list
                 "run the node that produces it first"
             )
         command += [flag, str(Path(hit["artifacts"]) / filename)]
-    for flag, reference in (spec.get("optional") or {}).items():
-        _, kind, filename = reference.split(":", 2)
-        hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
-        if hit:
-            command += [flag, str(Path(hit["artifacts"]) / filename)]
+    if include_optional:
+        for flag, reference in (spec.get("optional") or {}).items():
+            _, kind, filename = reference.split(":", 2)
+            hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
+            if hit:
+                command += [flag, str(Path(hit["artifacts"]) / filename)]
     return command
+
+
+def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -> list[str]:
+    """Ask the node's own tool how wide it is.
+
+    Run even under --plan. The list command reads a recorded artifact and touches
+    nothing, and a plan that cannot say how many children will run is not a plan.
+    """
+    command = resolve(spec, context, journal, environment,
+                      command=spec["fan_out"]["list"], include_optional=False)
+    result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise Unresolved(
+            f"the fan-out list command failed: {' '.join(command)}: {result.stderr.strip()[-300:]}"
+        )
+    for line in reversed(result.stdout.strip().splitlines()):
+        if line.startswith("["):
+            return json.loads(line)
+    raise Unresolved(f"the fan-out list command printed no JSON array: {' '.join(command)}")
+
+
+def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
+                 artifacts: Path) -> list[tuple[Path, list[str]]]:
+    """One child command per item, then the fan-in.
+
+    Each child writes into its own subdirectory so the aggregate can point at the
+    per-dimension evidence instead of summarising it away. The fan-in is a command
+    the node's tool provides, not something the executor computes, so the artifact
+    format stays owned by the Task.
+    """
+    items = fan_out_items(spec, context, journal, environment)
+    if not items:
+        raise Unresolved(
+            "the fan-out list is empty: this model demands none of the dimensions this node "
+            "evaluates, so there is nothing to exercise"
+        )
+    variable = spec["fan_out"]["var"]
+    plan: list[tuple[Path, list[str]]] = []
+    children: list[Path] = []
+    for item in items:
+        child = artifacts / str(item)
+        children.append(child)
+        child_context = {**context, variable: item, "artifacts": str(child)}
+        plan.append((child, resolve(spec, child_context, journal, environment)))
+    aggregate = [part.format(**{**context, "artifacts": str(artifacts)})
+                 for part in spec["fan_out"]["aggregate"]]
+    for child in children:
+        aggregate += ["--child", str(child)]
+    plan.append((artifacts, aggregate))
+    return plan
 
 
 def read_state(artifacts: Path, spec: dict) -> str:
@@ -242,23 +314,29 @@ def main() -> int:
         artifacts = args.artifact_root / current
         context["artifacts"] = str(artifacts)
         try:
-            command = resolve(spec, context, args.journal, environment)
+            if "fan_out" in spec:
+                commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
+            else:
+                commands = [(artifacts, resolve(spec, context, args.journal, environment))]
         except (Unresolved, KeyError) as error:
             print(f"NEEDS_HUMAN: {current}: {error}")
             return 2
 
-        printable = " ".join(command)
+        returncode = 0
         if not args.execute:
-            print(f"[plan] {current}: {printable}")
+            for _, command in commands:
+                print(f"[plan] {current}: {' '.join(command)}")
         else:
-            print(f"[run ] {current}: {printable}")
-            artifacts.mkdir(parents=True, exist_ok=True)
-            result = subprocess.run(command, cwd=REPO_ROOT, text=True)
-            state = read_state(artifacts, spec)
-            print(f"[state] {current}: {state} (exit {result.returncode})")
-            journal_module.record(args.journal, spec["produces"], args.subject, state,
-                                 artifacts, environment)
-            if result.returncode != 0:
+            for target, command in commands:
+                print(f"[run ] {current}: {' '.join(command)}")
+                target.mkdir(parents=True, exist_ok=True)
+                result = subprocess.run(command, cwd=REPO_ROOT, text=True)
+                state = read_state(target, spec)
+                print(f"[state] {current}: {state} (exit {result.returncode})")
+                returncode = returncode or result.returncode
+            journal_module.record(args.journal, spec["produces"], args.subject,
+                                  read_state(artifacts, spec), artifacts, environment)
+            if returncode != 0:
                 failure = node.get("on_failure", "NEEDS_HUMAN")
                 print(f"[edge] {current} --failure--> {failure}")
                 current = failure if failure in by_id else None
