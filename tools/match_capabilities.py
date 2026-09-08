@@ -71,9 +71,10 @@ def render_card(match: dict, request: dict, support: dict, pod: str) -> str:
         )
     lines += [
         "",
-        "Evidence grades, strongest first: `REGISTRY` (a name in an importable registry),",
+        "Evidence grades, strongest first: `EXERCISED` (the capability ran and its numbers",
+        "were checked — MAT-008, not this Task), `REGISTRY` (a name in an importable registry),",
         "`MODULE` (an implementation file exists), `ABSENT`. A module on disk does not mean the",
-        "operators inside it work on this hardware.",
+        "operators inside it work on this hardware, and neither does a registry entry.",
         "",
         "## Limitations",
         "",
