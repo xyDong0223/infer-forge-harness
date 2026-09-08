@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import journal as journal_module  # noqa: E402
+from tools import task_memory  # noqa: E402
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
 # node's own output directory; `fact:<Kind>:<file>` resolves through the Journal.
@@ -283,6 +284,50 @@ def read_state(artifacts: Path, spec: dict) -> str:
     return payload.get("state", "UNKNOWN")
 
 
+SUCCESS_STATES = {
+    "INTAKE_READY",
+    "ENVIRONMENT_READY",
+    "SCAN_READY",
+    "MATCH_READY",
+    "CLASSIFICATION_READY",
+    "EVALUATION_PASS",
+    "PLAN_READY",
+    "DEPLOYMENT_READY",
+    "BUDGET_ACCEPTABLE",
+    "CONFORMANT",
+    "HANDOFF_READY",
+    "PATCH_PLACED",
+}
+
+
+def reusable_fact(
+    spec: dict, subject: str, journal: Path, environment: dict
+) -> dict | None:
+    """Return a prior successful fact whose artifact state is still valid."""
+    kind = spec.get("produces")
+    if not kind:
+        return None
+    hit = journal_module.latest(
+        journal, kind, subject=subject, environment=environment, states=tuple(SUCCESS_STATES)
+    )
+    if not hit:
+        return None
+    artifact_dir = Path(hit["artifacts"])
+    if not (artifact_dir / spec["state_file"]).exists():
+        return None
+    return hit
+
+
+def emit_summary(summary: dict, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(summary, ensure_ascii=False))
+    else:
+        print(
+            f"[summary] {summary['status']} node={summary.get('node')} "
+            f"next={summary.get('next_task') or '-'}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow", type=Path, default=REPO_ROOT / "workflows" / "model_adaptation.yaml")
@@ -296,12 +341,20 @@ def main() -> int:
     parser.add_argument("--from-node", help="start here instead of the entry task")
     parser.add_argument("--until-node", help="stop after this node")
     parser.add_argument("--execute", action="store_true", help="actually run; default is --plan")
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse successful Journal facts and skip completed nodes")
+    parser.add_argument("--loop-state", type=Path,
+                        help="Task Memory JSON path; defaults under artifact-root")
+    parser.add_argument("--json", action="store_true",
+                        help="emit one machine-readable summary per terminal decision")
     args = parser.parse_args()
 
     environment = dict(pair.split("=", 1) for pair in args.env)
     context = dict(pair.split("=", 1) for pair in args.set)
     context.update(subject=args.subject, attempt="graph",
                    environment_text=",".join(f"{k}={v}" for k, v in sorted(environment.items())))
+    loop_state = args.loop_state or args.artifact_root / "task_memory.json"
+    memory = task_memory.load(loop_state, args.workflow.stem, args.subject)
 
     nodes = load_workflow(args.workflow)
     order = [node["id"] for node in nodes]
@@ -317,14 +370,50 @@ def main() -> int:
         task_type = node_task_type(node)
         if task_type in MANUAL:
             print(f"stop: {current} is operator-driven — {MANUAL[task_type]}")
+            emit_summary(
+                {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                 "reason_code": "MANUAL_STEP", "message": MANUAL[task_type]},
+                args.json,
+            )
             break
         spec = NODES.get(task_type or "")
         if spec is None:
             print(f"stop: no executor registered for task_type {task_type!r} ({current})")
+            emit_summary(
+                {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                 "reason_code": "NO_EXECUTOR", "message": f"task_type={task_type}"},
+                args.json,
+            )
             break
 
         artifacts = args.artifact_root / current
         context["artifacts"] = str(artifacts)
+        prior = reusable_fact(spec, args.subject, args.journal, environment)
+        if args.resume and prior:
+            next_task = node.get("on_success")
+            task_memory.start_block(
+                memory,
+                block_id=f"{current}:reused:{len(memory['completed_loop_blocks']) + 1}",
+                sub_target=current,
+                exit_condition={"state_file": spec["state_file"],
+                                "success_states": sorted(SUCCESS_STATES)},
+                routing={"mode": "reuse_journal_fact"},
+            )
+            task_memory.finish_block(
+                memory,
+                prior["state"],
+                artifacts=[prior["artifacts"]],
+                next_block={"sub_target": next_task},
+            )
+            task_memory.save(loop_state, memory)
+            emit_summary(
+                {"status": "REUSED", "node": current, "next_task": next_task,
+                 "reason_code": "SUCCESSFUL_FACT_REUSED",
+                 "artifacts": [prior["artifacts"]]},
+                args.json,
+            )
+            current = next_task if next_task in by_id else None
+            continue
         try:
             if "fan_out" in spec:
                 commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
@@ -332,9 +421,23 @@ def main() -> int:
                 commands = [(artifacts, resolve(spec, context, args.journal, environment))]
         except (Unresolved, KeyError) as error:
             print(f"NEEDS_HUMAN: {current}: {error}")
+            emit_summary(
+                {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                 "reason_code": "INPUT_UNRESOLVED", "message": str(error)},
+                args.json,
+            )
             return 2
 
         returncode = 0
+        if args.execute:
+            task_memory.start_block(
+                memory,
+                block_id=f"{current}:{len(memory['completed_loop_blocks']) + 1}",
+                sub_target=current,
+                exit_condition={"state_file": spec["state_file"],
+                                "success_states": sorted(SUCCESS_STATES)},
+            )
+            task_memory.save(loop_state, memory)
         if not args.execute:
             for _, command in commands:
                 print(f"[plan] {current}: {' '.join(command)}")
@@ -348,9 +451,23 @@ def main() -> int:
                 returncode = returncode or result.returncode
             journal_module.record(args.journal, spec["produces"], args.subject,
                                   read_state(artifacts, spec), artifacts, environment)
+            state = read_state(artifacts, spec)
+            task_memory.finish_block(
+                memory,
+                state,
+                artifacts=[str(artifacts)],
+                next_block={"sub_target": node.get("on_failure" if returncode else "on_success")},
+            )
+            task_memory.save(loop_state, memory)
             if returncode != 0:
                 failure = node.get("on_failure", "NEEDS_HUMAN")
                 print(f"[edge] {current} --failure--> {failure}")
+                emit_summary(
+                    {"status": "REWORK", "node": current, "next_task": failure,
+                     "reason_code": "COMMAND_FAILED", "state": state,
+                     "artifacts": [str(artifacts)]},
+                    args.json,
+                )
                 current = failure if failure in by_id else None
                 continue
 
@@ -360,6 +477,13 @@ def main() -> int:
         if nxt not in by_id:
             print(f"[edge] {current} --> {nxt}")
             break
+        if args.execute:
+            emit_summary(
+                {"status": "CONTINUE", "node": current, "next_task": nxt,
+                 "reason_code": "NODE_COMPLETE", "state": read_state(artifacts, spec),
+                 "artifacts": [str(artifacts)]},
+                args.json,
+            )
         current = nxt
     return 0
 

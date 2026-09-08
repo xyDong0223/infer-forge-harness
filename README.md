@@ -14,6 +14,32 @@ The first milestone is **KDP-001 Kunlun Deployment Proof**: from a fixed Deploym
 
 The runner is intentionally conservative. Plan-only mode is the default; cluster-side execution requires explicit authorization and an environment-specific adapter.
 
+## Agent execution
+
+The graph runner keeps the Task Graph for cross-task routing and stores the
+current and completed Loop Blocks in Task Memory. Successful facts can be reused
+only when their Journal environment fingerprint matches:
+
+```bash
+python3 runners/graph_runner.py \
+  --subject Qwen3-8B \
+  --artifact-root /path/to/artifacts \
+  --journal /path/to/journal.jsonl \
+  --env hardware=P800 \
+  --env stack_commit=<commit> \
+  --resume --json
+```
+
+`--resume` skips nodes whose successful artifact and state file are still
+available. `--json` emits a compact result for each decision with `status`,
+`reason_code`, `next_task`, and artifact paths. Task Memory is written to
+`<artifact-root>/task_memory.json` by default and can be overridden with
+`--loop-state`.
+
+The tool capability index is in `catalog/tool_catalog.yaml`. It is the first
+lookup for an Agent choosing a deterministic tool; task-specific contracts and
+validators remain authoritative for inputs and acceptance.
+
 ## Repository map
 
 | Directory | Responsibility |

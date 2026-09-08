@@ -18,6 +18,7 @@ from runners.graph_runner import (  # noqa: E402
     load_workflow,
     node_task_type,
     resolve,
+    reusable_fact,
 )
 from tools.journal import record  # noqa: E402
 
@@ -107,6 +108,31 @@ class InputResolutionTest(unittest.TestCase):
             command = resolve(NODES["gap_classification"], self.context(Path(tmp)), path, ENVIRONMENT)
             self.assertIn(str(new / "model_support.json"), command)
             self.assertNotIn(str(old / "model_support.json"), command)
+
+    def test_resume_only_reuses_a_successful_fact_with_an_existing_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            bundle = root / "scan"
+            bundle.mkdir()
+            (bundle / "scan_status.json").write_text(
+                '{"state": "SCAN_READY"}', encoding="utf-8"
+            )
+            record(journal, "ModelSupportCard", "Qwen3-8B", "SCAN_READY", bundle, ENVIRONMENT)
+            hit = reusable_fact(
+                NODES["model_scan"], "Qwen3-8B", journal, ENVIRONMENT
+            )
+            self.assertEqual(hit["artifacts"], str(bundle))
+
+    def test_resume_does_not_reuse_a_failed_or_incomplete_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            failed = root / "failed"
+            record(journal, "ModelSupportCard", "Qwen3-8B", "SCAN_FAILED", failed, ENVIRONMENT)
+            self.assertIsNone(
+                reusable_fact(NODES["model_scan"], "Qwen3-8B", journal, ENVIRONMENT)
+            )
 
 
 if __name__ == "__main__":

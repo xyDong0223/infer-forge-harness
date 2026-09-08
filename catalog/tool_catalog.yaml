@@ -1,0 +1,43 @@
+api_version: infer.kunlun/v1alpha1
+kind: ToolCatalog
+entries:
+  - id: model_intake
+    command: python3 tools/model_intake.py
+    purpose: identify the model artifact and reject invalid checkpoints
+    side_effect: read_only
+    retryable: true
+    outputs:
+      - model_request.yaml
+      - intake_status.json
+  - id: model_scan
+    command: python3 tools/scan_model_support.py
+    purpose: build an evidence-backed model support card
+    side_effect: read_only
+    retryable: true
+    outputs:
+      - model_support.json
+      - scan_status.json
+  - id: capability_evaluation
+    command: python3 tools/evaluate_capability.py
+    purpose: exercise only the capability dimensions demanded by the model
+    side_effect: pod_exec
+    retryable: true
+    outputs:
+      - capability_evaluation.json
+      - evaluation_status.json
+  - id: accuracy_differential
+    command: python3 tools/accuracy_differential.py
+    purpose: compare served output against an independent reference
+    side_effect: pod_exec
+    retryable: true
+    outputs:
+      - accuracy_differential.json
+      - accuracy_status.json
+  - id: vendor_handoff
+    command: python3 tools/vendor_handoff.py
+    purpose: package an unresolved platform gap for downstream ownership
+    side_effect: write_artifact
+    retryable: true
+    outputs:
+      - handoff.json
+      - handoff_status.json
