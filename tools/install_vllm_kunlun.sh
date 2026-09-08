@@ -67,8 +67,16 @@ g++-10 --version | head -1
 
 # DEVIATION: the intranet PyPI mirror is much faster than pypi.org through the
 # proxy; pypi.org stays as a fallback for wheels the mirror lacks.
+#
+# DEVIATION: but `--index-strategy unsafe-best-match` queries *every* index for *every*
+# package, so leaving pypi.org in the list makes step 3 reach through the proxy even for
+# packages the mirror already has -- and that times out. Measured 2026-09-08 on a fresh
+# pod: `Failed to fetch https://pypi.org/simple/anthropic/ ... operation timed out` after
+# uv's own 5 retries, while `curl https://pip.baidu-int.com/simple/anthropic/` returned
+# 200. So the extra index defaults to the mirror too; set PIP_EXTRA_INDEX_URL back to
+# pypi.org if a wheel genuinely only exists upstream.
 INDEX_ARGS=(--index-url "${PIP_INDEX_URL:-https://pip.baidu-int.com/simple/}"
-            --extra-index-url "${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
+            --extra-index-url "${PIP_EXTRA_INDEX_URL:-https://pip.baidu-int.com/simple/}"
             --index-strategy unsafe-best-match)
 
 step "1. Install PyTorch (torch==$TORCH_VERSION)"
