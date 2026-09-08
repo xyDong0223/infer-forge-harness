@@ -68,6 +68,33 @@ def _slots(slot_mapping: torch.Tensor, block_size: int) -> tuple[torch.Tensor, t
     return flat // block_size, flat % block_size
 
 
+def _pair_half(cache: torch.Tensor, which: int) -> torch.Tensor:
+    """Select the k (0) or v (1) half of a 5-D paged cache, wherever the pair axis is.
+
+    Measured 2026-09-08, and the reason the sparse layers produced garbage while the dense
+    layers were fine: the two caches put the size-2 axis in *different* places.
+
+        dense layers (vllm_kunlun/ops/paged_attn.py:43):
+            (2, num_blocks, num_kv_heads, block_size, head_dim)   -> cache[which]
+        sparse layers (M3's own allocation, upstream's spec):
+            (num_blocks, 2, block_size, num_kv_heads, head_dim)   -> cache[:, which]
+
+    Indexing `cache[which]` on the second shape selects *block number `which`*, not a half.
+    For k that happens to land on the right half of block 0 and looks fine; for v it writes
+    into block 1's k half, so v is never stored and the attend reads an unwritten half. The
+    served attend then measured relL2 0.79-1.49 against a cache-free reference with
+    got_norm about 1.9x ref_norm, while the dense path -- same code, pair axis at dim 0 --
+    measured 0.0015.
+    """
+    if cache.shape[0] == 2:
+        return cache[which]
+    if cache.shape[1] == 2:
+        return cache[:, which]
+    raise NotImplementedError(
+        f"cannot find the k/v pair axis in {tuple(cache.shape)}"
+    )
+
+
 def _insert(cache: torch.Tensor, which: int, values: torch.Tensor,
             slot_mapping: torch.Tensor, block_size: int) -> None:
     """Scatter [N, heads, dim] into a paged cache by slot, layout detected not assumed.
@@ -77,12 +104,12 @@ def _insert(cache: torch.Tensor, which: int, values: torch.Tensor,
     (`vllm_kunlun/ops/paged_attn.py:43`), which is also what the msa_* kernels read — so
     that layout was hardcoded here. The fifth M3 launch then died with `index 127 is out
     of bounds for dimension 2 with size 1`: M3's caches come out of upstream's own spec
-    as ``(2, num_blocks, block_size, num_kv_heads, head_size)``, BLHD, with block_size
-    before the heads. Both layouts exist in one process, so the layout has to be read
-    off the tensor rather than assumed.
+    as ``(num_blocks, 2, block_size, num_kv_heads, head_size)``, block-major and with the
+    pair axis *inside*, so both the pair axis and the head/length order have to be read off
+    the tensor. See `_pair_half` for what assuming the pair axis cost.
     """
     blocks, offsets = _slots(slot_mapping, block_size)
-    target = cache[which] if cache.dim() == 5 else cache
+    target = _pair_half(cache, which) if cache.dim() == 5 else cache
     if target.dim() == 3:
         # The index cache, exactly as upstream declares it: [num_blocks, 128, head_dim],
         # one implicit head and keys only. Measured on the sixth launch as
