@@ -65,6 +65,15 @@ def validate_evaluation(report: dict[str, Any], contract: dict[str, Any]) -> lis
     if not control:
         errors.append("a negative control is required: a check that cannot fail proves nothing")
 
+    # A path that cannot run is a finding, and it must not be able to hide behind a pass
+    # for the paths that did run. Each blocker has to name who it affects and where it
+    # lives, or it is not actionable.
+    for blocker in report.get("blockers") or []:
+        label = blocker.get("path", "?")
+        for field in ("error", "affected", "call_sites"):
+            if not blocker.get(field):
+                errors.append(f"blocker {label!r} is missing {field}")
+
     if state == "EXERCISED_PASS":
         if not control.get("discriminates"):
             errors.append(

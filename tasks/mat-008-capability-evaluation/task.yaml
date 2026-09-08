@@ -68,7 +68,11 @@ checks:
       # compressed-tensors stores a scale, the Kunlun matmul wants a max. Omitting it
       # is the negative control.
       operators: [_C::scaled_int8_quant, _C::matmul]
-      tensor: model.layers.0.self_attn.q_proj
+      # `auto` discovers the first quantized layer-0 linear from the checkpoint index.
+      # A fixed name is model-specific in a way that fails silently: MiniMax-M2.5 has
+      # model.layers.0.self_attn.q_proj while the M3 checkpoint nests the language
+      # model, so the same layer is language_model.model.layers.0.self_attn.q_proj.
+      tensor: auto
       tokens: 17
       min_cosine: 0.9999
       # The reference reuses the candidate's own quantized activations, so what is
@@ -112,19 +116,41 @@ checks:
         # switch: above it _C::moe_pre_sorted, below it xspeedgate_ops::moe_pre_small.
         # Two implementations of the same step is two chances to disagree, and nothing
         # else here checks that they agree.
-        experts: 8
+        #
+        # 128 experts and top-4 are MiniMax-M3's real routing shape. hidden and
+        # intermediate stay small: the expert count is what changes the routing and the
+        # preprocessing, while widening the GEMMs only costs time.
+        experts: 128
         hidden: 512
         intermediate: 256
-        top_k: 2
+        top_k: 4
         tokens_below: 16
         tokens_above: 512
+        # M3 declares no expert groups, so sigmoid routing is exercised ungrouped.
+        n_group: 1
+        topk_group: 1
       min_cosine: 0.9999
       # Looser than the quantization dimension on purpose: a MoE forward is two
       # bfloat16 GEMMs plus a bfloat16 activation and weighted sum, all through
-      # bfloat16 workspaces. Measured 0.0093 with a per-token maximum of 0.0107 on
-      # both sides of the threshold.
+      # bfloat16 workspaces. Measured 0.0096 / 0.0094 on the two sides of the threshold
+      # at 128 experts and top-4.
       max_relative_l2: 0.02
       control: compare against a reference that routes to the bottom-k experts
+      # Sigmoid + bias routing is what MiniMax-M3 and DeepSeek-V3 use, and it is a
+      # separate question from the SwiGLU arithmetic. Measured 2026-09-08: selection is
+      # by sigmoid(logits) + bias, and the returned weights are the *bias-free* sigmoid
+      # scores renormalised over the selected experts (agreement 6e-8; the
+      # bias-included formula is 0.065 away, so the difference is not rounding).
+      routing_semantics: sigmoid_plus_bias_selects_bias_free_weights
+      # A blocker, not a threshold: KunlunOps.fused_moe's scoring_func="sigmoid" branch
+      # cannot run on this build. It passes block_static= into
+      # _C::moe_sigmoid_group_topk_norm, whose impl forwards that name to a vendor
+      # binding whose parameter is block_statistic — a TypeError before any arithmetic.
+      # Affects sigmoid-routed MoE models quantized and not; the operator itself is
+      # correct when called with the right keyword.
+      known_blockers:
+        - vllm_kunlun/ops/_kunlun_ops.py:426 and compressed_tensors_moe.py:193 pass
+          block_static= where the vendor binding expects block_statistic=
       # An exact tie between the k-th and (k+1)-th expert is not evidence about
       # arithmetic — the kernel and torch.topk are both right and break it
       # differently. One tied token moved a 384-token batch from 0.009 to 0.031, so the

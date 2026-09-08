@@ -194,6 +194,8 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--top-k", str(geometry["top_k"]),
             "--tokens-below", str(geometry["tokens_below"]),
             "--tokens-above", str(geometry["tokens_above"]),
+            "--n-group", str(geometry["n_group"]),
+            "--topk-group", str(geometry["topk_group"]),
         ] + common
     raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
 
@@ -312,6 +314,14 @@ def main() -> int:
     print(f"{report['dimension']}: {report['state']}")
     for case in report.get("cases", []):
         print(f"  {case['case']:34} cos={case['cosine']:.6f} relL2={case['relative_l2']:.6f}")
+    routing = report.get("routing")
+    if routing:
+        print(f"  {routing['case']:34} conformant={routing.get('conformant')}")
+    # Printed, not buried in the JSON: a path that cannot run is the most actionable
+    # thing a run produces, and it would otherwise sit behind a PASS for what did run.
+    for blocker in report.get("blockers") or []:
+        print(f"  BLOCKED {blocker['path']}: {blocker['error']}")
+        print(f"          fix: {blocker['minimal_fix']}")
     return 0 if report["state"] != "EXERCISED_FAIL" else 1
 
 
