@@ -36,11 +36,15 @@ execution:
   tool: tools/evaluate_capability.py
   probes:
     quantization: tools/probe/quantized_linear_probe.py
+    msa: tools/probe/sliding_window_decode_probe.py
   reference:
     implementation: torch
     device: cpu
     dtype: float32
-    must_not_see_accelerator: true
+    # Unlike MAT-013, the probe process must see the accelerator — the candidate is
+    # an operator on it. What must stay off the accelerator is the *reference
+    # computation*, which is why every probe here computes it on the CPU in float32.
+    must_not_see_accelerator: false
 actions:
   - select_dimensions_from_capability_match
   - exercise_dimension
@@ -72,13 +76,32 @@ checks:
       max_relative_l2: 0.01
       control: pass w_pc_max=w_s, i.e. without the scale-to-max conversion
     msa:
-      operators: [kunlun_ops.decode_paged_attention]
+      operators: [kunlun_ops.speculative_attention, patches/torch_paged_decode.py]
       # Sliding window is not a separate operator on this platform: 413 symbols in
       # kunlun_ops contain no window match. It is a parameter — swa_left/swa_right in
       # prefill, max_window_size in decode — so the work is window semantics in the
       # torch reference, not a new kernel.
+      geometry:
+        # Qwen3-8B's own attention shape, at a context deliberately longer than the
+        # window: if context_len <= window the windowed and unwindowed computations
+        # are identical and the probe would pass while measuring nothing.
+        heads: 32
+        kv_heads: 8
+        head_dim: 128
+        block_size: 16
+        batch: 4
+        context_len: 96
+        window: 32
       min_cosine: 0.9999
       max_relative_l2: 0.01
+      control: run the same fallback with max_window_size=-1, i.e. full attention
+      # Measured on 2026-09-08 at three geometries (block_size 16/64, context
+      # 96/512/1024, window 8/32/128/256): kunlun_ops.speculative_attention matches an
+      # *unwindowed* float32 reference to bf16 precision (relative L2 0.0017) and is
+      # 0.80 away from the windowed one. It ignores max_window_size. The probe records
+      # this as `ignores_window` rather than gating on it, because it is a fact about
+      # the vendor kernel and not a defect in the patch.
+      vendor_note: speculative_attention ignores max_window_size at every geometry tested
     moe:
       # TP first; EP is a Python per-expert loop and a later addition.
       operators: [kunlun_ops.moe_fc, kunlun_ops.moe_align_block_size]
@@ -108,9 +131,11 @@ limitations:
   - EXERCISED covers one layer under one shape. It says the operators compute the
     right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
     that claim.
-  - Only the quantization dimension has a probe. msa, moe and multimodal report
+  - Only the quantization and msa dimensions have probes. moe and multimodal report
     EVALUATION_UNIMPLEMENTED, which is a fact about this repo and not a verdict about
     the platform.
+  - The msa dimension exercises decode only. Prefill takes the window through
+    swa_left/swa_right on a different call and is not covered here.
   - The quantization weights may differ from the subject's. A dense bf16 model has no
     quantized layer to exercise, so the dimension is only selected when the
     CapabilityMatch says the model demands it.

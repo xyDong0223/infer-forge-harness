@@ -44,7 +44,16 @@ DIMENSION_FROM_AXIS: dict[str, str] = {
     "multimodal": "multimodal",
 }
 
-PROBES: dict[str, str] = {"quantization": "tools/probe/quantized_linear_probe.py"}
+PROBES: dict[str, str] = {
+    "quantization": "tools/probe/quantized_linear_probe.py",
+    "msa": "tools/probe/sliding_window_decode_probe.py",
+}
+
+# Files a probe needs next to it in the pod. The msa probe grades the patch we
+# actually serve with, so it has to be the same file, not a copy that can drift.
+SIDECARS: dict[str, dict[str, str]] = {
+    "msa": {"--fallback": "patches/torch_paged_decode.py"},
+}
 
 
 class EvaluationFailed(RuntimeError):
@@ -77,13 +86,21 @@ def thresholds_for(contract: dict, dimension: str) -> dict:
     return table[dimension]
 
 
-def run_probe(adapter: KunlunP800Adapter, pod: str, probe: Path, argv: list[str]) -> dict:
-    payload = base64.b64encode(probe.read_bytes()).decode()
-    remote = f"/tmp/mat008_{probe.stem}.py"
+def run_probe(adapter: KunlunP800Adapter, pod: str, probe: Path, argv: list[str],
+              sidecars: dict[str, str] | None = None) -> dict:
+    pushes = [f"echo {base64.b64encode(probe.read_bytes()).decode()} | base64 -d > "
+              f"/tmp/mat008_{probe.stem}.py"]
+    for flag, relative in (sidecars or {}).items():
+        source = REPO_ROOT / relative
+        remote = f"/tmp/mat008_{Path(relative).name}"
+        pushes.append(f"echo {base64.b64encode(source.read_bytes()).decode()} | base64 -d > {remote}")
+        argv = argv + [flag, remote]
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > {remote} && "
-        f"python3 {remote} {' '.join(shlex.quote(part) for part in argv)} 2>/dev/null"
+        + " && ".join(pushes)
+        + f" && python3 /tmp/mat008_{probe.stem}.py "
+        + " ".join(shlex.quote(part) for part in argv)
+        + " 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=1800)
     for line in reversed(result.stdout.strip().splitlines()):
@@ -138,6 +155,36 @@ def render_table(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
+    """Every probe argument comes from the contract unless the caller overrides it."""
+    common = ["--cosine-floor", str(thresholds["min_cosine"]),
+              "--max-relative-l2", str(thresholds["max_relative_l2"])]
+    if dimension == "quantization":
+        if not args.model_path:
+            raise EvaluationFailed("CONTRACT_INVALID",
+                                   "--model-path is required to exercise a quantized layer")
+        return [
+            "--model-path", args.model_path,
+            "--tensor", args.tensor or thresholds["tensor"],
+            "--tokens", str(args.tokens or thresholds["tokens"]),
+        ] + common
+    if dimension == "msa":
+        # No weights: the window is a property of the kernel and the mask, so the
+        # geometry is what has to be pinned. Taking it from the contract keeps a
+        # passing run from having been a differently shaped one.
+        geometry = thresholds["geometry"]
+        return [
+            "--heads", str(geometry["heads"]),
+            "--kv-heads", str(geometry["kv_heads"]),
+            "--head-dim", str(geometry["head_dim"]),
+            "--block-size", str(geometry["block_size"]),
+            "--batch", str(geometry["batch"]),
+            "--context-len", str(geometry["context_len"]),
+            "--window", str(geometry["window"]),
+        ] + common
+    raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
+
+
 def evaluate(args, contract: dict) -> dict:
     thresholds = thresholds_for(contract, args.dimension)
     probe_path = PROBES.get(args.dimension)
@@ -153,19 +200,12 @@ def evaluate(args, contract: dict) -> dict:
         }
     if not args.pod:
         raise EvaluationFailed("CONTRACT_INVALID", "--pod is required to exercise a capability")
-    if not args.model_path:
-        raise EvaluationFailed("CONTRACT_INVALID", "--model-path is required")
 
-    argv = [
-        "--model-path", args.model_path,
-        "--tensor", args.tensor or thresholds["tensor"],
-        "--tokens", str(args.tokens or thresholds["tokens"]),
-        "--cosine-floor", str(thresholds["min_cosine"]),
-        "--max-relative-l2", str(thresholds["max_relative_l2"]),
-    ]
+    argv = probe_argv(args.dimension, args, thresholds)
     adapter = KunlunP800Adapter()
     adapter.assert_owned(args.pod)
-    report = run_probe(adapter, args.pod, REPO_ROOT / probe_path, argv)
+    report = run_probe(adapter, args.pod, REPO_ROOT / probe_path, argv,
+                       SIDECARS.get(args.dimension))
     report["subject"] = args.subject
     report["exercised_in"] = args.pod
     report["weights"] = args.model_path
