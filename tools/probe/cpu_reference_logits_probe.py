@@ -15,7 +15,41 @@ import json
 import sys
 
 
+def _visible_accelerator(torch) -> str | None:
+    """Return the first visible accelerator backend, if any.
+
+    CUDA visibility is insufficient on Kunlun: torch exposes the vendor device
+    through ``torch.xpu``.  Keep this probe conservative so a reference run can
+    never silently share the candidate's device.
+    """
+    checks = (
+        ("cuda", "cuda"),
+        ("xpu", "xpu"),
+        ("mlu", "mlu"),
+        ("npu", "npu"),
+        ("mps", "mps"),
+    )
+    for backend, attribute in checks:
+        module = getattr(torch, attribute, None)
+        available = getattr(module, "is_available", None)
+        try:
+            if callable(available) and available():
+                return backend
+        except Exception:
+            # A partially installed backend is not usable as a reference. It
+            # is safer to report it as visible than to load the model anyway.
+            return backend
+    return None
+
+
 def main(model_path: str, top_k: int, prompts: list[str]) -> int:
+    if top_k < 1:
+        print(json.dumps({"state": "CONTRACT_INVALID", "reason": "top_k must be >= 1"}))
+        return 0
+    if not prompts:
+        print(json.dumps({"state": "CONTRACT_INVALID", "reason": "at least one prompt is required"}))
+        return 0
+
     try:
         import torch
         import transformers
@@ -24,12 +58,13 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
         print(json.dumps({"state": "REFERENCE_UNAVAILABLE", "reason": str(error)}))
         return 0
 
-    if torch.cuda.is_available():
+    accelerator = _visible_accelerator(torch)
+    if accelerator:
         print(
             json.dumps(
                 {
                     "state": "REFERENCE_UNAVAILABLE",
-                    "reason": "an accelerator is still visible; the reference must run on CPU",
+                    "reason": f"{accelerator} is still visible; the reference must run on CPU",
                 }
             )
         )
