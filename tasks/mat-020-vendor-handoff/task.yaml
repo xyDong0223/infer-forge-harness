@@ -4,7 +4,7 @@ metadata:
   name: mat-020-vendor-handoff
   family: model_adaptation
   task_type: vendor_handoff
-  version: 0.1.0
+  version: 0.2.0
 spec:
   question: what does the vendor need in order to act on this
   produces: VendorHandoff
@@ -14,10 +14,27 @@ spec:
   # nothing left to fix here, and the deliverable is a package someone else can
   # work from.
   terminal: true
+  # Two forms, because one symbol and one model are different problems. A single
+  # symbol on a binary layer is a ticket. A model that stops against several walls
+  # across several layers is a work package whose items have different owners, and
+  # forcing it into one ticket loses exactly that routing.
+  forms:
+    ticket:
+      consumes: FailureTriage
+      eligible_layers_only: true
+      validator_entry: validate_handoff
+    package:
+      consumes: findings yaml
+      routes_by_layer: true
+      validator_entry: validate_handoff_package
   runs_with: |
     python3 tools/vendor_handoff.py \
       --triage <artifacts>/mat-006/triage_report.json \
       --environment <fingerprint from the environment proof> \
+      --out <artifacts>/mat-020
+
+    python3 tools/vendor_handoff.py \
+      --findings tasks/mat-020-vendor-handoff/<subject>-findings.yaml \
       --out <artifacts>/mat-020
 context:
   input_artifacts:
@@ -26,17 +43,41 @@ context:
     # Only layers that ship as binaries. A plugin defect is our work.
     - kunlun_ops_vendor
     - torch_xmlir_vendor
+  owners:
+    # Routing, in the package form. The layer decides the owner; the owner decides
+    # who reads the item, and a wrong owner sends the work to someone who cannot do it.
+    us: [vllm_upstream, vllm_kunlun_plugin]
+    upstream: [vllm_upstream]
+    vendor: [kunlun_ops_vendor, torch_xmlir_vendor]
 actions:
   - check_layer_is_not_ours
   - assemble_reproduction
   - state_isolation_result
   - list_what_was_ruled_out
+  - route_findings_by_owner
 checks:
   isolation_statement_required: true
   # The failure this exists to prevent: a ticket that reads as standalone
   # reproducible when it is not. The vendor tries the arguments directly, they
   # pass, and the ticket is closed with the real problem untouched.
   never_imply_standalone_reproduction_when_absent: true
+  # The package form's opposite failure: a work list that reads as a finished
+  # adaptation with follow-ups. So it must say where the run stopped, must not
+  # claim the subject serves, must label stand-ins as stand-ins, and must keep
+  # predicted work distinguishable from measured work.
+  package:
+    require_subject_status: true
+    forbid_claiming_the_subject_serves: true
+    label_stand_ins: true
+    kinds: [observed_failure, unreached_dependency]
+    # An item nobody reached has no error to quote. A predicted symptom written as
+    # an observed one is what makes the whole list untrustworthy.
+    forbid_error_text_on_unreached: true
+    require_site_with_line: true
+    # A fix without an acceptance test is a suggestion, so every item names what a
+    # fix is checked against — normally a MAT-008 style off-accelerator reference.
+    require_verified_against: true
+    require_generality_when_filed_upstream: true
 acceptance:
   require_environment_fingerprint: true
   require_ruled_out: true
@@ -44,6 +85,8 @@ acceptance:
 artifacts:
   - vendor_ticket.json
   - vendor_ticket.md
+  - handoff_package.json
+  - handoff_package.md
   - handoff_status.json
 exit_states:
   pass: HANDOFF_READY
