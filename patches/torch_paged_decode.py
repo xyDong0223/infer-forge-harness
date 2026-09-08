@@ -12,12 +12,14 @@ onto their KV head, softmax in float32, and masking by each request's context
 length. The layout is vLLM-Kunlun's own paged cache,
 `(num_blocks, num_kv_heads, block_size, head_size)`.
 
-Model coverage is deliberately narrow and enforced rather than assumed: sliding
-windows, attention sinks and speculative decode raise `UnsupportedDecode` so the
-caller keeps the vendor kernel instead of getting a quietly different result.
-Plain MHA/GQA models with a paged cache — Qwen3, Llama-style, most dense decoders
-— are covered. MLA models are not: they use a different cache layout and their own
-kernel family.
+Model coverage is deliberately narrow and enforced rather than assumed: attention
+sinks and speculative decode raise `UnsupportedDecode` so the caller keeps the
+vendor kernel instead of getting a quietly different result. Plain MHA/GQA models
+with a paged cache — Qwen3, Llama-style, most dense decoders — are covered, as are
+sliding-window models: `max_window_size` masks every position older than the last
+`window` tokens, matching how the backend passes `swa_left=sliding_window,
+swa_right=0` on the prefill side. MLA models are not: they use a different cache
+layout and their own kernel family.
 
 Install into a running pod with `tools/apply_torch_decode_patch.py`; select at
 runtime with `KDP_DECODE_KERNEL=torch|decode_paged|speculative`, which keeps the
@@ -26,6 +28,14 @@ failing vendor path one environment variable away for reproduction.
 Known limitation: the attention span is derived from the batch's real length, so
 this is shape-dynamic and cannot be captured in a FULL CUDA graph. Run with
 `--enforce-eager`, or make the span static before enabling capture.
+
+Measured 2026-09-08, and it changes what "fallback" means for windowed models:
+`kunlun_ops.speculative_attention` **ignores** `max_window_size`. At block_size
+16/64, context 96/512/1024 and window 8/32/128/256 its output matches an
+*unwindowed* float32 reference to bfloat16 precision (relative L2 0.0017) and sits
+0.80 away from the windowed one. For a sliding-window model this file is therefore
+the correct implementation and the vendor kernel is the wrong one — see MAT-008's
+msa dimension for the evidence.
 """
 
 from __future__ import annotations
@@ -44,15 +54,38 @@ class UnsupportedDecode(NotImplementedError):
     any model that uses them — a sliding-window model would attend to the whole
     context and a sink model would lose its sink. Refusing is the only honest
     behaviour: the caller then keeps the vendor kernel, which does implement them.
+
+    The window half is now implemented and checked against the vendor kernel by
+    MAT-008's msa dimension. Sinks are still refused: `sink` is a per-head logit
+    that joins the softmax denominator, and there is no sink model on this cluster
+    to check an implementation against.
     """
+
+
+def window_mask(positions: torch.Tensor, lens: torch.Tensor, window: int) -> torch.Tensor:
+    """True where a key position must not be attended to.
+
+    Two rules, and the second is the sliding window: a position is invalid if it is
+    at or beyond the request's context length, or if it is older than the last
+    `window` tokens. `window` counts the attended tokens inclusive of the current
+    one, which is how the backend uses `sliding_window` — it passes the config value
+    straight through as `max_window_size` with no off-by-one adjustment, unlike
+    flash-attn's `(sliding_window - 1, 0)`.
+    """
+    invalid = positions[None, :] >= lens[:, None]
+    if window >= 0:
+        invalid = invalid | (positions[None, :] < (lens[:, None] - window))
+    return invalid
 
 
 def torch_paged_decode(**kwargs: object) -> int:
     """Drop-in replacement for the qlen==1 branch of `speculative_attention`."""
-    window = kwargs.get("max_window_size", -1)
-    if window is not None and int(window) >= 0:  # type: ignore[arg-type]
+    window_arg = kwargs.get("max_window_size", -1)
+    window = -1 if window_arg is None else int(window_arg)  # type: ignore[arg-type]
+    if window == 0:
         raise UnsupportedDecode(
-            f"sliding window {window} is not implemented here; keep the vendor kernel"
+            "max_window_size=0 would attend to nothing; the vendor kernel owns whatever it "
+            "means by that"
         )
     if kwargs.get("sink") is not None:
         raise UnsupportedDecode("attention sinks are not implemented here; keep the vendor kernel")
@@ -85,7 +118,6 @@ def torch_paged_decode(**kwargs: object) -> int:
     lens = lens.clamp(max=max_len)
     used_blocks = max(1, (max_len + block_size - 1) // block_size)
     span = used_blocks * block_size
-
     query = query_in.reshape(tokens, heads, dim)
     positions = torch.arange(span, device=out.device)
     chunk = max(1, min(tokens, GATHER_BUDGET_ELEMENTS // max(1, kv_heads * span * dim)))
@@ -98,7 +130,10 @@ def torch_paged_decode(**kwargs: object) -> int:
         values = v_cache[index].permute(0, 2, 1, 3, 4).reshape(rows, kv_heads, span, dim)
         grouped = query[start:stop].reshape(rows, kv_heads, group, dim).to(torch.float32)
         scores = torch.einsum("rkgd,rkld->rkgl", grouped, keys.to(torch.float32)) * scale
-        invalid = positions[None, :] >= lens[start:stop, None]
+        # The window narrows what is attended to, not what is gathered: with paged
+        # blocks and a different context length per request the live block subset
+        # differs per row, so masking a full-span gather is the cheap correct thing.
+        invalid = window_mask(positions, lens[start:stop], window)
         scores = scores.masked_fill(invalid[:, None, None, :], float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         # A zero-length row is all -inf and softmaxes to NaN; warmup uses such rows.
