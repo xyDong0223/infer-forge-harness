@@ -50,6 +50,7 @@ PROBES: dict[str, str] = {
     "moe": "tools/probe/moe_layer_probe.py",
     "block_sparse": "tools/probe/block_sparse_attention_probe.py",
     "fused_qknorm_rope_insert": "tools/probe/m3_qknorm_rope_insert_probe.py",
+    "swiglu_oai": "tools/probe/swiglu_oai_probe.py",
 }
 
 # Files a probe needs next to it in the pod. The msa probe grades the patch we
@@ -236,6 +237,16 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--block-size", str(geometry["block_size"]),
             "--blocks", str(geometry["blocks"]),
             "--tokens", str(geometry["tokens"]),
+        ] + common
+    if dimension == "swiglu_oai":
+        geometry = thresholds["geometry"]
+        return [
+            "--tokens", str(geometry["tokens"]),
+            "--intermediate", str(geometry["intermediate"]),
+            "--limit", str(geometry["limit"]),
+            "--alpha", str(geometry["alpha"]),
+            "--beta", str(geometry["beta"]),
+            "--input-scale", str(geometry["input_scale"]),
         ] + common
     raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
 
