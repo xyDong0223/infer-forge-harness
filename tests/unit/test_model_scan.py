@@ -39,6 +39,94 @@ SCAN = {
 }
 
 
+class BackendVariantTest(unittest.TestCase):
+    """The check added after MiniMax-M3, with the measured M3 answer as the fixture.
+
+    Four launches found the same three items this reports in seconds, one wall at a
+    time, so the rule that matters is the one forbidding UPSTREAM_GENERIC when the
+    selected variant cannot run.
+    """
+
+    # Measured in dongxinyu03-vllm-kunlun-dev, installed vLLM 0.25.1.
+    M3_VARIANT = {
+        "inspected": True,
+        "registry_module": "vllm.models.minimax_m3",
+        "backend_variants_present": ["amd", "nvidia"],
+        "vendored_per_backend": True,
+        "selected_variant": "nvidia",
+        "variant_hard_dependencies": {
+            "unimportable_modules": [
+                {"module": "flashinfer", "error": "ModuleNotFoundError: No module named 'flashinfer'"},
+                {"module": "fmha_sm100", "error": "ModuleNotFoundError: No module named 'fmha_sm100'"},
+            ],
+            "unregistered_custom_ops": ["fused_minimax_m3_qknorm_rope_kv_insert"],
+        },
+        "variant_is_runnable_here": False,
+    }
+
+    def setUp(self) -> None:
+        import yaml
+
+        self.contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+        self.scan = copy.deepcopy(SCAN)
+        entry = self.scan["results"][0]
+        entry.update(
+            architecture="MiniMaxM3SparseForConditionalGeneration",
+            verdict="UPSTREAM_VENDORED_VARIANT",
+            meaning="the variant selected here was written for other hardware",
+            backend_variant=copy.deepcopy(self.M3_VARIANT),
+        )
+
+    def test_the_measured_m3_verdict_passes(self):
+        self.assertEqual(validate_support_card(self.scan, self.contract), [])
+
+    def test_generic_is_rejected_when_the_selected_variant_cannot_run(self):
+        """The exact misclassification that sent M3 to deployment."""
+        self.scan["results"][0]["verdict"] = "UPSTREAM_GENERIC"
+        errors = validate_support_card(self.scan, self.contract)
+        self.assertTrue(any("sends the flow to deployment" in error for error in errors), errors)
+
+    def test_the_verdict_must_name_the_selected_variant(self):
+        self.scan["results"][0]["backend_variant"].pop("selected_variant")
+        errors = validate_support_card(self.scan, self.contract)
+        self.assertTrue(any("must name the variant" in error for error in errors), errors)
+
+    def test_one_variant_is_not_vendoring(self):
+        self.scan["results"][0]["backend_variant"]["backend_variants_present"] = ["nvidia"]
+        errors = validate_support_card(self.scan, self.contract)
+        self.assertTrue(any("more than one variant" in error for error in errors), errors)
+
+    def test_the_verdict_must_list_what_is_missing(self):
+        self.scan["results"][0]["backend_variant"]["variant_hard_dependencies"] = {
+            "unimportable_modules": [],
+            "unregistered_custom_ops": [],
+        }
+        errors = validate_support_card(self.scan, self.contract)
+        self.assertTrue(any("must list the dependencies" in error for error in errors), errors)
+
+    def test_a_single_implementation_stays_generic(self):
+        """Negative control: Qwen3 is not vendored, and nothing changes for it."""
+        entry = self.scan["results"][0]
+        entry.update(
+            architecture="Qwen3ForCausalLM",
+            verdict="UPSTREAM_GENERIC",
+            backend_variant={
+                "inspected": True,
+                "registry_module": "vllm.model_executor.models.qwen3",
+                "backend_variants_present": [],
+                "vendored_per_backend": False,
+            },
+        )
+        self.assertEqual(validate_support_card(self.scan, self.contract), [])
+
+    def test_the_card_shows_the_variant_and_what_is_missing(self):
+        card = render_card(self.scan, {"model": {"id": "MiniMaxAI/MiniMax-M3"}}, "pod")
+        self.assertIn("this platform selects `nvidia`", card)
+        self.assertIn("missing module `flashinfer`", card)
+        self.assertIn("unregistered custom op `fused_minimax_m3_qknorm_rope_kv_insert`", card)
+        self.assertIn("cannot find code that is present and wrong", card)
+
+
 class ScanValidatorTest(unittest.TestCase):
     def setUp(self) -> None:
         import yaml

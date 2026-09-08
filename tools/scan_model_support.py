@@ -78,6 +78,26 @@ def render_card(scan: dict, request: dict, pod: str) -> str:
     if pending:
         lines += ["", "## Open upstream pull requests", ""]
         lines += [f"- #{pr['number']} {pr['title']} — {pr['url']}" for pr in pending]
+    vendored = [
+        entry for entry in scan.get("results", [])
+        if (entry.get("backend_variant") or {}).get("vendored_per_backend") is True
+    ]
+    if vendored:
+        lines += ["", "## Per-backend variants", ""]
+        for entry in vendored:
+            variant = entry["backend_variant"]
+            lines.append(
+                f"- {entry['architecture']}: upstream ships "
+                f"{', '.join(variant.get('backend_variants_present') or [])}; this platform selects "
+                f"`{variant.get('selected_variant')}`"
+            )
+            dependencies = variant.get("variant_hard_dependencies") or {}
+            for item in dependencies.get("unimportable_modules") or []:
+                lines.append(f"  - missing module `{item['module']}` — {item['error']}")
+            for name in dependencies.get("unregistered_custom_ops") or []:
+                lines.append(f"  - unregistered custom op `{name}`")
+            if variant.get("selection_error"):
+                lines.append(f"  - the selection itself fails here: {variant['selection_error']}")
     lines += [
         "",
         "## Limitations",
@@ -87,6 +107,9 @@ def render_card(scan: dict, request: dict, pod: str) -> str:
         "- `UPSTREAM_GENERIC` is not a gap. A failure on that path belongs to the operator or",
         "  attention backend, and classifying it as missing networking sends the next Task to",
         "  write a model file that already exists.",
+        "- The variant scan finds absent things — imports that do not import, ops that are not",
+        "  registered. It cannot find code that is present and wrong for this hardware, such as a",
+        "  triton kernel that imports cleanly and then has no execution path here.",
     ]
     return "\n".join(lines) + "\n"
 
