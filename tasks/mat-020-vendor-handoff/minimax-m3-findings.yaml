@@ -1,0 +1,181 @@
+# MiniMax-M3 on Kunlunxin-3 P800: the walls, and who owns each one.
+#
+# Every site below was read out of the installed runtime
+# (/opt/vllm_kunlun/lib/python3.10/site-packages/vllm), not out of a checkout, because
+# vLLM-Kunlun can override models four different ways and a repository and an
+# installation can disagree about what actually runs.
+#
+# Findings 01-03 and 06 were observed on hardware. 04 and 05 were never reached: they
+# are named because the code path is read, not because a failure was seen, and the
+# schema keeps that difference visible.
+subject: MiniMax-M3
+subject_status:
+  serves_requests: false
+  stopped_at: >-
+    vllm/models/minimax_m3/nvidia/model.py:597, MiniMaxM3SparseAttention.forward, on the
+    fourth launch. Weight loading (59 shards, 402 GB), the dummy run and KV cache
+    allocation all completed first: 36.63 GiB available KV cache, 867,968 tokens.
+  reached_with: >-
+    three probe-only stand-ins on PYTHONPATH (torch gemma norm, a dense-branch
+    fused_minimax_m3_qknorm_rope_kv_insert, and a bind_kv_cache copy). None of them is a
+    fix; two are numerically fine only for the branch they cover.
+environment_fingerprint: >-
+  Kunlunxin-3 P800 x8, vLLM-Kunlun v0.25.1-dev, torch_xmlir, TP=8, bf16, block-size 128,
+  max-model-len 32768, --enforce-eager, MTP off, --limit-mm-per-prompt '{"image":0,"video":0}',
+  weights /mnt/cluster/MiniMax-M3-W8A8-INT8-Dynamic (MiniMaxM3SparseForConditionalGeneration)
+ruled_out:
+  - not a registry gap — MiniMaxM3SparseForConditionalGeneration resolves in the installed
+    vLLM, so MAT-002 returns UPSTREAM_GENERIC and no model file has to be written
+  - not a weight or quantisation problem — all 59 shards load and the W8A8 linear path is
+    exercised against an off-accelerator reference in MAT-008 (relative L2 gate)
+  - not a memory problem — KV cache initialisation completes with 36.63 GiB for 867,968 tokens
+  - not MTP or multimodal — both were disabled for every launch
+findings:
+  - id: M3-01
+    symbol: flashinfer.norm.gemma_rmsnorm / gemma_fused_add_rmsnorm
+    layer: vllm_upstream
+    owner: us
+    kind: observed_failure
+    site: vllm/models/minimax_m3/nvidia/model.py:134
+    error_text: "ModuleNotFoundError: No module named 'flashinfer'"
+    reproduces_in_isolation: true
+    cause: >-
+      config sets use_gemma_norm, and the nvidia variant imports the kernel from flashinfer
+      directly instead of going through CustomOp. This is the only flashinfer use in that
+      variant.
+    minimal_fix: >-
+      route through CustomOp. The capability is already present on this platform: the plugin
+      registers KunlunGemmaRMSNorm via CustomOp.register_oot (logged at
+      vllm_kunlun/.../layernorm.py:181). A direct module import cannot be dispatched, so the
+      fix is an xpu variant of this file, or an upstream change from a hard import to CustomOp.
+    verified_against: >-
+      out = x * rstd * (1.0 + w) computed in fp32 off the accelerator; relative L2 under the
+      MAT-008 gate. Cosine alone is not sufficient here.
+    stand_in: patches/m3_flashinfer_norm_probe.py
+    stand_in_is_not_a_fix: true
+
+  - id: M3-02
+    symbol: _C::fused_minimax_m3_qknorm_rope_kv_insert
+    layer: vllm_upstream
+    owner: us
+    kind: observed_failure
+    site: vllm/models/minimax_m3/nvidia/model.py:370
+    error_text: >-
+      AttributeError: '_OpNamespace' '_C' object has no attribute
+      'fused_minimax_m3_qknorm_rope_kv_insert'
+    reproduces_in_isolation: true
+    also_called_at:
+      - vllm/models/minimax_m3/nvidia/model.py:597
+      - vllm/_custom_ops.py:2465 (wrapper), vllm/_custom_ops.py:2508 (the torch.ops call)
+    cause: >-
+      the single vLLM custom op the M3 nvidia variant depends on. It fuses per-head q/k
+      RMSNorm, RoPE, and the KV cache insert, and it has no Kunlun registration.
+    minimal_fix: >-
+      register the same schema out of tree in the plugin, composed from
+      kunlun_ops.fused_speculative_norm_rope plus rotary plus the cache insert. Three branches
+      have to be covered, not one: dense, paged KV insert, and the lightning-index cache.
+    verified_against: >-
+      each branch against a torch implementation of the same three steps, relative L2 per
+      branch; the paged branch additionally has to be read back out of the cache.
+    stand_in: patches/m3_fused_qknorm_rope_probe.py
+    stand_in_is_not_a_fix: true
+
+  - id: M3-03
+    symbol: vllm.v1.worker.utils.bind_kv_cache
+    layer: vllm_upstream
+    owner: upstream
+    kind: observed_failure
+    site: vllm/v1/worker/utils.py:462
+    error_text: "NotImplementedError"
+    reproduces_in_isolation: false
+    predicate_at: vllm/v1/worker/utils.py:487-491, raise at vllm/v1/worker/utils.py:512
+    cause: >-
+      M3's sparse layers own two caches in one decoder layer (paged K/V plus the lightning
+      indexer's index cache), so the function takes its "several attention layers share a
+      layer_index" branch. That branch is allowed only for is_cuda_alike() or is_xpu() or
+      is_cpu(). Measured on this platform: device_type is "cuda" but is_cuda_alike(),
+      is_cuda(), is_rocm(), is_xpu() and is_cpu() are all False, while is_out_of_tree() is True.
+    generality: >-
+      not Kunlun-specific and not M3-specific. Any out-of-tree platform running the GPU model
+      runner hits it for any model with two attention-like caches in one layer — upstream's own
+      comment names encoder-decoder models such as bart, and MLA-plus-indexer models qualify
+      too. An out-of-tree platform on the GPU runner is in exactly the position the whitelist
+      already accepts.
+    minimal_fix: "add `or current_platform.is_out_of_tree()` to the whitelist at utils.py:487-491"
+    verified_against: >-
+      KV cache initialisation completes on an out-of-tree platform. Measured with the one-line
+      change in place: 36.63 GiB available KV cache, 867,968 tokens.
+    stand_in: patches/m3_bind_kv_cache_probe.py
+    stand_in_is_not_a_fix: true
+    file_separately: true
+
+  - id: M3-04
+    symbol: MSA sparse attention and lightning-index top-k
+    layer: vllm_upstream
+    owner: us
+    kind: unreached_dependency
+    site: vllm/models/minimax_m3/common/ops/sparse_attn.py:1
+    blocked_by: M3-02, whose paged and index branches the stand-in deliberately refuses
+    cause: >-
+      nvidia and amd share one triton implementation (common/ops/sparse_attn.py and
+      common/ops/index_topk.py). Triton is not the execution path here.
+    finding: >-
+      this is a binding job, not kernel authoring. The vendor library already ships all three
+      kernels on this build, confirmed by import: kunlun_ops.msa_block_score,
+      kunlun_ops.msa_block_score_topk_transform, kunlun_ops.msa_sparse_attention. Their
+      signatures are paged and lod-based (block_tables, lod_seqlens_q/kv on cpu and xpu,
+      page_block_size, topk_idx, optional sink), so the work is shape and layout adaptation
+      plus the index cache layout, not new kernels.
+    minimal_fix: >-
+      an xpu variant of the M3 attention path that calls the three kunlun_ops kernels in place
+      of the triton ones, with the index cache written by M3-02's index branch. Config to
+      honour: block 128, top-k 16 blocks, 4 index heads, score max, first 3 layers dense.
+    verified_against: >-
+      the triton reference is unavailable here, so the reference is a torch block-score plus
+      top-k plus masked attention computed off the accelerator, per MAT-008: block selection
+      compared as a set (ties counted and excluded, as the MoE dimension already does) and the
+      attention output on relative L2.
+
+  - id: M3-05
+    symbol: swiglu_oai
+    layer: vllm_upstream
+    owner: us
+    kind: unreached_dependency
+    site: vllm/models/minimax_m3/nvidia/model.py:134
+    blocked_by: M3-04, which sits earlier in the same decoder layer
+    cause: M3's MLP uses the OAI swiglu variant (alpha and a clamp limit), not plain swiglu.
+    finding: >-
+      confirmed absent on this build: kunlun_ops exposes swiglu, swiglu_bias, swiglu_ep,
+      swiglu_ffn_block, swiglu_unt and swiglustep, and no symbol containing "oai". Earlier
+      notes assumed swigluoai_and_mul existed; it does not.
+    minimal_fix: >-
+      compose it in the plugin from the clamp plus the existing swiglu rather than asking for a
+      kernel: the difference is an alpha scale and a limit clamp on the gate.
+    verified_against: >-
+      torch reference of the clamped variant off the accelerator, relative L2; a control that
+      omits the clamp has to miss the gate, otherwise the check proves nothing.
+
+  - id: M3-06
+    symbol: kunlun_ops.moe_sigmoid_group_topk_norm
+    layer: vllm_kunlun_plugin
+    owner: us
+    kind: observed_failure
+    site: vllm_kunlun/ops/_kunlun_ops.py:426
+    error_text: >-
+      TypeError: moe_sigmoid_group_topk_norm() got an unexpected keyword argument 'block_static'
+    reproduces_in_isolation: true
+    also_called_at:
+      - vllm_kunlun/quantization/compressed_tensors/compressed_tensors_moe.py:193
+      - vllm_kunlun/ops/_custom_ops.py:1366
+      - vllm_kunlun/ops/_custom_ops.py:1389
+    cause: >-
+      the caller passes block_static; the vendor binding's parameter is block_statistic. The
+      sigmoid-routed MoE path is therefore dead on this build, quantised or not.
+    minimal_fix: rename the keyword at the four call sites to block_statistic
+    verified_against: >-
+      already exercised. The MAT-008 moe dimension reaches EXERCISED_PASS against an
+      off-accelerator reference by calling moe_sigmoid_group_topk_norm directly with the
+      correct keyword, at 16 and 512 tokens (either side of the 768 preprocessing switch).
+    note: >-
+      M3 routes sigmoid with bias and is int8, so it reaches this path through
+      compressed_tensors_moe.py:193 once M3-04 is done.
