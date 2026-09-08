@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
-VERDICTS = {"KUNLUN_OOT", "UPSTREAM_GENERIC", "MAIN_ONLY", "PR_PENDING", "ABSENT", "UNKNOWN_UPSTREAM"}
+VERDICTS = {
+    "KUNLUN_OOT",
+    "UPSTREAM_GENERIC",
+    "UPSTREAM_VENDORED_VARIANT",
+    "MAIN_ONLY",
+    "PR_PENDING",
+    "ABSENT",
+    "UNKNOWN_UPSTREAM",
+}
 # An ABSENT verdict is only credible when both upstream lookups actually ran.
 ABSENT_EVIDENCE = {"main_lookup": "NOT_FOUND", "pr_lookup": "NOT_FOUND"}
 
@@ -48,6 +56,30 @@ def validate_support_card(scan: dict[str, Any], contract: dict[str, Any]) -> lis
             errors.append(f"{arch}: KUNLUN_OOT claimed but the installed registry does not list it")
         if verdict == "UPSTREAM_GENERIC" and not entry.get("in_installed_vllm"):
             errors.append(f"{arch}: UPSTREAM_GENERIC claimed but the installed vLLM does not know it")
+        if verdict == "UPSTREAM_GENERIC":
+            variant = entry.get("backend_variant") or {}
+            # The M3 lesson: "resolves" was read as "is implemented for us", and the four
+            # walls that followed were all in a variant written for other hardware.
+            if variant.get("vendored_per_backend") is True and variant.get("variant_is_runnable_here") is False:
+                errors.append(
+                    f"{arch}: UPSTREAM_GENERIC claimed while the selected variant "
+                    f"{variant.get('selected_variant')!r} has unmet hard dependencies; that is "
+                    "UPSTREAM_VENDORED_VARIANT, and calling it generic sends the flow to deployment"
+                )
+        if verdict == "UPSTREAM_VENDORED_VARIANT":
+            variant = entry.get("backend_variant") or {}
+            if not variant.get("selected_variant"):
+                errors.append(f"{arch}: this verdict must name the variant that was selected")
+            if len(variant.get("backend_variants_present") or []) < 2:
+                errors.append(
+                    f"{arch}: vendoring means more than one variant exists; one is just an implementation"
+                )
+            dependencies = variant.get("variant_hard_dependencies") or {}
+            if not (dependencies.get("unimportable_modules") or dependencies.get("unregistered_custom_ops")):
+                errors.append(
+                    f"{arch}: this verdict must list the dependencies that are missing, or the next "
+                    "Task has nothing to act on"
+                )
 
     if acceptance.get("require_installed_registry_evidence"):
         for entry in results:

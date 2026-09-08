@@ -4,9 +4,9 @@ metadata:
   name: mat-002-model-scan
   family: model_adaptation
   task_type: model_scan
-  version: 0.2.0
+  version: 0.3.0
 spec:
-  question: which implementation will actually run this architecture, and if none, where does one exist
+  question: which implementation will actually run this architecture on this hardware, and if none, where does one exist
   produces: ModelSupportCard
   # The pod comes from the environment proof, the identity from intake. This Task
   # creates nothing and needs no launch parameter.
@@ -46,14 +46,29 @@ actions:
   - package_support_card
 checks:
   verdicts:
-    # Five answers, not two. An architecture missing from the Kunlun registry is
+    # Six answers, not two. An architecture missing from the Kunlun registry is
     # usually not a gap — the upstream generic implementation is used, and a
-    # failure then belongs to an operator, not to networking.
+    # failure then belongs to an operator, not to networking. But "resolves" is
+    # also not "implemented for us": upstream ships some models once per
+    # accelerator, and the variant selected here can be written for other hardware.
     - KUNLUN_OOT
     - UPSTREAM_GENERIC
+    - UPSTREAM_VENDORED_VARIANT
     - MAIN_ONLY
     - PR_PENDING
     - ABSENT
+  backend_variant:
+    # Added after MiniMax-M3, where the scan said the architecture resolves and the
+    # flow went to deployment, then hit four walls one launch at a time — all of
+    # them inside vllm/models/minimax_m3/nvidia, selected because vLLM-Kunlun
+    # answers False to every platform predicate upstream tests.
+    inspect: the module the registry actually resolves to
+    record:
+      - whether sibling per-backend variants exist
+      - which variant this platform selects
+      - that variant's imports that do not import here
+      - that variant's custom ops that are not registered here
+    verdict_when_unmet: UPSTREAM_VENDORED_VARIANT
   unreachable_upstream:
     # Absence can only be concluded from lookups that ran.
     verdict: UNKNOWN_UPSTREAM
