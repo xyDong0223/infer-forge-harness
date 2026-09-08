@@ -1,0 +1,116 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-008-capability-evaluation
+  family: model_adaptation
+  task_type: capability_evaluation
+  version: 0.1.0
+spec:
+  question: does the capability actually run on this hardware, and are its numbers right
+  produces: CapabilityEvaluation
+  consumes: [CapabilityMatch, EnvironmentProof]
+  # MAT-003 can only grade static evidence, and its top grade is not support:
+  # Qwen3-8B matched every axis and still died in a decode kernel. This Task adds
+  # the tier above REGISTRY — EXERCISED — by running the capability and comparing
+  # it to a reference that does not share the accelerator.
+  parameterized_by: dimension
+  fan_out: |
+    python3 tools/evaluate_capability.py --list-dimensions \
+      --capability-match <artifacts>/mat-003/capability_match.json
+  runs_with: |
+    python3 tools/evaluate_capability.py --dimension <dimension> --subject <subject> \
+      --pod <pod> --model-path <weights> --out <artifacts>/mat-008/<dimension>
+  fan_in: |
+    python3 tools/evaluate_capability.py --aggregate --out <artifacts>/mat-008 \
+      --child <artifacts>/mat-008/<dimension> ...
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+  # One contract, four dimensions. The method does not change per dimension —
+  # smallest unit that still carries the convention risk, the operators the serving
+  # path uses, a float32 reference off the accelerator, and a control — so four
+  # near-identical contracts would only drift apart.
+  dimensions_declared: [quantization, msa, moe, multimodal]
+execution:
+  mode: execute
+  tool: tools/evaluate_capability.py
+  probes:
+    quantization: tools/probe/quantized_linear_probe.py
+  reference:
+    implementation: torch
+    device: cpu
+    dtype: float32
+    must_not_see_accelerator: true
+actions:
+  - select_dimensions_from_capability_match
+  - exercise_dimension
+  - compare_against_float32_reference
+  - run_negative_control
+  - aggregate_dimensions
+checks:
+  method:
+    unit: the smallest unit that still carries the convention risk, not a whole model
+    require_negative_control: true
+    # Learned the hard way: cosine similarity is invariant to a uniform per-channel
+    # factor, which is exactly what the W8A8 scale-to-max conversion is. The wrong
+    # answer scored 0.9999999. Magnitude has to be in the gate.
+    gate_metric: relative_l2
+    forbid_cosine_only_gate: true
+  dimensions:
+    quantization:
+      # W8A8 int8, per-channel weights, per-token dynamic activations. The line under
+      # test is quantization/kernels/scale_mm.py:50 `w_s.mul_(127.0)`: upstream
+      # compressed-tensors stores a scale, the Kunlun matmul wants a max. Omitting it
+      # is the negative control.
+      operators: [_C::scaled_int8_quant, _C::matmul]
+      tensor: model.layers.0.self_attn.q_proj
+      tokens: 17
+      min_cosine: 0.9999
+      # The reference reuses the candidate's own quantized activations, so what is
+      # left is bfloat16 output rounding and accumulation order — measured at 0.0017
+      # on P800, gated at 0.01.
+      max_relative_l2: 0.01
+      control: pass w_pc_max=w_s, i.e. without the scale-to-max conversion
+    msa:
+      operators: [kunlun_ops.decode_paged_attention]
+      # Sliding window is not a separate operator on this platform: 413 symbols in
+      # kunlun_ops contain no window match. It is a parameter — swa_left/swa_right in
+      # prefill, max_window_size in decode — so the work is window semantics in the
+      # torch reference, not a new kernel.
+      min_cosine: 0.9999
+      max_relative_l2: 0.01
+    moe:
+      # TP first; EP is a Python per-expert loop and a later addition.
+      operators: [kunlun_ops.moe_fc, kunlun_ops.moe_align_block_size]
+      min_cosine: 0.9999
+      max_relative_l2: 0.02
+    multimodal:
+      operators: []
+      min_cosine: 0.9999
+      max_relative_l2: 0.02
+acceptance:
+  require_threshold_source: true
+  require_negative_control: true
+  # A dimension nobody ran must not read as one that passed.
+  forbid_unimplemented_as_exercised: true
+artifacts:
+  - capability_evaluation.json
+  - capability_evaluation_table.md
+  - evaluation_status.json
+exit_states:
+  pass: EVALUATION_PASS
+  partial: EVALUATION_PARTIAL
+  fail: EVALUATION_FAIL
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/evaluation_validator.py:validate_evaluation
+limitations:
+  - EXERCISED covers one layer under one shape. It says the operators compute the
+    right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
+    that claim.
+  - Only the quantization dimension has a probe. msa, moe and multimodal report
+    EVALUATION_UNIMPLEMENTED, which is a fact about this repo and not a verdict about
+    the platform.
+  - The quantization weights may differ from the subject's. A dense bf16 model has no
+    quantized layer to exercise, so the dimension is only selected when the
+    CapabilityMatch says the model demands it.
