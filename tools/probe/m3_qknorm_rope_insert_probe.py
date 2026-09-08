@@ -69,13 +69,16 @@ def reference(module, qkv, weights, cos, sin, shape: dict, rope: bool):
     }
 
 
-def read_back(cache, which: int, slot_mapping, block_size: int):
+def read_back(cache, which: int, slot_mapping, block_size: int, head_major: bool = True):
     """Gather what is actually in the cache at the slots that were written."""
     import torch
 
     target = cache[which] if cache.dim() == 5 else cache
     flat = slot_mapping.view(-1).to(torch.long)
-    rows = [target[slot // block_size, :, slot % block_size, :] for slot in flat.tolist()]
+    if head_major:
+        rows = [target[slot // block_size, :, slot % block_size, :] for slot in flat.tolist()]
+    else:
+        rows = [target[slot // block_size, slot % block_size, :, :] for slot in flat.tolist()]
     return torch.stack(rows)
 
 
@@ -94,6 +97,9 @@ def main() -> int:
     parser.add_argument("--blocks", type=int, default=8)
     parser.add_argument("--tokens", type=int, default=7)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cache-layout", choices=("bhld", "blhd"), default="bhld",
+                        help="bhld is vllm_kunlun/ops/paged_attn.py:43; blhd is what M3's "
+                             "own spec allocates, and the fifth launch proved both occur")
     parser.add_argument("--seed", type=int, default=20260908)
     parser.add_argument("--cosine-floor", type=float, default=0.9999)
     parser.add_argument("--max-relative-l2", type=float, default=0.01)
@@ -115,7 +121,7 @@ def main() -> int:
         "operators": ["_C::fused_minimax_m3_qknorm_rope_kv_insert (torch stand-in)"],
         "geometry": {**shape, "block_size": args.block_size, "blocks": args.blocks,
                      "tokens": args.tokens, "layer": "sparse (num_index_heads > 0)"},
-        "cache_layout": "(2, num_blocks, num_kv_heads, block_size, head_size)",
+        "cache_layout": args.cache_layout,
         "thresholds": {"min_cosine": args.cosine_floor,
                        "max_relative_l2": args.max_relative_l2},
         "gate": "relative_l2 of every branch, and of what the caches actually contain",
@@ -133,10 +139,15 @@ def main() -> int:
     cos_sin_cache = torch.randn((args.tokens + 8, args.rotary_dim), dtype=dtype, device=device)
     cos, sin = cos_sin_cache.index_select(0, positions).to(torch.float32).chunk(2, dim=-1)
 
-    kv_cache = torch.zeros((2, args.blocks, args.kv_heads, args.block_size, head_dim),
-                           dtype=dtype, device=device)
-    index_cache = torch.zeros((2, args.blocks, 1, args.block_size, index_dim),
-                              dtype=dtype, device=device)
+    head_major = args.cache_layout == "bhld"
+    if head_major:
+        kv_shape = (2, args.blocks, args.kv_heads, args.block_size, head_dim)
+        index_shape = (2, args.blocks, 1, args.block_size, index_dim)
+    else:
+        kv_shape = (2, args.blocks, args.block_size, args.kv_heads, head_dim)
+        index_shape = (2, args.blocks, args.block_size, 1, index_dim)
+    kv_cache = torch.zeros(kv_shape, dtype=dtype, device=device)
+    index_cache = torch.zeros(index_shape, dtype=dtype, device=device)
     # Deliberately not slots 0..N: a probe that writes the identity mapping cannot
     # catch a block/offset swap, which is the mistake this layout invites.
     slot_mapping = torch.tensor(
@@ -170,14 +181,16 @@ def main() -> int:
         {"case": "index_q_out_norm_and_rope", **metrics(index_q_out, expected["index_q"])},
         {"case": "k_cache_readback",
          "reference": "normed and roped k, gathered back from the slots written",
-         **metrics(read_back(kv_cache, 0, slot_mapping, args.block_size), expected["k"])},
+         **metrics(read_back(kv_cache, 0, slot_mapping, args.block_size, head_major),
+                   expected["k"])},
         {"case": "v_cache_readback",
          "reference": "v is inserted unchanged; no norm and no rope on the value",
-         **metrics(read_back(kv_cache, 1, slot_mapping, args.block_size), expected["v"])},
+         **metrics(read_back(kv_cache, 1, slot_mapping, args.block_size, head_major),
+                   expected["v"])},
         {"case": "index_cache_readback",
          "reference": "normed and roped index_k, gathered back from its own slot mapping",
-         **metrics(read_back(index_cache, 0, index_slot_mapping, args.block_size),
-                   expected["index_k"])},
+         **metrics(read_back(index_cache, 0, index_slot_mapping, args.block_size,
+                             head_major), expected["index_k"])},
     ]
     # Nothing may be written outside the slots that were mapped.
     written = {int(slot) for slot in slot_mapping.view(-1).tolist()}
@@ -186,20 +199,22 @@ def main() -> int:
         if slot in written:
             continue
         block, offset = slot // args.block_size, slot % args.block_size
-        stray += int(kv_cache[0, block, :, offset, :].abs().sum().item() != 0.0)
+        lane = (kv_cache[0, block, :, offset, :] if head_major
+                else kv_cache[0, block, offset, :, :])
+        stray += int(lane.abs().sum().item() != 0.0)
     result["cases"].append({"case": "no_writes_outside_the_slot_mapping",
                             "unmapped_slots_touched": stray})
     return decide(args, result, module, original, weights, cos, sin, shape,
-                  kv_cache, slot_mapping, torch)
+                  kv_cache, slot_mapping, torch, head_major)
 
 
 def decide(args, result, module, original, weights, cos, sin, shape,
-           kv_cache, slot_mapping, torch) -> int:
+           kv_cache, slot_mapping, torch, head_major) -> int:
     """The control, then the verdict."""
     # Control: grade the same cache contents against a reference that skips RoPE. If
     # that passes too, the comparison cannot tell whether RoPE ran.
     without_rope = reference(module, original, weights, cos, sin, shape, rope=False)
-    control = metrics(read_back(kv_cache, 0, slot_mapping, args.block_size),
+    control = metrics(read_back(kv_cache, 0, slot_mapping, args.block_size, head_major),
                       without_rope["k"])
     result["control"] = {
         "case": "reference_without_rope",

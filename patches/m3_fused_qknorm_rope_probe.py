@@ -70,26 +70,52 @@ def _slots(slot_mapping: torch.Tensor, block_size: int) -> tuple[torch.Tensor, t
 
 def _insert(cache: torch.Tensor, which: int, values: torch.Tensor,
             slot_mapping: torch.Tensor, block_size: int) -> None:
-    """Scatter [N, heads, dim] into a paged cache by slot.
+    """Scatter [N, heads, dim] into a paged cache by slot, layout detected not assumed.
 
-    The layout is the platform's, not upstream's. vLLM-Kunlun allocates
-    ``(2, num_blocks, num_kv_heads, block_size, head_size)`` — BHLD, key and value
-    split by the leading dimension (`vllm_kunlun/ops/paged_attn.py:43`), which is also
-    exactly what the msa_* kernels read. Upstream M3 instead assumes
-    ``(num_blocks, 2, 128, num_kv_heads, head_dim)``, so the two disagree and the model
-    code is what has to change, not the cache. A 4-D cache (no leading 2) is accepted
-    for the index cache, which only ever stores keys.
+    Measured the hard way. vLLM-Kunlun's own paged attention allocates
+    ``(2, num_blocks, num_kv_heads, block_size, head_size)`` — BHLD
+    (`vllm_kunlun/ops/paged_attn.py:43`), which is also what the msa_* kernels read — so
+    that layout was hardcoded here. The fifth M3 launch then died with `index 127 is out
+    of bounds for dimension 2 with size 1`: M3's caches come out of upstream's own spec
+    as ``(2, num_blocks, block_size, num_kv_heads, head_size)``, BLHD, with block_size
+    before the heads. Both layouts exist in one process, so the layout has to be read
+    off the tensor rather than assumed.
     """
     blocks, offsets = _slots(slot_mapping, block_size)
     target = cache[which] if cache.dim() == 5 else cache
+    if target.dim() == 3:
+        # The index cache, exactly as upstream declares it: [num_blocks, 128, head_dim],
+        # one implicit head and keys only. Measured on the sixth launch as
+        # (6781, 128, 128), which is why this rank is handled rather than refused.
+        if values.shape[1] != 1:
+            raise NotImplementedError(
+                f"a 3-D cache holds one head; got {values.shape[1]}"
+            )
+        stored = values.reshape(values.shape[0], -1).to(target.dtype)
+        for token in range(stored.shape[0]):
+            target[blocks[token], offsets[token], :] = stored[token]
+        return
     if target.dim() != 4:
         raise NotImplementedError(
-            f"unsupported cache rank {tuple(cache.shape)}; expected "
-            "(2, blocks, heads, block_size, dim) or (blocks, heads, block_size, dim)"
+            f"unsupported cache rank {tuple(cache.shape)}; expected 3, 4 or 5 dimensions"
+        )
+    heads = values.shape[1]
+    _, first, second, _ = target.shape
+    if first == heads and second == block_size and heads != block_size:
+        head_major = True
+    elif first == block_size and second == heads and heads != block_size:
+        head_major = False
+    else:
+        raise NotImplementedError(
+            f"cannot tell BHLD from BLHD for {tuple(target.shape)} with {heads} heads and "
+            f"block_size {block_size}; the two are ambiguous when they are equal"
         )
     stored = values.to(target.dtype)
     for token in range(stored.shape[0]):
-        target[blocks[token], :, offsets[token], :] = stored[token]
+        if head_major:
+            target[blocks[token], :, offsets[token], :] = stored[token]
+        else:
+            target[blocks[token], offsets[token], :, :] = stored[token]
 
 
 def fused_minimax_m3_qknorm_rope_kv_insert(
