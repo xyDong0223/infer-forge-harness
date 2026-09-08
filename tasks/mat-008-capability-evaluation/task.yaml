@@ -37,6 +37,7 @@ execution:
   probes:
     quantization: tools/probe/quantized_linear_probe.py
     msa: tools/probe/sliding_window_decode_probe.py
+    moe: tools/probe/moe_layer_probe.py
   reference:
     implementation: torch
     device: cpu
@@ -104,9 +105,31 @@ checks:
       vendor_note: speculative_attention ignores max_window_size at every geometry tested
     moe:
       # TP first; EP is a Python per-expert loop and a later addition.
-      operators: [kunlun_ops.moe_fc, kunlun_ops.moe_align_block_size]
+      operators: [_C::moe_softmax_topk_norm, _C::moe_fc, _C::silu_and_mul, _C::moe_post,
+                  _C::moe_pre_sorted, xspeedgate_ops::moe_pre_small]
+      geometry:
+        # Two batches, one on each side of fused_moe's M*top_k > 768 preprocessing
+        # switch: above it _C::moe_pre_sorted, below it xspeedgate_ops::moe_pre_small.
+        # Two implementations of the same step is two chances to disagree, and nothing
+        # else here checks that they agree.
+        experts: 8
+        hidden: 512
+        intermediate: 256
+        top_k: 2
+        tokens_below: 16
+        tokens_above: 512
       min_cosine: 0.9999
+      # Looser than the quantization dimension on purpose: a MoE forward is two
+      # bfloat16 GEMMs plus a bfloat16 activation and weighted sum, all through
+      # bfloat16 workspaces. Measured 0.0093 with a per-token maximum of 0.0107 on
+      # both sides of the threshold.
       max_relative_l2: 0.02
+      control: compare against a reference that routes to the bottom-k experts
+      # An exact tie between the k-th and (k+1)-th expert is not evidence about
+      # arithmetic — the kernel and torch.topk are both right and break it
+      # differently. One tied token moved a 384-token batch from 0.009 to 0.031, so the
+      # probe reports ties and excludes those tokens.
+      router_ties: excluded_and_counted
     multimodal:
       operators: []
       min_cosine: 0.9999
@@ -131,9 +154,14 @@ limitations:
   - EXERCISED covers one layer under one shape. It says the operators compute the
     right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
     that claim.
-  - Only the quantization and msa dimensions have probes. moe and multimodal report
+  - Only the quantization, msa and moe dimensions have probes. multimodal reports
     EVALUATION_UNIMPLEMENTED, which is a fact about this repo and not a verdict about
     the platform.
+  - The moe dimension covers the tensor-parallel path only. fused_moe_ep is a separate
+    call and is not exercised, so nothing here says anything about expert parallel.
+  - The moe dimension uses synthetic bfloat16 experts, which keeps it independent of
+    the quantization dimension. An int8 MoE layer is a different path
+    (compressed_tensors_moe.py) and is not covered.
   - The msa dimension exercises decode only. Prefill takes the window through
     swa_left/swa_right on a different call and is not covered here.
   - The quantization weights may differ from the subject's. A dense bf16 model has no

@@ -47,6 +47,7 @@ DIMENSION_FROM_AXIS: dict[str, str] = {
 PROBES: dict[str, str] = {
     "quantization": "tools/probe/quantized_linear_probe.py",
     "msa": "tools/probe/sliding_window_decode_probe.py",
+    "moe": "tools/probe/moe_layer_probe.py",
 }
 
 # Files a probe needs next to it in the pod. The msa probe grades the patch we
@@ -181,6 +182,18 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--batch", str(geometry["batch"]),
             "--context-len", str(geometry["context_len"]),
             "--window", str(geometry["window"]),
+        ] + common
+    if dimension == "moe":
+        # Also weightless, and also geometry-critical: the two token counts have to
+        # straddle the 768 preprocessing switch or both cases take the same path.
+        geometry = thresholds["geometry"]
+        return [
+            "--experts", str(geometry["experts"]),
+            "--hidden", str(geometry["hidden"]),
+            "--intermediate", str(geometry["intermediate"]),
+            "--top-k", str(geometry["top_k"]),
+            "--tokens-below", str(geometry["tokens_below"]),
+            "--tokens-above", str(geometry["tokens_above"]),
         ] + common
     raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
 
