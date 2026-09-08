@@ -1,0 +1,85 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-009-api-conformance
+  # A family of its own on purpose. Every other Task here asks whether the numbers are
+  # right; this one asks whether the response has the right shape, and no logit
+  # differential can answer that.
+  family: api_conformance
+  task_type: api_conformance
+  version: 0.1.0
+spec:
+  question: does the served API carry reasoning and tool calls in the right fields
+  produces: ApiConformance
+  consumes: [ModelRequest, EnvironmentProof]
+  runs_with: |
+    python3 tools/check_api_conformance.py --subject <model-id> \
+      --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
+      --out <artifacts>/mat-009
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+  # Parsers are pure text transforms, so this needs a pod but not a running server —
+  # which means it can run before a deployment has been configured with
+  # --reasoning-parser and still say whether that pair works.
+  requires_running_server: false
+execution:
+  mode: execute
+  tool: tools/check_api_conformance.py
+  probe: tools/probe/parser_conformance_probe.py
+actions:
+  - enumerate_registered_parsers
+  - confirm_markers_against_the_chat_template
+  - split_a_marked_output
+  - extract_a_tool_call
+  - run_controls
+checks:
+  method:
+    # The control that matters is not "remove the markers". Qwen3's template opens
+    # <think> for the model, so vLLM's parser correctly reports unmarked text as
+    # reasoning-in-progress and that control passes while proving nothing. Moving the
+    # closing marker does discriminate: if the parser reads it, the split moves.
+    reasoning_control: move_the_closing_marker
+    tool_control: prose_with_no_tool_call
+    require_control_to_discriminate: true
+    # Same substitution MAT-003 warns about, one layer up: a name in a registry is not
+    # a parser that works.
+    forbid_registry_name_as_evidence: true
+  models:
+    # Keyed by family prefix; the longest match wins, so Qwen3-30B-A3B resolves here.
+    # Adding a model means writing its pair and a sample down where it can be reviewed,
+    # and the probe rejects any sample whose marker is absent from that model's own
+    # chat template.
+    Qwen3:
+      reasoning_parser: qwen3
+      tool_parser: hermes
+      markers: ["<think>", "<tool_call>"]
+      reasoning_sample: "<think>weigh the options</think>The answer is 42."
+      reasoning_moved: "<think>weigh the options The answer</think> is 42."
+      reasoning_control: "The answer is 42."
+      tool_sample: "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Beijing\"}}\n</tool_call>"
+      tool_control: "It is sunny in Beijing today."
+      expected_tool_name: get_weather
+acceptance:
+  require_template_confirms_markers: true
+  require_control_to_discriminate: true
+  require_registry_listing: true
+artifacts:
+  - api_conformance.json
+  - api_conformance_card.md
+  - conformance_status.json
+exit_states:
+  pass: CONFORMANT
+  fail: NONCONFORMANT
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/conformance_validator.py:validate_conformance
+limitations:
+  - Offline parsing only. It does not prove a served response carries the fields; a
+    deployment launched with the parser is a separate check.
+  - Streaming is not covered. `extract_reasoning_streaming` has its own state machine
+    and can differ from the batch path.
+  - Recorded while building this, and worth knowing before serving a thinking model.
+    With the qwen3 parser an output that never closes its thinking tag comes back
+    entirely as reasoning_content with content null, so a client reading only
+    `content` sees an empty answer. That is correct parser behaviour, not a defect.
