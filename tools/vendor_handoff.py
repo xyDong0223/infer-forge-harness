@@ -23,9 +23,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validators.handoff_validator import validate_handoff  # noqa: E402
+from validators.handoff_validator import validate_handoff_package  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-020-vendor-handoff" / "task.yaml"
 BINARY_LAYERS = {"kunlun_ops_vendor", "torch_xmlir_vendor"}
+OWNER_LABEL = {
+    "us": "this project (plugin or xpu variant)",
+    "upstream": "vLLM upstream",
+    "vendor": "the vendor (binary layer)",
+}
 
 
 def build(triage: dict, environment: str, workaround: dict | None) -> dict:
@@ -90,15 +96,136 @@ def render(ticket: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_package(findings_doc: dict) -> dict:
+    """Route each finding to an owner and keep the package from reading as finished."""
+    findings = findings_doc.get("findings") or []
+    by_owner: dict[str, list[str]] = {}
+    for finding in findings:
+        by_owner.setdefault(str(finding.get("owner")), []).append(str(finding.get("id")))
+    return {
+        "state": "HANDOFF_READY",
+        "form": "package",
+        "subject": findings_doc.get("subject"),
+        "subject_status": findings_doc.get("subject_status") or {},
+        "environment_fingerprint": findings_doc.get("environment_fingerprint"),
+        "ruled_out": findings_doc.get("ruled_out") or [],
+        "findings": findings,
+        "routing": by_owner,
+        "observed": sum(1 for f in findings if f.get("kind") == "observed_failure"),
+        "unreached": sum(1 for f in findings if f.get("kind") == "unreached_dependency"),
+        "file_separately": [f.get("id") for f in findings if f.get("file_separately")],
+    }
+
+
+def render_package(package: dict) -> str:
+    status = package.get("subject_status") or {}
+    lines = [
+        f"# Adaptation handoff — {package['subject']}",
+        "",
+        f"- environment: `{package['environment_fingerprint']}`",
+        f"- serves requests: **{status.get('serves_requests')}**",
+        f"- stopped at: {status.get('stopped_at')}",
+        f"- findings: {package['observed']} observed on hardware, "
+        f"{package['unreached']} named from reading the code and never reached",
+        "",
+        "## Who owns what",
+        "",
+    ]
+    for owner, ids in sorted(package["routing"].items()):
+        lines.append(f"- {OWNER_LABEL.get(owner, owner)}: {', '.join(ids)}")
+    if package.get("file_separately"):
+        lines += [
+            "",
+            "Worth filing on its own, independent of this model: "
+            + ", ".join(package["file_separately"]),
+        ]
+    if status.get("reached_with"):
+        lines += ["", "## How the run got that far", "", status["reached_with"]]
+    lines += ["", "## Already ruled out", ""]
+    lines += [f"- {item}" for item in package.get("ruled_out", [])]
+
+    for finding in package["findings"]:
+        lines += [
+            "",
+            f"## {finding['id']} — {finding['symbol']}",
+            "",
+            f"- layer: `{finding['layer']}` · owner: **{finding['owner']}** · {finding['kind']}",
+            f"- site: `{finding['site']}`",
+        ]
+        for key in ("also_called_at",):
+            for site in finding.get(key) or []:
+                lines.append(f"  - also: `{site}`")
+        if finding.get("error_text"):
+            lines += ["", "```", str(finding["error_text"]).strip(), "```"]
+        else:
+            lines += ["", f"Never reached. Blocked by: {finding.get('blocked_by')}"]
+        for label, key in (
+            ("Cause", "cause"),
+            ("What was established", "finding"),
+            ("Who else this hits", "generality"),
+            ("Minimal fix", "minimal_fix"),
+            ("A fix is accepted against", "verified_against"),
+            ("Note", "note"),
+        ):
+            if finding.get(key):
+                lines += ["", f"{label}: {str(finding[key]).strip()}"]
+        if finding.get("stand_in"):
+            lines += [
+                "",
+                f"Stand-in in place at `{finding['stand_in']}` — a probe, not a fix.",
+            ]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     import yaml
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--triage", required=True, help="mat-006 triage_report.json")
-    parser.add_argument("--environment", required=True, help="fingerprint or its digest")
+    parser.add_argument("--triage", help="mat-006 triage_report.json (single-ticket form)")
+    parser.add_argument("--findings", help="findings yaml (package form)")
+    parser.add_argument("--environment", help="fingerprint or its digest; taken from the yaml in package form")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
+    if bool(args.triage) == bool(args.findings):
+        print("CONTRACT_INVALID: pass exactly one of --triage or --findings", file=sys.stderr)
+        return 1
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+
+    if args.findings:
+        doc = yaml.safe_load(Path(args.findings).read_text(encoding="utf-8"))
+        if args.environment:
+            doc["environment_fingerprint"] = args.environment
+        package = build_package(doc)
+        (out / "handoff_package.json").write_text(json.dumps(package, indent=2), encoding="utf-8")
+        (out / "handoff_package.md").write_text(render_package(package), encoding="utf-8")
+        gate = validate_handoff_package(package, contract)
+        (out / "handoff_status.json").write_text(
+            json.dumps(
+                {"state": package["state"], "form": "package", "subject": package["subject"],
+                 "validator": {"passed": not gate, "errors": gate}},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        if gate:
+            print("CONTRACT_INVALID: " + "; ".join(gate), file=sys.stderr)
+            return 1
+        print(
+            f"HANDOFF_READY  {package['subject']}  "
+            f"observed={package['observed']} unreached={package['unreached']}"
+        )
+        for owner, ids in sorted(package["routing"].items()):
+            print(f"  {owner:<9} {', '.join(ids)}")
+        print(f"artifacts: {out}/handoff_package.md")
+        return 0
+
+    if not args.environment:
+        print("CONTRACT_INVALID: --environment is required in the single-ticket form", file=sys.stderr)
+        return 1
     triage = json.loads(Path(args.triage).read_text(encoding="utf-8"))
     if triage.get("state") != "TRIAGE_READY":
         print(f"NEEDS_HUMAN: triage is {triage.get('state')}", file=sys.stderr)
@@ -110,16 +237,13 @@ def main() -> int:
         )
         return 1
 
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
     ticket = build(triage, args.environment, None)
     (out / "vendor_ticket.json").write_text(json.dumps(ticket, indent=2), encoding="utf-8")
     (out / "vendor_ticket.md").write_text(render(ticket), encoding="utf-8")
-
-    contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     gate = validate_handoff(ticket, contract)
     (out / "handoff_status.json").write_text(
-        json.dumps({"state": ticket["state"], "validator": {"passed": not gate, "errors": gate}}, indent=2),
+        json.dumps({"state": ticket["state"], "form": "ticket",
+                    "validator": {"passed": not gate, "errors": gate}}, indent=2),
         encoding="utf-8",
     )
     if gate:
