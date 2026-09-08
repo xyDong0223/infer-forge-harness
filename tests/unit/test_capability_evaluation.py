@@ -56,11 +56,15 @@ class DimensionSelectionTest(unittest.TestCase):
     def test_block_sparse_is_a_different_dimension_from_a_window(self):
         """Both live on the attention axis and they are not the same capability: a
         window is a parameter on a dense kernel, block-sparse selection is three
-        kernels and an index cache of its own."""
+        kernels and an index cache of its own. The cache-write op comes with it —
+        selecting the right blocks out of a wrongly written index cache is worse than
+        failing, so the read side and the write side are selected together."""
         axes = [{"axis": "attention", "required": "block_sparse",
                  "verdict": "PROVIDED_MODULE_ONLY"}]
-        self.assertEqual(dimensions_for(match_payload(axes)), ["block_sparse"])
+        self.assertEqual(dimensions_for(match_payload(axes)),
+                         ["block_sparse", "fused_qknorm_rope_insert"])
         self.assertIn("block_sparse", PROBES)
+        self.assertIn("fused_qknorm_rope_insert", PROBES)
 
 
 class BlockSparseReferenceTest(unittest.TestCase):
@@ -119,6 +123,47 @@ class BlockSparseReferenceTest(unittest.TestCase):
         self.assertEqual(sorted(reserved[0, 0].tolist()), [0, 3])
         self.assertEqual(set_agreement(plain, reserved)["exact_set_match_fraction"], 0.0)
         self.assertEqual(set_agreement(plain, plain)["exact_set_match_fraction"], 1.0)
+
+
+class FusedInsertContractTest(unittest.TestCase):
+    """The write side of block_sparse: what its contract entry has to carry."""
+
+    def setUp(self) -> None:
+        from tools.evaluate_capability import SIDECARS
+
+        self.entry = CONTRACT["checks"]["dimensions"]["fused_qknorm_rope_insert"]
+        self.sidecars = SIDECARS
+
+    def test_it_grades_the_file_that_would_be_loaded(self):
+        # A copy of the stand-in can drift from the one a launch actually uses, so the
+        # probe is handed the real path — the same reason the msa dimension does it.
+        self.assertEqual(self.sidecars["fused_qknorm_rope_insert"]["--implementation"],
+                         "patches/m3_fused_qknorm_rope_probe.py")
+        self.assertTrue((ROOT / "patches" / "m3_fused_qknorm_rope_probe.py").exists())
+
+    def test_it_is_a_sparse_layer_with_a_scattered_slot_mapping(self):
+        geometry = self.entry["geometry"]
+        self.assertGreater(geometry["index_heads"], 0,
+                           "num_index_heads == 0 is the dense branch and writes no index cache")
+        self.assertNotEqual(geometry["tokens"] % geometry["block_size"], 0,
+                            "a token count that fills whole blocks hides offset mistakes")
+
+    def test_the_cache_write_is_verified_by_reading_it_back(self):
+        conventions = self.entry["conventions"]
+        self.assertEqual(conventions["verified_by"], "readback_at_the_written_slots")
+        self.assertEqual(conventions["cache_layout"],
+                         "two_num_blocks_kv_heads_block_size_head_size")
+
+    def test_probe_arguments_come_from_the_contract(self):
+        class Args:
+            model_path = None
+            tensor = None
+            tokens = None
+
+        argv = probe_argv("fused_qknorm_rope_insert", Args(), self.entry)
+        for flag, key in (("--index-heads", "index_heads"), ("--rotary-dim", "rotary_dim"),
+                          ("--block-size", "block_size"), ("--tokens", "tokens")):
+            self.assertEqual(argv[argv.index(flag) + 1], str(self.entry["geometry"][key]))
 
 
 class BlockSparseContractTest(unittest.TestCase):

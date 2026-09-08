@@ -49,12 +49,16 @@ PROBES: dict[str, str] = {
     "msa": "tools/probe/sliding_window_decode_probe.py",
     "moe": "tools/probe/moe_layer_probe.py",
     "block_sparse": "tools/probe/block_sparse_attention_probe.py",
+    "fused_qknorm_rope_insert": "tools/probe/m3_qknorm_rope_insert_probe.py",
 }
 
 # Files a probe needs next to it in the pod. The msa probe grades the patch we
 # actually serve with, so it has to be the same file, not a copy that can drift.
 SIDECARS: dict[str, dict[str, str]] = {
     "msa": {"--fallback": "patches/torch_paged_decode.py"},
+    # Same reason as msa: the probe must grade the file that would be loaded, not a
+    # copy of it that can drift.
+    "fused_qknorm_rope_insert": {"--implementation": "patches/m3_fused_qknorm_rope_probe.py"},
 }
 
 
@@ -80,6 +84,10 @@ def dimensions_for(match: dict) -> list[str]:
         # cache of its own, so they cannot be one dimension.
         if axis.get("axis") == "attention" and axis.get("required") == "block_sparse":
             selected.append("block_sparse")
+            # The read side and the write side of the same capability: selecting
+            # blocks is useless if the index cache they are selected from was
+            # written wrong, and nothing else in the flow checks that write.
+            selected.append("fused_qknorm_rope_insert")
     return selected
 
 
@@ -216,6 +224,18 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--batch", str(geometry["batch"]),
             "--context-len", str(geometry["context_len"]),
             "--topk", str(geometry["topk"]),
+        ] + common
+    if dimension == "fused_qknorm_rope_insert":
+        geometry = thresholds["geometry"]
+        return [
+            "--heads", str(geometry["heads"]),
+            "--kv-heads", str(geometry["kv_heads"]),
+            "--index-heads", str(geometry["index_heads"]),
+            "--head-dim", str(geometry["head_dim"]),
+            "--rotary-dim", str(geometry["rotary_dim"]),
+            "--block-size", str(geometry["block_size"]),
+            "--blocks", str(geometry["blocks"]),
+            "--tokens", str(geometry["tokens"]),
         ] + common
     raise EvaluationFailed("CONTRACT_INVALID", f"no argument mapping for dimension {dimension!r}")
 

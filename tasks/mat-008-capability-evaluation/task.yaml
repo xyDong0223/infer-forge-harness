@@ -30,7 +30,8 @@ context:
   # smallest unit that still carries the convention risk, the operators the serving
   # path uses, a float32 reference off the accelerator, and a control — so four
   # near-identical contracts would only drift apart.
-  dimensions_declared: [quantization, msa, moe, block_sparse, multimodal]
+  dimensions_declared: [quantization, msa, moe, block_sparse,
+                        fused_qknorm_rope_insert, multimodal]
 execution:
   mode: execute
   tool: tools/evaluate_capability.py
@@ -39,6 +40,7 @@ execution:
     msa: tools/probe/sliding_window_decode_probe.py
     moe: tools/probe/moe_layer_probe.py
     block_sparse: tools/probe/block_sparse_attention_probe.py
+    fused_qknorm_rope_insert: tools/probe/m3_qknorm_rope_insert_probe.py
   reference:
     implementation: torch
     device: cpu
@@ -209,6 +211,45 @@ checks:
       operators: []
       min_cosine: 0.9999
       max_relative_l2: 0.02
+    fused_qknorm_rope_insert:
+      # The write side of block_sparse. _C::fused_minimax_m3_qknorm_rope_kv_insert is
+      # the only vLLM custom op M3's nvidia variant needs, and it does three things at
+      # once — per-head Gemma norm, partial NeoX RoPE, and a scatter into two different
+      # paged caches. Selecting the right blocks out of a wrongly written index cache
+      # produces fluent, wrong text, and nothing else in the flow checks that write.
+      operators: ["_C::fused_minimax_m3_qknorm_rope_kv_insert"]
+      geometry:
+        # A sparse layer: num_index_heads > 0, so the fused tensor is
+        # [q | k | v | index_q | index_k] and both caches are written.
+        heads: 8
+        kv_heads: 2
+        index_heads: 2
+        head_dim: 128
+        rotary_dim: 64
+        block_size: 16
+        blocks: 8
+        # Deliberately not a multiple of the block size, and the probe maps tokens to
+        # scattered slots rather than 0..N — an identity mapping cannot catch a
+        # block/offset swap, which is the mistake this layout invites.
+        tokens: 7
+      min_cosine: 0.9999
+      # bfloat16 rounding through norm and rope; measured 0.0021 on P800 and 0.0020 on
+      # a CPU-only run of the same file.
+      max_relative_l2: 0.01
+      control: grade the cache readback against a norm-only reference, with no rope
+      conventions:
+        # vllm_kunlun/ops/paged_attn.py:43. Upstream M3 assumes
+        # (num_blocks, 2, 128, num_kv_heads, head_dim), so the two disagree and it is
+        # the model code that has to change, not the cache.
+        cache_layout: two_num_blocks_kv_heads_block_size_head_size
+        # Verified by gathering values back out of the cache at the slots written,
+        # rather than by trusting that the write happened.
+        verified_by: readback_at_the_written_slots
+        value_is_inserted_unchanged: true
+      known_blockers:
+        - the stand-in refuses kv_cache_dtype other than "auto"; a quantized cache
+          needs the conversion path, and writing unconverted values into one would be
+          wrong quietly instead of loudly
 acceptance:
   require_threshold_source: true
   require_negative_control: true
@@ -229,9 +270,13 @@ limitations:
   - EXERCISED covers one layer under one shape. It says the operators compute the
     right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
     that claim.
-  - Only the quantization, msa, moe and block_sparse dimensions have probes.
-    multimodal reports EVALUATION_UNIMPLEMENTED, which is a fact about this repo and
-    not a verdict about the platform.
+  - Only the quantization, msa, moe, block_sparse and fused_qknorm_rope_insert
+    dimensions have probes. multimodal reports EVALUATION_UNIMPLEMENTED, which is a
+    fact about this repo and not a verdict about the platform.
+  - fused_qknorm_rope_insert grades a torch stand-in, not a vendor kernel. It says the
+    arithmetic and the cache writes are right; it does not say the eventual
+    kunlun_ops-composed implementation is, and the same probe has to be re-run against
+    that one.
   - The moe dimension covers the tensor-parallel path only. fused_moe_ep is a separate
     call and is not exercised, so nothing here says anything about expert parallel.
   - The moe dimension uses synthetic bfloat16 experts, which keeps it independent of
