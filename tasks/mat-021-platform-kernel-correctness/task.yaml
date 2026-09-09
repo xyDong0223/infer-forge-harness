@@ -1,0 +1,48 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-021-platform-kernel-correctness
+  family: model_adaptation
+  task_type: platform_kernel_correctness
+  version: 0.1.0
+spec:
+  question: does the platform kernel compute the contract independently of model wiring
+  produces: PlatformKernelCorrectness
+  consumes: [CapabilityMatch, EnvironmentProof]
+  runs_with: |
+    python3 tools/tensor_diff.py --candidate <candidate.json> --reference <reference.json> \
+      --control <negative-control.json> --max-relative-l2 <threshold> \
+      --out <artifacts>/mat-021/kernel_grade.json
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tool: tools/tensor_diff.py
+  reference:
+    implementation: torch
+    device: cpu
+    dtype: float32
+actions:
+  - capture_platform_kernel_output
+  - compute_independent_reference
+  - compare_elementwise_and_relative_l2
+  - run_discriminating_negative_control
+acceptance:
+  require_reference_provenance: true
+  require_negative_control: true
+  require_relative_l2: true
+  require_shape_match: true
+  ambiguous_geometry_is_not_pass: true
+artifacts:
+  - kernel_grade.json
+  - kernel_status.json
+exit_states:
+  pass: KERNEL_PASS
+  fail: KERNEL_FAIL
+  ambiguous: KERNEL_AMBIGUOUS
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/correctness_validator.py:validate_kernel_grade
+limitations:
+  - This task validates a platform operator in isolation and does not prove model composition.

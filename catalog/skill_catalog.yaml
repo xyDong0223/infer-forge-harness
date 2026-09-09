@@ -182,3 +182,26 @@ entries:
     rules:
       - check launch limits before tuning kernel parameters
       - prefer a correct torch fallback over repeated futile Triton tuning
+  - id: model-bringup-loop
+    task_types: [model_bringup_loop]
+    purpose: drive model bring-up through the cheapest evidence-backed correction loop
+    tools: [deployment_proof, instrument_kernel_trace, apply_torch_decode_patch]
+    verification: deployment_validator
+    preconditions: [ModelRequest, EnvironmentProof]
+    exit_conditions: [DEPLOYMENT_READY, TRIAGE_READY, PATCH_PLACED, NEEDS_HUMAN]
+    rules:
+      - capture the smallest failing request and actual dispatch path before changing code
+      - classify missing, bypassed, unlaunchable, wrong, runtime-state, and API failures separately
+      - use a reversible workaround and re-run the integrated serving path before claiming progress
+  - id: kernel-grade
+    task_types: [platform_kernel_correctness, end_to_end_accuracy,
+                 long_context_sparse_correctness]
+    purpose: grade an operator or served distribution against an independent reference
+    tools: [capability_evaluation, accuracy_differential]
+    verification: correctness_validator
+    preconditions: [CapabilityMatch, DeploymentProof]
+    exit_conditions: [PASS, FAIL, AMBIGUOUS, NEEDS_HUMAN]
+    rules:
+      - require relative L2, elementwise error, and NaN/Inf counts
+      - require reference provenance and a negative control that misses the gate
+      - report AMBIGUOUS when the tested geometry cannot distinguish conventions

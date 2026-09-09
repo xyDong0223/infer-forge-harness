@@ -95,3 +95,9 @@ entries:
     side_effect: write_artifact
     retryable: true
     outputs: [support_matrix.yaml]
+  - id: tensor_diff
+    command: python3 tools/tensor_diff.py
+    purpose: compare candidate and reference tensors with a relative-L2 gate
+    side_effect: read_only
+    retryable: true
+    outputs: [tensor_diff.json]

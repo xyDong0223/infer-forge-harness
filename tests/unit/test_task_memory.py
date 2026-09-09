@@ -7,7 +7,14 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.task_memory import finish_block, load, save, start_block  # noqa: E402
+from tools.task_memory import (  # noqa: E402
+    finish_block,
+    load,
+    record_observed_issue,
+    record_claim,
+    save,
+    start_block,
+)
 
 
 class TaskMemoryTest(unittest.TestCase):
@@ -38,6 +45,31 @@ class TaskMemoryTest(unittest.TestCase):
             save(path, load(path, "model_adaptation", "Qwen3-8B"))
             with self.assertRaises(ValueError):
                 load(path, "model_adaptation", "MiniMax-M3")
+
+    def test_claims_keep_evidence_environment_and_supersession(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = load(Path(tmp) / "memory.json", "task", "model")
+            entry = record_claim(
+                memory,
+                "vendor decode ignores the window argument",
+                "CONFIRMED",
+                ["trace.json", "kernel_grade.json"],
+                {"hardware": "P800", "stack_commit": "abc123"},
+                supersedes="windowed decode is supported",
+            )
+            self.assertEqual(entry["supersedes"], "windowed decode is supported")
+            self.assertEqual(memory["environment"]["hardware"], "P800")
+            self.assertEqual(memory["claims"][0]["evidence"], ["trace.json", "kernel_grade.json"])
+
+    def test_observed_issue_is_machine_routable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = load(Path(tmp) / "memory.json", "task", "model")
+            entry = record_observed_issue(
+                memory, "command_failure", ["service.log"], {"hardware": "P800"}
+            )
+            self.assertEqual(entry["observed_issue"], "command_failure")
+            self.assertEqual(entry["source"], "runner")
+            self.assertEqual(memory["claims"][0]["status"], "OBSERVED")
 
 
 if __name__ == "__main__":

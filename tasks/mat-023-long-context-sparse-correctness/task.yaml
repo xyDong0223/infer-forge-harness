@@ -1,0 +1,49 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-023-long-context-sparse-correctness
+  family: model_adaptation
+  task_type: long_context_sparse_correctness
+  version: 0.1.0
+spec:
+  question: does sparse selection remain correct beyond one block-selection boundary
+  produces: LongContextSparseCorrectness
+  consumes: [CapabilityMatch, DeploymentProof]
+  runs_with: |
+    python3 tools/tensor_diff.py --candidate <candidate.json> --reference <reference.json> \
+      --control <shifted-block-control.json> --max-relative-l2 <threshold> \
+      --out <artifacts>/mat-023/long_context_grade.json
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tool: tools/tensor_diff.py
+  reference:
+    implementation: torch
+    device: cpu
+    dtype: float32
+actions:
+  - run_context_longer_than_block_selection_boundary
+  - record_selected_blocks
+  - compute_independent_sparse_reference
+  - compare_relative_l2
+  - run_shifted-block_negative_control
+acceptance:
+  require_geometry: true
+  require_selected_blocks: true
+  require_relative_l2: true
+  require_negative_control: true
+  sparse_path_must_be_exercised: true
+artifacts:
+  - long_context_grade.json
+  - long_context_status.json
+exit_states:
+  pass: LONG_CONTEXT_PASS
+  fail: LONG_CONTEXT_FAIL
+  ambiguous: LONG_CONTEXT_AMBIGUOUS
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/correctness_validator.py:validate_long_context
+limitations:
+  - This task targets sparse geometry and does not validate prefill or cache write kernels.

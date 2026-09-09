@@ -27,6 +27,8 @@ def empty_memory(task_id: str, subject: str) -> dict[str, Any]:
         "completed_loop_blocks": [],
         "next_loop_block": None,
         "execution_records": [],
+        "claims": [],
+        "environment": {},
     }
 
 
@@ -40,6 +42,8 @@ def load(path: Path, task_id: str, subject: str) -> dict[str, Any]:
     memory.setdefault("execution_records", [])
     memory.setdefault("next_loop_block", None)
     memory.setdefault("current_loop_block", None)
+    memory.setdefault("claims", [])
+    memory.setdefault("environment", {})
     return memory
 
 
@@ -113,6 +117,42 @@ def finish_block(
 
 def set_next_block(memory: dict[str, Any], next_block: dict[str, Any]) -> None:
     memory["next_loop_block"] = next_block
+
+
+def record_claim(
+    memory: dict[str, Any],
+    claim: str,
+    status: str,
+    evidence: list[str],
+    environment: dict[str, str],
+    supersedes: str | None = None,
+) -> dict[str, Any]:
+    """Record measured claims and rejected hypotheses without erasing history."""
+    entry = {
+        "claim": claim,
+        "status": status,
+        "evidence": evidence,
+        "environment": dict(environment),
+    }
+    if supersedes:
+        entry["supersedes"] = supersedes
+    memory["claims"].append(entry)
+    memory["environment"] = dict(environment)
+    return entry
+
+
+def record_observed_issue(
+    memory: dict[str, Any],
+    issue: str,
+    evidence: list[str],
+    environment: dict[str, str],
+    source: str = "runner",
+) -> dict[str, Any]:
+    """Persist a machine-observed issue so routing need not depend on free text."""
+    entry = record_claim(memory, issue, "OBSERVED", evidence, environment)
+    entry["observed_issue"] = issue
+    entry["source"] = source
+    return entry
 
 
 def main() -> int:

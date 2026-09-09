@@ -24,6 +24,9 @@ class SkillRegistryTest(unittest.TestCase):
             "failure_triage", "capability_evaluation", "deployment_plan",
             "patch_placement", "accuracy_differential", "memory_budget",
             "api_conformance", "support_matrix", "vendor_handoff",
+            "platform_kernel_correctness", "end_to_end_accuracy",
+            "long_context_sparse_correctness",
+            "model_bringup_loop",
         }
         self.assertEqual(set(index), expected)
 
@@ -45,6 +48,18 @@ class SkillRegistryTest(unittest.TestCase):
 
     def test_all_skill_tools_exist_in_tool_catalog(self):
         self.assertEqual(validate_tool_references(), [])
+
+    def test_new_correctness_tasks_use_kernel_grade(self):
+        for task_type in (
+            "platform_kernel_correctness",
+            "end_to_end_accuracy",
+            "long_context_sparse_correctness",
+        ):
+            with self.subTest(task_type=task_type):
+                self.assertEqual(resolve(task_type)["id"], "kernel-grade")
+
+    def test_bringup_loop_has_a_default_skill(self):
+        self.assertEqual(resolve("model_bringup_loop")["id"], "model-bringup-loop")
 
 
 if __name__ == "__main__":

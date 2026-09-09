@@ -175,6 +175,12 @@ MANUAL: dict[str, str] = {
     "isolation, then restore — see the contract's runs_with",
     "patch_placement": "install the patch, rerun the service proof, compare numerically, then "
     "record the placement — see the contract's runs_with",
+    "platform_kernel_correctness": "capture candidate/reference/control tensors and run the "
+    "kernel-grade validator — see the contract's runs_with",
+    "end_to_end_accuracy": "run the integrated serving path against the CPU reference and "
+    "validate every case — see the contract's runs_with",
+    "long_context_sparse_correctness": "run geometry beyond block_size * topk, record selected "
+    "blocks, and validate the sparse path — see the contract's runs_with",
 }
 
 
@@ -479,6 +485,14 @@ def main() -> int:
             )
             task_memory.save(loop_state, memory)
             if returncode != 0:
+                task_memory.record_observed_issue(
+                    memory,
+                    issue="command_failure",
+                    evidence=[str(artifacts)],
+                    environment=environment,
+                    source=current,
+                )
+                task_memory.save(loop_state, memory)
                 failure = node.get("on_failure", "NEEDS_HUMAN")
                 print(f"[edge] {current} --failure--> {failure}")
                 emit_summary(

@@ -39,6 +39,9 @@ KINDS = {
     "failure_triage": "FailureTriage",
     "patch_placement": "PlacedPatch",
     "vendor_handoff": "VendorHandoff",
+    "platform_kernel_correctness": "PlatformKernelCorrectness",
+    "end_to_end_accuracy": "EndToEndAccuracy",
+    "long_context_sparse_correctness": "LongContextSparseCorrectness",
 }
 
 

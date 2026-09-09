@@ -1,0 +1,47 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-022-end-to-end-accuracy
+  family: model_adaptation
+  task_type: end_to_end_accuracy
+  version: 0.1.0
+spec:
+  question: does the integrated serving path preserve model outputs
+  produces: EndToEndAccuracy
+  consumes: [DeploymentProof, ModelRequest]
+  runs_with: |
+    python3 tools/accuracy_differential.py --pod <pod> \
+      --model-request <model_request.yaml> --served-model-name <name> \
+      --port <port> --out <artifacts>/mat-022
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tool: tools/accuracy_differential.py
+  reference:
+    implementation: transformers
+    device: cpu
+    dtype: float32
+    must_not_see_accelerator: true
+actions:
+  - collect_integrated_candidate_distributions
+  - collect_cpu_reference_distributions
+  - compare_case_level_outputs
+  - package_composition_accuracy_report
+acceptance:
+  require_case_level_evidence: true
+  require_reference_provenance: true
+  require_integrated_serving_path: true
+  forbid_text_only_comparison: true
+artifacts:
+  - end_to_end_accuracy.json
+  - accuracy_status.json
+exit_states:
+  pass: ACCURACY_PASS
+  fail: ACCURACY_FAIL
+  unavailable: NEEDS_HUMAN
+  invalid: CONTRACT_INVALID
+validator: validators/correctness_validator.py:validate_end_to_end
+limitations:
+  - This is a smoke-level differential and does not replace a dataset evaluation.
