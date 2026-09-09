@@ -12,6 +12,7 @@
 
 ## Contents
 
+- [Quick start](#quick-start)
 - [What it solves](#what-it-solves)
 - [Design model](#design-model)
 - [Execution path](#execution-path)
@@ -23,6 +24,26 @@
 - [Reference material](#reference-material)
 - [Contributing](#contributing)
 - [Status](#status)
+
+## Quick start
+
+Use Python 3.10 or later. The repository is **plan-only by default**: local checks resolve contracts and validate artifacts without creating or changing cluster resources.
+
+```bash
+git clone https://github.com/xyDong0223/kunlun-inference-agent.git
+cd kunlun-inference-agent
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install pyyaml
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+python -m unittest discover -s tests -p 'test_*.py' -v
+python -m compileall runners validators tools
+```
+
+The full unit suite uses **PyYAML** to load contracts and **PyTorch** for CPU reference arithmetic. A real P800 run additionally requires an authorized Kubernetes context, a reachable cluster, the model volume and revision, and a vLLM-Kunlun image. Those environment-specific prerequisites are intentionally not created by this repository.
 
 ## What it solves
 
@@ -74,6 +95,14 @@ The editable [Excalidraw source](docs/assets/minimax-m3-adaptation-loop.excalidr
 ## Execution model
 
 The graph runner keeps the Task Graph for cross-task routing and stores the current and completed Loop Blocks in Task Memory. A successful fact can be reused only when its Journal environment fingerprint matches the current execution context.
+
+### A task lifecycle
+
+<p align="center">
+  <img src="docs/assets/task-lifecycle-sequence.png" alt="Sequence diagram showing the Runner, Journal, Tool or Adapter, Validator, and Artifact root exchanging inputs, authorized actions, evidence, validation results, and reusable facts" width="100%">
+</p>
+
+Each task is a bounded evidence loop. The Runner selects the contract and method, the Tool or Adapter performs the authorized action, the Validator applies an independent acceptance gate, and the Journal receives a reusable fact only after that gate passes.
 
 ```bash
 python3 runners/graph_runner.py \
@@ -153,4 +182,6 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Changes
 
 ## Status
 
-This repository is an initial public scaffold. Runtime adapters and real P800 execution are added incrementally behind contracts, fake adapters, and independent validators.
+This repository is an initial public scaffold. Its current scope is contracts, workflow planning, fake-runner coverage, validators, and integration hooks. Runtime adapters and real P800 execution are added incrementally behind independent evidence gates.
+
+It does **not** ship model weights, provide a hosted inference endpoint, or create a turnkey multi-node production deployment. Runtime artifacts, model caches, credentials, private endpoints, and raw production traffic remain outside the repository.
