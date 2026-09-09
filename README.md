@@ -98,23 +98,13 @@ The graph runner keeps the Task Graph for cross-task routing and stores the curr
 
 ### A task lifecycle
 
-```mermaid
-sequenceDiagram
-    participant R as Runner
-    participant J as Journal
-    participant T as Tool / Adapter
-    participant V as Validator
-    participant A as Artifact root
+<p align="center">
+  <a href="docs/assets/task-lifecycle.excalidraw">
+    <img src="docs/assets/task-lifecycle.png" alt="Hand-drawn task lifecycle showing the Journal resolving inputs and environment, the Runner selecting a contract, an authorized Tool or Adapter action producing evidence, independent validation, and separate pass or non-pass outcomes" width="100%">
+  </a>
+</p>
 
-    R->>J: Resolve inputs and environment fingerprint
-    R->>T: Execute authorized action
-    T-->>A: Write logs, traces, and manifests
-    R->>V: Submit artifact and task contract
-    V-->>R: PASS / REWORK / NO_GO / NEEDS_HUMAN
-    R->>J: Record a reusable fact only after validation
-```
-
-Each task is a bounded evidence loop. The Runner selects the contract and method, the Tool or Adapter performs the authorized action, the Validator applies an independent acceptance gate, and the Journal receives a reusable fact only after that gate passes.
+Each task is a bounded evidence loop. The Runner selects the contract and method, the Tool or Adapter performs the authorized action, the Validator applies an independent acceptance gate, and the Journal receives a reusable fact only after that gate passes. The rendered diagram is backed by an editable [Excalidraw source](docs/assets/task-lifecycle.excalidraw).
 
 ```bash
 python3 runners/graph_runner.py \
