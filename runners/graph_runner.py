@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import journal as journal_module  # noqa: E402
+from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
@@ -368,11 +369,24 @@ def main() -> int:
             print(f"stop: {current} has no contract yet")
             break
         task_type = node_task_type(node)
+        try:
+            skill = (
+                skill_registry.resolve_for_context(task_type, context)
+                if task_type else None
+            )
+        except skill_registry.SkillResolutionError:
+            emit_summary(
+                {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                 "reason_code": "SKILL_UNRESOLVED", "message": f"task_type={task_type}"},
+                args.json,
+            )
+            break
         if task_type in MANUAL:
             print(f"stop: {current} is operator-driven — {MANUAL[task_type]}")
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
-                 "reason_code": "MANUAL_STEP", "message": MANUAL[task_type]},
+                 "reason_code": "MANUAL_STEP", "skill": skill["id"],
+                 "message": MANUAL[task_type]},
                 args.json,
             )
             break
@@ -381,7 +395,8 @@ def main() -> int:
             print(f"stop: no executor registered for task_type {task_type!r} ({current})")
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
-                 "reason_code": "NO_EXECUTOR", "message": f"task_type={task_type}"},
+                 "reason_code": "NO_EXECUTOR", "skill": skill["id"],
+                 "message": f"task_type={task_type}"},
                 args.json,
             )
             break
@@ -396,8 +411,9 @@ def main() -> int:
                 block_id=f"{current}:reused:{len(memory['completed_loop_blocks']) + 1}",
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
-                                "success_states": sorted(SUCCESS_STATES)},
-                routing={"mode": "reuse_journal_fact"},
+                 "success_states": sorted(SUCCESS_STATES)},
+                routing={"mode": "reuse_journal_fact", "skill": skill["id"],
+                         "verification": skill["verification"]},
             )
             task_memory.finish_block(
                 memory,
@@ -409,6 +425,7 @@ def main() -> int:
             emit_summary(
                 {"status": "REUSED", "node": current, "next_task": next_task,
                  "reason_code": "SUCCESSFUL_FACT_REUSED",
+                 "skill": skill["id"],
                  "artifacts": [prior["artifacts"]]},
                 args.json,
             )
@@ -436,6 +453,8 @@ def main() -> int:
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
                                 "success_states": sorted(SUCCESS_STATES)},
+                routing={"skill": skill["id"], "verification": skill["verification"],
+                         "tools": skill["tools"]},
             )
             task_memory.save(loop_state, memory)
         if not args.execute:
@@ -465,6 +484,7 @@ def main() -> int:
                 emit_summary(
                     {"status": "REWORK", "node": current, "next_task": failure,
                      "reason_code": "COMMAND_FAILED", "state": state,
+                     "skill": skill["id"],
                      "artifacts": [str(artifacts)]},
                     args.json,
                 )
@@ -481,6 +501,7 @@ def main() -> int:
             emit_summary(
                 {"status": "CONTINUE", "node": current, "next_task": nxt,
                  "reason_code": "NODE_COMPLETE", "state": read_state(artifacts, spec),
+                 "skill": skill["id"],
                  "artifacts": [str(artifacts)]},
                 args.json,
             )

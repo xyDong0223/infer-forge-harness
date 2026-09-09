@@ -1,0 +1,184 @@
+api_version: infer.kunlun/v1alpha1
+kind: SkillCatalog
+entries:
+  - id: model-intake
+    task_types: [model_intake]
+    purpose: establish the pinned, servable model identity before runtime work
+    tools: [model_intake]
+    verification: intake_validator
+    preconditions: []
+    exit_conditions: [INTAKE_READY, MODEL_UNAVAILABLE, UNSUPPORTED_FORMAT]
+    rules:
+      - reject mcore checkpoints and unresolved revisions
+      - do not make runtime decisions during intake
+  - id: environment-proof
+    task_types: [deployment_proof, environment_proof, service_proof]
+    purpose: prove the runtime environment and service independently
+    tools: [deployment_proof]
+    verification: deployment_validator
+    preconditions: []
+    exit_conditions: [ENVIRONMENT_READY, DEPLOYMENT_READY, NEEDS_HUMAN]
+    rules:
+      - require explicit execute authorization
+      - require owned resources in the shared namespace
+  - id: model-scanner
+    task_types: [model_scan]
+    purpose: inspect the pinned model and installed runtime registration
+    tools: [model_scan]
+    verification: scan_validator
+    preconditions: [ModelRequest, EnvironmentProof]
+    exit_conditions: [SCAN_READY, NEEDS_HUMAN]
+    rules:
+      - static evidence cannot claim runtime support
+      - record unresolved architecture and dispatch assumptions
+  - id: capability-matcher
+    task_types: [capability_match]
+    purpose: match model demands against registered platform capabilities
+    tools: [capability_match]
+    verification: capability_validator
+    preconditions: [ModelRequest, ModelSupportCard, EnvironmentProof]
+    exit_conditions: [MATCH_READY, NEEDS_HUMAN]
+    rules:
+      - distinguish registry evidence from runtime evidence
+      - never infer support from a module name alone
+  - id: gap-triage
+    task_types: [gap_classification, failure_triage]
+    purpose: attribute a failure before selecting a patch or handoff
+    tools: [gap_classification, instrument_kernel_trace]
+    verification: triage_validator
+    preconditions: [ModelSupportCard, CapabilityMatch]
+    exit_conditions: [TRIAGE_READY, NEEDS_HUMAN]
+    rules:
+      - separate model, adapter, platform-kernel, runtime-state, and API causes
+      - use a discriminating control before claiming attribution
+  - id: capability-evaluation
+    task_types: [capability_evaluation]
+    purpose: exercise only demanded capability dimensions with independent controls
+    tools: [capability_evaluation]
+    verification: evaluation_validator
+    preconditions: [CapabilityMatch]
+    exit_conditions: [EVALUATION_PASS, EVALUATION_PARTIAL, EVALUATION_FAIL]
+    rules:
+      - gate with relative L2 where scale errors are possible
+      - an unimplemented dimension is partial, never an implicit pass
+  - id: deployment-planning
+    task_types: [deployment_plan]
+    purpose: derive launch parameters from recorded model and gap facts
+    tools: [deployment_plan]
+    verification: plan_validator
+    preconditions: [ModelRequest, GapClassification]
+    exit_conditions: [PLAN_READY, NEEDS_HUMAN]
+    rules:
+      - every launch parameter needs an evidence source or explicit assumption
+  - id: patch-placement
+    task_types: [patch_placement]
+    purpose: select and verify the narrowest reversible patch placement
+    tools: [apply_torch_decode_patch]
+    verification: patch_validator
+    preconditions: [FailureTriage]
+    exit_conditions: [PATCH_PLACED, NEEDS_HUMAN]
+    rules:
+      - prove the patch in service and isolation
+      - preserve a disable and restore path
+  - id: accuracy-alignment
+    task_types: [accuracy_differential]
+    purpose: align served output against an independent reference
+    tools: [accuracy_differential]
+    verification: accuracy_validator
+    preconditions: [ModelRequest, DeploymentProof]
+    exit_conditions: [ACCURACY_PASS, ACCURACY_FAIL]
+    rules:
+      - use independent reference data
+      - do not rely on cosine or norm alone
+  - id: memory-budget
+    task_types: [memory_budget]
+    purpose: reconcile P800 HBM usage against the serving process
+    tools: [memory_budget]
+    verification: memory_validator
+    preconditions: [DeploymentProof]
+    exit_conditions: [BUDGET_ACCEPTABLE, BUDGET_FAIL]
+    rules:
+      - server log and xpu_smi snapshot must belong to the same process
+      - unknown memory remains unattributed rather than being guessed
+  - id: api-conformance
+    task_types: [api_conformance]
+    purpose: verify response shape and parser behavior separately from numerical accuracy
+    tools: [api_conformance]
+    verification: conformance_validator
+    preconditions: [ModelRequest]
+    exit_conditions: [CONFORMANT, NONCONFORMANT, PARSER_ABSENT]
+    rules:
+      - validate actual response markers, not registry declarations
+  - id: support-release
+    task_types: [support_matrix]
+    purpose: publish only claims supported by the accumulated evidence
+    tools: [support_matrix]
+    verification: matrix_validator
+    preconditions: [AccuracyDifferential]
+    exit_conditions: [DELIVERED, NEEDS_HUMAN]
+    rules:
+      - record conditions and limitations with every validated claim
+  - id: vendor-handoff
+    task_types: [vendor_handoff]
+    purpose: package an unresolved platform issue for downstream ownership
+    tools: [vendor_handoff]
+    verification: handoff_validator
+    preconditions: [FailureTriage]
+    exit_conditions: [HANDOFF_READY, NEEDS_HUMAN]
+    rules:
+      - include reproduction, ownership, evidence, and stopping point
+  - id: cache-layout-validation
+    task_types: [capability_evaluation, failure_triage, patch_placement]
+    when: {issue: cache_layout}
+    purpose: validate cache pair axes, block layout, and read-back semantics
+    tools: [instrument_kernel_trace]
+    verification: evaluation_validator
+    preconditions: [CapabilityMatch]
+    exit_conditions: [EVALUATION_PASS, EVALUATION_FAIL, NEEDS_HUMAN]
+    rules:
+      - infer layout from tensor shape and runtime contract, never from a similar kernel
+      - test both key and value halves and include a read-back check
+  - id: quantization-differential
+    task_types: [capability_evaluation, accuracy_differential]
+    when: {dimension: quantization}
+    purpose: isolate scale, clamp, dtype, and activation quantization errors
+    tools: [capability_evaluation, accuracy_differential]
+    verification: evaluation_validator
+    preconditions: [CapabilityMatch]
+    exit_conditions: [EVALUATION_PASS, EVALUATION_FAIL]
+    rules:
+      - use relative L2 and an input distribution that exercises saturation
+      - negative controls must distinguish scale and dtype mistakes
+  - id: dispatch-verification
+    task_types: [model_scan, capability_match, failure_triage]
+    when: {issue: dispatch}
+    purpose: verify the implementation actually selected by the serving runtime
+    tools: [model_scan, instrument_kernel_trace]
+    verification: scan_validator
+    preconditions: [EnvironmentProof]
+    exit_conditions: [SCAN_READY, TRIAGE_READY, NEEDS_HUMAN]
+    rules:
+      - a missing symbol does not prove the path is unreachable
+      - record the selected variant and actual call site
+  - id: runtime-state-triage
+    task_types: [failure_triage]
+    when: {issue: runtime_state}
+    purpose: separate warmup, empty metadata, cache lifetime, and steady-state failures
+    tools: [instrument_kernel_trace]
+    verification: triage_validator
+    preconditions: [DeploymentProof]
+    exit_conditions: [TRIAGE_READY, NEEDS_HUMAN]
+    rules:
+      - reproduce both warmup and steady-state calls
+      - never interpret an empty cache without checking its shape
+  - id: p800-fallback-selection
+    task_types: [failure_triage, patch_placement, deployment_plan]
+    when: {issue: p800_kernel}
+    purpose: select the fastest correct P800 implementation when a kernel cannot launch
+    tools: [instrument_kernel_trace, apply_torch_decode_patch]
+    verification: patch_validator
+    preconditions: [FailureTriage]
+    exit_conditions: [PATCH_PLACED, NEEDS_HUMAN]
+    rules:
+      - check launch limits before tuning kernel parameters
+      - prefer a correct torch fallback over repeated futile Triton tuning

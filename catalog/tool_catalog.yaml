@@ -41,3 +41,57 @@ entries:
     outputs:
       - handoff.json
       - handoff_status.json
+  - id: deployment_proof
+    command: python3 runners/task_runner.py
+    purpose: prove environment or service readiness
+    side_effect: cluster_write
+    retryable: false
+    outputs: [status.json]
+  - id: capability_match
+    command: python3 tools/match_capabilities.py
+    purpose: match static model demands to registered capabilities
+    side_effect: read_only
+    retryable: true
+    outputs: [capability_match.json]
+  - id: gap_classification
+    command: python3 tools/classify_gaps.py
+    purpose: classify ownership and route unresolved gaps
+    side_effect: read_only
+    retryable: true
+    outputs: [gap_classification.json]
+  - id: instrument_kernel_trace
+    command: python3 tools/instrument_kernel_trace.py
+    purpose: capture arguments and tensors for a failing call
+    side_effect: pod_exec
+    retryable: false
+    outputs: [trace.json]
+  - id: apply_torch_decode_patch
+    command: python3 tools/apply_torch_decode_patch.py
+    purpose: place and verify a reversible torch fallback
+    side_effect: pod_write
+    retryable: false
+    outputs: [placement_report.json]
+  - id: deployment_plan
+    command: python3 tools/plan_deployment.py
+    purpose: derive launch parameters from recorded facts
+    side_effect: write_artifact
+    retryable: true
+    outputs: [deployment_plan.json]
+  - id: memory_budget
+    command: python3 tools/memory_budget.py
+    purpose: reconcile xpu_smi counters with the serving process
+    side_effect: pod_exec
+    retryable: true
+    outputs: [memory_budget.json]
+  - id: api_conformance
+    command: python3 tools/check_api_conformance.py
+    purpose: verify response shape and parser behavior
+    side_effect: pod_exec
+    retryable: true
+    outputs: [api_conformance.json]
+  - id: support_matrix
+    command: python3 tools/update_support_matrix.py
+    purpose: publish evidence-bounded support claims
+    side_effect: write_artifact
+    retryable: true
+    outputs: [support_matrix.yaml]

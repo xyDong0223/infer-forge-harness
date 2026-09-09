@@ -40,6 +40,25 @@ The tool capability index is in `catalog/tool_catalog.yaml`. It is the first
 lookup for an Agent choosing a deterministic tool; task-specific contracts and
 validators remain authoritative for inputs and acceptance.
 
+The Skill registry is in `catalog/skill_catalog.yaml`. It maps every workflow
+`task_type` to one method unit with preconditions, tools, verification, exit
+conditions, and rules learned from prior P800 adaptations. `graph_runner` records
+the selected Skill in Task Memory and JSON summaries.
+
+When a Task exposes a more specific fact, the resolver selects a narrower
+method automatically. For example:
+
+```bash
+--set issue=cache_layout       # cache-layout-validation
+--set dimension=quantization   # quantization-differential
+--set issue=runtime_state      # runtime-state-triage
+--set issue=p800_kernel        # p800-fallback-selection
+```
+
+The generic Skill remains the fallback when no specialized fact is present.
+Specialized Skills are deliberately activated by observed context, not by a
+model name or an unverified guess.
+
 ## Repository map
 
 | Directory | Responsibility |

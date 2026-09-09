@@ -1,0 +1,6 @@
+api_version: infer.kunlun/v1alpha1
+kind: Skill
+id: model-scanner
+task_types: [model_scan]
+catalog: catalog/skill_catalog.yaml
+method_document: skills/model_scanner/SKILL.md

@@ -1,0 +1,6 @@
+api_version: infer.kunlun/v1alpha1
+kind: Skill
+id: memory-budget
+task_types: [memory_budget]
+catalog: catalog/skill_catalog.yaml
+method_document: skills/memory_budget/SKILL.md
