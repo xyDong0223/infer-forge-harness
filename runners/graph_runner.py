@@ -53,6 +53,19 @@ NODES: dict[str, dict] = {
         "command": ["python3", "tools/scan_model_support.py", "--out", "{artifacts}"],
         "state_file": "scan_status.json",
     },
+    "runtime_drift_scan": {
+        "produces": "RuntimeDriftReport",
+        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
+        "command": ["python3", "tools/scan_runtime_drift.py", "--out", "{artifacts}"],
+        "state_file": "drift_status.json",
+    },
+    "toy_bringup": {
+        "produces": "ToyBringupReport",
+        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
+                  "--env-status": "fact:EnvironmentProof:status.json"},
+        "command": ["python3", "tools/toy_bringup.py", "--out", "{artifacts}"],
+        "state_file": "bringup_status.json",
+    },
     "capability_match": {
         "produces": "CapabilityMatch",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",

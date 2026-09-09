@@ -17,6 +17,24 @@ entries:
     outputs:
       - model_support.json
       - scan_status.json
+  - id: runtime_drift_scan
+    command: python3 tools/scan_runtime_drift.py
+    purpose: import every plugin module against the installed engine and locate the moved symbols
+    side_effect: pod_exec
+    retryable: true
+    outputs:
+      - runtime_drift.json
+      - runtime_drift_card.md
+      - drift_status.json
+  - id: toy_bringup
+    command: python3 tools/toy_bringup.py
+    purpose: construct, prefill and decode a few-layer copy with dummy weights before the real load
+    side_effect: pod_exec
+    retryable: true
+    outputs:
+      - toy_bringup.json
+      - toy_bringup_card.md
+      - bringup_status.json
   - id: capability_evaluation
     command: python3 tools/evaluate_capability.py
     purpose: exercise only the capability dimensions demanded by the model

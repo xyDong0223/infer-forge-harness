@@ -29,6 +29,9 @@ class SkillRegistryTest(unittest.TestCase):
             "model_bringup_loop",
             "operator_task_dispatch", "baseline_freeze",
             "operator_candidate_integration",
+            # The two pre-flight gates. Both run before anything expensive, so both
+            # need a Skill for the graph to resolve a method before executing them.
+            "runtime_drift_scan", "toy_bringup",
         }
         self.assertEqual(set(index), expected)
 
