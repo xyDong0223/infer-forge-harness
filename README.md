@@ -160,6 +160,7 @@ The candidate manifest must reference independent reports for `KERNEL_PASS`, `DI
 | [`catalog/`](catalog/) | Model, backend, tool, and support facts. |
 | [`tests/`](tests/) | Unit, contract, fake-runner, and P800 integration tests. |
 | [`docs/`](docs/) | Architecture, contribution guidance, and visual documentation assets. |
+| [`openwiki/`](openwiki/) | Layered upstream, plugin, and project-practice inference references. |
 
 ## Run the checks
 
@@ -174,7 +175,7 @@ The P800 integration suite is opt-in. It must never run against a shared cluster
 
 ## Reference material
 
-The [`openwiki/`](openwiki/) directory contains the OpenWiki reference copied from the vLLM-Kunlun `v0.25.1-dev` branch. Its provenance and source revision are recorded in [`openwiki/SOURCE.md`](openwiki/SOURCE.md). Use it as runtime and architecture reference material; platform contracts and executable Task definitions in this repository remain the source of truth for the Agent platform.
+The [`openwiki/`](openwiki/) directory is a layered reference base: [`vllm-core/`](openwiki/vllm-core/) documents the upstream vLLM hardware-backend integration contract, [`vllm-kunlun/`](openwiki/vllm-kunlun/) records the Kunlun P800 plugin implementation, and [`harness/`](openwiki/harness/) contains Infer-Forge engineering practice. Their separate provenance and evidence baselines are registered in [`openwiki/SOURCE.md`](openwiki/SOURCE.md). Use these as runtime and architecture reference material; platform contracts and executable Task definitions in this repository remain the source of truth for the Agent platform.
 
 ## Contributing
 
