@@ -4,7 +4,7 @@ metadata:
   name: mem-001-memory-budget
   family: memory
   task_type: memory_budget
-  version: 0.1.0
+  version: 0.2.0
 spec:
   question: where did this deployment's HBM go, and is the budget acceptable
   produces: MemoryBudget
@@ -51,12 +51,20 @@ checks:
     # xpu_smi and the two must agree within rounding.
     recompute_remainder: true
     tolerance_mib: 32
+    # Scope: vLLM logs are per-rank, so only the cards the deployment occupies
+    # enter the comparison. Active ranks are detected from usage (not from the
+    # rank argument) and cross-checked against the TP size the log declares; the
+    # analyzer receives only those cards. Qwen3.8 TP=1 (2026-09-09): reconciling
+    # rank 0 of an 8-card pod where the service ran on card 2 produced
+    # unattributed=-80118 MiB — idle cards must never enter the comparison.
+    scope: active_ranks
   thresholds:
     # Defaults for a single-model deployment on one 98304 MiB card. An instance
     # may override them; the Validator reads whatever is here.
     min_free_mib: 4096
     max_utilization_pct: 95
     min_kv_cache_tokens: 100000
+    # Across active ranks only: idle cards are context in the report, not scope.
     max_card_spread_mib: 512
 acceptance:
   # A budget with no device snapshot behind it is arithmetic, not evidence.
@@ -91,3 +99,10 @@ findings:
     card_spread_mib: 0
     note: framework reads 0 because current vLLM logs no initial-free-memory line;
       that memory is inside the unattributed remainder, not missing
+  - model: Qwen3.8-27B-W8A8-INT8-Dynamic
+    hardware: 1x P800 (TP=1 on an 8-card dev pod)
+    observed_at: '2026-09-09'
+    note: v0.1.0 reconciled card 0 while the service ran on card 2, so the
+      remainder went negative and the verdict failed closed. The failure was in
+      the reconciliation scope rather than the deployment, so active ranks are
+      now detected from usage and cross-checked against the TP size in the log.

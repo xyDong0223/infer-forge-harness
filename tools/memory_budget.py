@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,17 @@ SPECS_PATH = REPO_ROOT / "catalog" / "xpu_specs.yaml"
 CONTRACT = REPO_ROOT / "tasks" / "mem-001-memory-budget" / "task.yaml"
 ANALYZER_RELATIVE = Path("skills/llm-serving-capacity-planner/scripts/capacity_analyzer.py")
 MIB_PER_GIB = 1024
+# A card below this usage is idle for scope purposes: driver + runtime hold
+# single-digit MiB, and a stale allocator fragment stays far below it. The
+# Qwen3.8 TP=1 incident (2026-09-09) reconciled rank 0 of an 8-card snapshot
+# where the service actually ran on card 2 — idle cards must never enter the
+# comparison.
+DEFAULT_IDLE_THRESHOLD_MIB = 1024
+TP_PATTERNS = (
+    "tensor_parallel_size=(\\d+)",
+    "--tensor-parallel-size[ =](\\d+)",
+    "tp_size=(\\d+)",
+)
 
 
 class BudgetError(RuntimeError):
@@ -89,6 +101,108 @@ def run_analyzer(analyzer: Path, log_file: Path, smi_file: Path) -> dict:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:  # the analyzer prints warnings on stderr, not stdout
         raise BudgetError(f"capacity analyzer produced no JSON: {exc}") from exc
+
+
+def detect_active_ranks(
+    cards: list[dict[str, int]],
+    log_text: str | None,
+    idle_threshold_mib: int = DEFAULT_IDLE_THRESHOLD_MIB,
+) -> dict:
+    """Scope the snapshot to the cards this deployment actually occupies.
+
+    vLLM logs are per-rank, so the log can only be reconciled against the cards
+    its ranks run on. A shared dev pod routinely holds idle cards from a previous
+    deployment, which is why usage — not the rank argument — defines the scope.
+    The TP size declared in the log, when the log declares one, is cross-checked
+    against the detected count: a disagreement means either a co-tenant process
+    or a wrong log, and the report must carry that warning.
+    """
+    active = [entry for entry in cards if entry["used_mib"] > idle_threshold_mib]
+    if not active:
+        raise BudgetError(
+            f"no card above {idle_threshold_mib} MiB usage: the snapshot has no active rank; "
+            "is the deployment actually running?"
+        )
+
+    tp_size = None
+    for pattern in TP_PATTERNS:
+        match = re.search(pattern, log_text or "")
+        if match:
+            tp_size = int(match.group(1))
+            break
+
+    warnings = []
+    if tp_size is not None and len(active) != tp_size:
+        warnings.append(
+            f"{len(active)} cards above the idle threshold but the log declares "
+            f"tensor_parallel_size={tp_size}: a co-tenant process or a stale log may be in scope"
+        )
+    return {"ranks": active, "tp_size": tp_size, "warnings": warnings}
+
+
+def renumber_cards(cards: list[dict[str, int]]) -> list[dict[str, int]]:
+    """Re-index a card subset from 0 so the analyzer sees a contiguous snapshot."""
+    return [
+        {
+            "index": position,
+            "used_mib": entry["used_mib"],
+            "free_mib": entry["free_mib"],
+            "total_mib": entry["total_mib"],
+        }
+        for position, entry in enumerate(cards)
+    ]
+
+
+def reconcile_deployment(
+    report: dict, cards: list[dict[str, int]], spec: dict, scope: dict
+) -> dict:
+    """Reconcile one log against every active rank and aggregate worst-case.
+
+    The aggregated top-level fields keep the Validator contract: they describe
+    the worst rank, so a gate on any threshold holds for every rank that the
+    deployment actually occupies. Per-rank detail is kept in `per_rank`.
+    """
+    active = scope["ranks"]
+    per_rank = [reconcile(report, active, spec, rank=entry["index"]) for entry in active]
+
+    head = per_rank[0]
+    used = [entry["used_mib"] for entry in active]
+    budget = {
+        "device": head["device"],
+        "rank": active[0]["index"],
+        "ranks": [entry["index"] for entry in active],
+        "active_cards": len(active),
+        "tp_size_declared": scope["tp_size"],
+        "scope_warnings": scope["warnings"],
+        "hbm_total_mib": head["hbm_total_mib"],
+        "hbm_total_matches_device": all(b["hbm_total_matches_device"] for b in per_rank),
+        "measured_used_mib": max(b["measured_used_mib"] for b in per_rank),
+        "measured_free_mib": min(b["measured_free_mib"] for b in per_rank),
+        "utilization_pct": max(b["utilization_pct"] for b in per_rank),
+        "log_attributed_mib": head["log_attributed_mib"],
+        # Worst rank: one unreconciled or implausible rank fails the deployment.
+        "unattributed_mib": min(b["unattributed_mib"] for b in per_rank),
+        "analyzer_other_mib": head["analyzer_other_mib"],
+        "reconciled": all(b["reconciled"] for b in per_rank),
+        "cards": len(cards),
+        "card_spread_mib": max(used) - min(used),
+        "categories_mib": head["categories_mib"],
+        "kv_cache_tokens": head["kv_cache_tokens"],
+        "max_model_len": head["max_model_len"],
+        "reported_concurrency": head["reported_concurrency"],
+        "per_rank": [
+            {
+                "rank": b["rank"],
+                "used_mib": b["measured_used_mib"],
+                "free_mib": b["measured_free_mib"],
+                "utilization_pct": b["utilization_pct"],
+                "unattributed_mib": b["unattributed_mib"],
+                "reconciled": b["reconciled"],
+            }
+            for b in per_rank
+        ],
+    }
+    return budget
 
 
 def reconcile(report: dict, cards: list[dict[str, int]], spec: dict, rank: int = 0) -> dict:
@@ -148,12 +262,21 @@ def reconcile(report: dict, cards: list[dict[str, int]], spec: dict, rank: int =
 
 def render(budget: dict, cards: list[dict[str, int]]) -> str:
     total = budget["hbm_total_mib"]
+    tp = budget.get("tp_size_declared")
+    scope = f"active ranks {budget['ranks']}"
+    if tp is not None:
+        scope += f", log declares tensor_parallel_size={tp}"
     lines = [
-        f"# Memory budget — {budget['device']} rank {budget['rank']}",
+        f"# Memory budget — {budget['device']} ({scope})",
         "",
-        f"HBM {total} MiB per card, {budget['cards']} cards, "
-        f"{budget['utilization_pct']}% used, {budget['measured_free_mib']} MiB free",
+        f"HBM {total} MiB per card, {budget['cards']} cards in the pod, "
+        f"{budget['utilization_pct']}% used on the busiest active rank, "
+        f"{budget['measured_free_mib']} MiB free there",
         "",
+    ]
+    if budget.get("scope_warnings"):
+        lines += [f"WARNING: {warning}" for warning in budget["scope_warnings"]] + [""]
+    lines += [
         "| Category | MiB | % of HBM | Source |",
         "| --- | --- | --- | --- |",
     ]
@@ -168,16 +291,19 @@ def render(budget: dict, cards: list[dict[str, int]]) -> str:
     gap = budget["unattributed_mib"]
     lines += [
         f"| unattributed | {gap} | {gap / total * 100:.1f}% | xpu_smi used - log attributed |",
-        f"| free | {budget['measured_free_mib']} | "
-        f"{budget['measured_free_mib'] / total * 100:.1f}% | xpu_smi |",
         "",
         f"KV cache: {budget['kv_cache_tokens']} tokens, max_model_len {budget['max_model_len']}, "
         f"reported concurrency {budget['reported_concurrency']}x",
-        f"Per-card spread: {budget['card_spread_mib']} MiB",
+        f"Active-rank spread: {budget['card_spread_mib']} MiB",
         "",
-        "| Card | Used MiB | Free MiB |",
-        "| --- | --- | --- |",
+        "| Active rank | Used MiB | Free MiB | Unattributed MiB | Reconciled |",
+        "| --- | --- | --- | --- | --- |",
     ]
+    lines += [
+        f"| {r['rank']} | {r['used_mib']} | {r['free_mib']} | {r['unattributed_mib']} | {r['reconciled']} |"
+        for r in budget["per_rank"]
+    ]
+    lines += ["", "| Card | Used MiB | Free MiB |", "| --- | --- | --- |"]
     lines += [f"| {c['index']} | {c['used_mib']} | {c['free_mib']} |" for c in cards]
     if not budget["hbm_total_matches_device"]:
         lines.append("")
@@ -200,7 +326,18 @@ def main() -> int:
     parser.add_argument("--xpu-smi-file", help="pre-captured `xpu_smi -m` output")
     parser.add_argument("--analyzer", help="capacity analyzer script or its repository root")
     parser.add_argument("--device", default="p800")
-    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=None,
+        help="reconcile only this card (must be active); default reconciles every active rank",
+    )
+    parser.add_argument(
+        "--idle-threshold-mib",
+        type=int,
+        default=DEFAULT_IDLE_THRESHOLD_MIB,
+        help="cards below this usage are idle and excluded from the reconciliation scope",
+    )
     parser.add_argument("--out", required=True, help="evidence directory to write")
     args = parser.parse_args()
 
@@ -232,15 +369,31 @@ def main() -> int:
         log_file = out / "server_log.txt"
         log_file.write_text(result.stdout, encoding="utf-8")
 
+    # Scope first, then feed the analyzer only the cards in scope: its `other`
+    # bucket and the spread are per-rank claims, and idle cards make both lie.
+    scope = detect_active_ranks(cards, log_file.read_text(encoding="utf-8"), args.idle_threshold_mib)
+    active = [entry for entry in scope["ranks"] if args.rank is None or entry["index"] == args.rank]
+    if not active:
+        raise BudgetError(
+            f"card {args.rank} is not an active rank "
+            f"(active: {[entry['index'] for entry in scope['ranks']]})"
+        )
+    scope = {**scope, "ranks": active}
+
     smi_file = out / "xpu_smi.csv"
     smi_file.write_text(KunlunP800Adapter.as_nvidia_smi_csv(cards), encoding="utf-8")
-    report = run_analyzer(analyzer, log_file, smi_file)
+    active_smi_file = out / "xpu_smi_active.csv"
+    active_smi_file.write_text(
+        KunlunP800Adapter.as_nvidia_smi_csv(renumber_cards(active)), encoding="utf-8"
+    )
+    report = run_analyzer(analyzer, log_file, active_smi_file)
     (out / "capacity_planner.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-    budget = reconcile(report, cards, spec, args.rank)
+    budget = reconcile_deployment(report, cards, spec, scope)
     budget["evidence"] = {
         "log_file": str(log_file),
         "xpu_smi": str(smi_file),
+        "xpu_smi_active": str(active_smi_file),
         "capacity_planner": str(out / "capacity_planner.json"),
         "analyzer": str(analyzer),
     }
