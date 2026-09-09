@@ -80,6 +80,13 @@ The repository versions contracts, schemas, workflows, skills, tools, adapters, 
 
 The rendered diagram is backed by an editable [Excalidraw source](docs/assets/agent-workflow.excalidraw). It shows the main contract-to-verdict path, the persistent Task Memory loop, and the explicit outcomes that prevent unverified progress from becoming a capability fact.
 
+### Two gates before anything expensive
+
+A registry entry proves a name is mapped, not that the code behind it loads, and loading it is not the same as running it. Both gaps used to be closed by launching the model, which on a 744B checkpoint means a 700 GiB read per error message.
+
+- **MAT-027 Runtime Drift** imports every module of the installed plugin against the installed engine in one pass, and indexes the engine's own source to say where each missing symbol lives now. No model, no weights, no XPU. A version label is not evidence of a matching install: vLLM-Kunlun `v0.25.1-dev` pairs with a wheel labelled `0.25.1` whose internals are months newer, and every MLA module failed to import while the label matched.
+- **MAT-028 Toy Bring-up** derives a few-layer copy of the real config, points the engine at dummy weights, and runs prefill and one decode step. Depth, expert count and MTP shrink; every dimension that selects a kernel stays at real size, so it is the same code path. It catches what sits between "imports" and "serves" — an abstract method the engine now requires, a factory whose return shape changed, a KV-cache tensor whose rank the layer slices wrongly — and it cannot see a wrong number, because the weights are random.
+
 ### MiniMax-M3 real adaptation loop
 
 <p align="center">
