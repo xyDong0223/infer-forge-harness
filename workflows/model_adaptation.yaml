@@ -76,9 +76,17 @@ spec:
     # the same kernels, so the 700 GiB load stops being the debug loop.
     - id: mat-028-toy-bringup
       task: tasks/mat-028-toy-bringup/task.yaml
-      on_success: kdp-001b-service-proof
+      on_success: mat-029-shim-handoff
       # A blocked bring-up is the cheapest triage input there is: a stage name and
       # a traceback, with no weights in the loop.
+      on_failure: mat-006-failure-triage
+    # The gate that closes the path GLM-5.2 slipped through: three torch shims
+    # replaced vendor kernels mid-loop, the service went green, and none of them
+    # ever became an operator request. Every fix edge re-enters here before
+    # service proof, so a shim cannot be written and immediately forgotten.
+    - id: mat-029-shim-handoff
+      task: tasks/mat-029-shim-handoff/task.yaml
+      on_success: kdp-001b-service-proof
       on_failure: mat-006-failure-triage
     - id: kdp-001b-service-proof
       task: tasks/kdp-001b-service-proof/task.yaml
@@ -100,7 +108,10 @@ spec:
     # and a numerical comparison against the vendor kernel.
     - id: mat-007-patch-placement
       task: tasks/mat-007-patch-placement/task.yaml
-      on_success: kdp-001b-service-proof
+      # A patch that replaces a vendor kernel with a torch shim re-enters the
+      # shim gate, not the service proof: the fix and its operator debt are
+      # recorded in the same pass, or the debt is recorded nowhere.
+      on_success: mat-029-shim-handoff
       on_failure: NEEDS_HUMAN
     # Read-only and downstream of a successful service proof. Kept out of
     # KDP-001b because a capacity threshold must not be able to fail a

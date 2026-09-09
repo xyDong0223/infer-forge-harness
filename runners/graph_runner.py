@@ -66,6 +66,12 @@ NODES: dict[str, dict] = {
         "command": ["python3", "tools/toy_bringup.py", "--out", "{artifacts}"],
         "state_file": "bringup_status.json",
     },
+    "torch_shim_handoff": {
+        "produces": "TorchShimRegistry",
+        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
+        "command": ["python3", "tools/scan_torch_shims.py", "--out", "{artifacts}"],
+        "state_file": "shim_status.json",
+    },
     "capability_match": {
         "produces": "CapabilityMatch",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
