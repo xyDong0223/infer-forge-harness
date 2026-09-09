@@ -49,7 +49,7 @@ UNINTERESTING = {
 
 
 def fetch(url: str) -> tuple[int, str]:
-    request = urllib.request.Request(url, headers={"User-Agent": "kunlun-inference-agent"})
+    request = urllib.request.Request(url, headers={"User-Agent": "infer-forge-harness"})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return response.status, response.read().decode("utf-8", "replace")

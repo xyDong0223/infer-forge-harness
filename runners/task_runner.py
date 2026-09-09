@@ -1,4 +1,4 @@
-"""Plan-first task runner for kunlun-inference-agent."""
+"""Plan-first task runner for infer-forge-harness."""
 
 from __future__ import annotations
 

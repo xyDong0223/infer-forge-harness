@@ -8,7 +8,7 @@ generated:
   by: hand-authored
   at: 2026-09-09T00:00:00Z
 evidence_version:
-  repo: https://github.com/xyDong0223/kunlun-inference-agent
+  repo: https://github.com/xyDong0223/infer-forge-harness
   ref: main
   commit: f3cea1e0c1b09bbabb87df13ed5e2ea602e3004d
 sources:

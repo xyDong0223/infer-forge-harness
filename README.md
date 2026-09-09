@@ -2,13 +2,13 @@
   <img src="assets/readme-hero.png" alt="Hand-drawn engineering flow from a task contract through a compute runner and validation to a reproducible artifact" width="100%">
 </p>
 
-# kunlun-inference-agent
+# infer-forge-harness
 
-> **An agentic, contract-driven inference engineering platform for vLLM-Kunlun model adaptation and performance optimization.**
+> **An agentic harness for bringing up, validating, and optimizing inference models across heterogeneous accelerators.**
 
 **Python 3.10+** · **v0.1 public scaffold** · **Plan-only by default**
 
-`kunlun-inference-agent` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact.
+`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 is the first backend and real-world adaptation case.
 
 ## Contents
 

@@ -2,7 +2,7 @@
   "schema": "openwiki/claims/v0.2",
   "page": "practice-experience.md",
   "evidence_version": {
-    "repo": "https://github.com/xyDong0223/kunlun-inference-agent",
+    "repo": "https://github.com/xyDong0223/infer-forge-harness",
     "ref": "main",
     "commit": "f3cea1e0c1b09bbabb87df13ed5e2ea602e3004d",
     "observed_at": "2026-09-09"
