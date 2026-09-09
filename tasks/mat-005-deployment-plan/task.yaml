@@ -43,7 +43,7 @@ checks:
     max_model_len: mat-001 identity.max_position_embeddings
     tensor_parallel_size: weight bytes per card against catalog hbm_mib, and must
       divide num_attention_heads
-    block_size: 64 for MLA, 16 otherwise (openwiki/platform-contract.md)
+    block_size: 64 for MLA, 16 otherwise (openwiki/vllm-kunlun/platform-contract.md)
     trust_remote_code: mat-001 model.trust_remote_code_required
     enforce_eager: mat-007 patch limitations
   memory_arithmetic_required: true

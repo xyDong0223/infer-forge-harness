@@ -1,7 +1,11 @@
-# Source and License Notice
+# OpenWiki Source Registry
 
-This directory is copied from [`baidu/vLLM-Kunlun`](https://github.com/baidu/vLLM-Kunlun/tree/v0.25.1-dev/openwiki), branch `v0.25.1-dev`, source commit `3ced109af2510479e1b2eb846a8aca1fbdcbdf62`.
+`openwiki/` contains separately sourced reference modules. The directory structure is part of the documentation contract: source-specific evidence, licenses, and revision baselines stay within the module that owns them.
 
-The copied material is retained as a reference for the Kunlun P800 backend of the `infer-forge-harness` project. It is not silently rewritten as original work. Please consult the source repository and its root `LICENSE` for the governing license terms. The source repository is Apache-2.0 licensed.
+| Module | Scope | Source and evidence baseline | Detailed notice |
+|---|---|---|---|
+| [`vllm-core/`](vllm-core/index.md) | vLLM hardware backend and platform integration | Supplied engineer-authored Wiki; vLLM main `94848eda600a07c28675f5753a11b2c212c146ed` | [vllm-core/SOURCE.md](vllm-core/SOURCE.md) |
+| [`vllm-kunlun/`](vllm-kunlun/index.md) | Kunlun3 P800 out-of-tree vLLM plugin | `baidu/vLLM-Kunlun` `v0.25.1-dev`, source commit `3ced109af2510479e1b2eb846a8aca1fbdcbdf62` | [vllm-kunlun/SOURCE.md](vllm-kunlun/SOURCE.md) |
+| [`harness/`](harness/index.md) | Infer-Forge project engineering practice | `xyDong0223/infer-forge-harness` task, tool, and validator evidence | [harness/index.md](harness/index.md) |
 
-Future adaptations in this repository should record their relationship to the source material and preserve applicable copyright and license notices.
+Imported material remains reference material. Platform contracts, executable task definitions, and validation results in this repository remain authoritative for the Agent platform.

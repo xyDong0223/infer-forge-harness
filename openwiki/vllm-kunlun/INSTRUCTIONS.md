@@ -32,7 +32,7 @@
 ## 约定
 
 + 每条实质性论断都必须绑定版本化证据，形式为 `repo://<path>#L<start>-L<end>`。
-  结构化 Claim 存放在 `openwiki/.claims/<page>.json` 旁挂文件里，**不内联进正文**。
+  结构化 Claim 存放在 `.claims/<page>.json` 旁挂文件里，**不内联进正文**。
 + 证据版本固定为分支 `v0.25.1-dev`、commit `c53e090`。仓库的 `main` 分支内容陈旧
   （仍宣称 v0.15.1 / "Initial release"），**不要以 `main` 为准**。
 + "缺失"类论断（例如"不支持 PD 分离"）也需要证据：给出穷尽搜索的范围与否定结果。

@@ -30,6 +30,8 @@ claims: .claims/practice-experience.json
 
 # 模型适配实践经历
 
+> [返回 Infer-Forge 实践模块](index.md) · [返回 OpenWiki 根目录](../index.md)
+
 本页记录在 Kunlun3 P800 上进行 vLLM-Kunlun 模型适配时，已经被实际排查和验证过的工程方法。它不是某个模型的支持声明，也不把一次实验结果直接推广到所有版本、芯片或 vendor build。
 
 ## 1. 先建立可工作的基线
@@ -242,8 +244,8 @@ superseded claim（如有）
 
 ## 相关页面
 
-- [模型支持](model-support.md)
-- [已知缺口、死代码与文档冲突](known-gaps.md)
-- [量化](quantization.md)
-- [MoE 与专家并行](moe-and-ep.md)
-- [测试与 CI 的真实覆盖度](testing-and-ci.md)
+- [模型支持](../vllm-kunlun/model-support.md)
+- [已知缺口、死代码与文档冲突](../vllm-kunlun/known-gaps.md)
+- [量化](../vllm-kunlun/quantization.md)
+- [MoE 与专家并行](../vllm-kunlun/moe-and-ep.md)
+- [测试与 CI 的真实覆盖度](../vllm-kunlun/testing-and-ci.md)

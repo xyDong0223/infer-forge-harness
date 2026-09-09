@@ -30,7 +30,7 @@ from validators.plan_validator import validate_deployment_plan  # noqa: E402
 CONTRACT = REPO_ROOT / "tasks" / "mat-005-deployment-plan" / "task.yaml"
 INSTANCE_TEMPLATE = REPO_ROOT / "tasks" / "kdp-001-deployment-proof" / "instances"
 # vLLM-Kunlun forces 64 for MLA and defaults to 16 otherwise
-# (openwiki/platform-contract.md).
+# (openwiki/vllm-kunlun/platform-contract.md).
 BLOCK_SIZE = {"mla": 64, "default": 16}
 # Weights plus runtime must leave room for a KV pool worth having.
 WEIGHT_HEADROOM = 0.55
@@ -65,7 +65,7 @@ def plan(request: dict, classification: dict, spec: dict, patch: dict | None) ->
         ),
         value("max_model_len", position_limit, "mat-001 identity.max_position_embeddings"),
         value("block_size", BLOCK_SIZE[attention],
-              f"vLLM-Kunlun default for {attention} attention (openwiki/platform-contract.md)"),
+              f"vLLM-Kunlun default for {attention} attention (openwiki/vllm-kunlun/platform-contract.md)"),
         value("trust_remote_code", bool(model.get("trust_remote_code_required")),
               "mat-001 model.trust_remote_code_required"),
         value("gpu_memory_utilization", 0.9,
