@@ -1,0 +1,78 @@
+{
+  "schema": "openwiki/claims/v0.2",
+  "page": "practice-experience.md",
+  "evidence_version": {
+    "repo": "https://github.com/xyDong0223/kunlun-inference-agent",
+    "ref": "main",
+    "commit": "f3cea1e0c1b09bbabb87df13ed5e2ea602e3004d",
+    "observed_at": "2026-09-09"
+  },
+  "claims": [
+    {
+      "id": "practice-001",
+      "statement": "模型 bring-up 应先建立可重复的 service baseline，再逐个接入候选算子。",
+      "kind": "method",
+      "evidence": [
+        "repo://tasks/mat-025-baseline-freeze/task.yaml",
+        "repo://tasks/mat-026-operator-candidate-integration/task.yaml",
+        "repo://tools/operator_lifecycle.py"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-002",
+      "statement": "HTTP 200、symbol 存在或离线调用成功不能单独证明模型或算子正确。",
+      "kind": "caveat",
+      "evidence": [
+        "repo://skills/model_bringup_loop/SKILL.md",
+        "repo://skills/kernel_grade/SKILL.md",
+        "repo://tasks/mat-022-end-to-end-accuracy/task.yaml"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-003",
+      "statement": "正确性门禁需要独立 reference、relative L2、elementwise error、非有限值检查和可区分的 negative control。",
+      "kind": "method",
+      "evidence": [
+        "repo://tasks/mat-021-platform-kernel-correctness/task.yaml",
+        "repo://validators/correctness_validator.py",
+        "repo://tools/tensor_diff.py"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-004",
+      "statement": "P800 上 Torch fallback 可以同时承担 bring-up unblocker、reference 和 vendor kernel 对照，但 fallback 通过不等于 vendor kernel 正确。",
+      "kind": "method",
+      "evidence": [
+        "repo://skills/model_bringup_loop/SKILL.md",
+        "repo://skills/kernel_grade/SKILL.md",
+        "repo://tasks/mat-006-failure-triage/task.yaml"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-005",
+      "statement": "算子生成任务可以异步派发；生成结果必须经过 build、kernel grade、dispatch、服务回归和端到端精度回归后才能接入。",
+      "kind": "method",
+      "evidence": [
+        "repo://tasks/mat-024-operator-task-dispatch/task.yaml",
+        "repo://tasks/mat-026-operator-candidate-integration/task.yaml",
+        "repo://tools/operator_lifecycle.py"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-006",
+      "statement": "cache layout、quantization、sparse geometry 和 MoE routing 必须分别验证，不能把组合服务输出作为唯一定位证据。",
+      "kind": "method",
+      "evidence": [
+        "repo://tasks/mat-008-capability-evaluation/task.yaml",
+        "repo://tasks/mat-023-long-context-sparse-correctness/task.yaml",
+        "repo://tools/tensor_diff.py"
+      ],
+      "confidence": "high"
+    }
+  ]
+}
