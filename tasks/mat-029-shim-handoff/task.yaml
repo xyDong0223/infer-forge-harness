@@ -1,0 +1,79 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-029-shim-handoff
+  family: model_adaptation
+  task_type: torch_shim_handoff
+  version: 0.1.0
+spec:
+  question: does every torch shim standing in for a vendor kernel have an operator request
+  produces: TorchShimRegistry
+  # A shim is born where fixes happen (MAT-007 patch placement, the MAT-024
+  # dispatch fallback), which is exactly where nothing used to record it. The
+  # gate consumes the environment proof for the pod and re-enters from every
+  # fix edge in the graph.
+  consumes: [EnvironmentProof, OperatorTaskDispatch]
+  runs_with: |
+    python3 tools/scan_torch_shims.py \
+      --env-status <artifacts>/kdp-001a/status.json \
+      --registry <artifacts>/shim_registry.json \
+      --out <artifacts>/mat-029
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  scope: installed_runtime
+  probe: tools/probe/torch_shim_probe.py
+  tool: tools/scan_torch_shims.py
+actions:
+  - resolve_pod_from_environment_proof
+  - scan_installed_plugin_for_shim_signals
+  - reconcile_signals_against_declared_registry
+  - dispatch_one_operator_request_per_unwaived_shim
+  - package_shim_registry
+checks:
+  coverage:
+    walk: every module in the installed plugin package
+    reject_partial_scan: true
+  reconciliation:
+    # The probe is a net, not ground truth; the declaration is the contract.
+    # Its job is to make an undeclared shim impossible to leave behind, which
+    # is how three GLM-5.2 shims never became operator requests.
+    every_signal_explained: true
+    explanation: registry entry (dispatched or waived with reason)
+  dispatch:
+    immediate: true
+    mechanism: tools/operator_lifecycle.py dispatch (same requests MAT-026 integrates)
+    non_blocking: true
+acceptance:
+  required_fields:
+    - plugin
+    - files_scanned
+    - signals
+    - entries
+    - unmapped_signals
+  require_dispatch_for_unwaived: true
+  evidence_required: true
+artifacts:
+  directory: ${ARTIFACT_DIR}
+  files:
+    - torch_shim_registry.json
+    - torch_shim_card.md
+    - shim_gaps.json
+    - shim_status.json
+validator: validators/shim_validator.py:validate_shim_handoff
+exit_states:
+  # HANDOFF_FOUND is not a stop: it means shims exist that the registry cannot
+  # explain, or non-waived shims still lack a request. Both are work-list
+  # items for the fix loop, and dispatchable entries were already dispatched.
+  clear: HANDOFF_CLEAR
+  found: HANDOFF_FOUND
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+notes:
+  - "A waived shim must state why it will never become an operator: glue logic,
+    once-per-startup cost, or semantics still under verification are reasons;
+    'nobody got to it' is not."
+  - "A DISPATCHED shim is not an integrated operator. Integration still goes
+    through MAT-025 baseline freeze and MAT-026, one candidate at a time."
