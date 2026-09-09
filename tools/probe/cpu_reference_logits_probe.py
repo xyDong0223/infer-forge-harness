@@ -42,6 +42,65 @@ def _visible_accelerator(torch) -> str | None:
     return None
 
 
+def _dequantize_int8_weights(model, model_path: str) -> dict:
+    """Apply per-channel scales that transformers silently discarded.
+
+    transformers 5.5.x does not build quantized modules for the compressed-tensors
+    ``int-quantized`` format on CPU: the int8 ``weight`` is loaded as-is and the
+    paired ``weight_scale`` is dropped as an unexpected key, so the reference
+    computes with raw int8 magnitudes and produces NaN after the first layer.
+    The dequantization itself is a per-output-channel symmetric multiply —
+    checkpoint metadata only, no accelerator involvement, so the reference stays
+    independent.
+    """
+    import os
+
+    import torch
+    from safetensors import safe_open
+
+    weight_map = {}
+    index_path = os.path.join(model_path, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as handle:
+            weight_map = json.load(handle).get("weight_map", {})
+    else:
+        for name in os.listdir(model_path):
+            if name.endswith(".safetensors"):
+                weight_map[name] = name
+
+    # Group scale keys by shard so each file is opened once.
+    shards: dict[str, list[str]] = {}
+    for key, shard in weight_map.items():
+        if key.endswith("weight_scale"):
+            shards.setdefault(shard, []).append(key)
+
+    patched = 0
+    missing_scale = []
+    modules = dict(model.named_modules())
+    for shard, keys in shards.items():
+        with safe_open(os.path.join(model_path, shard), framework="pt", device="cpu") as handle:
+            for key in keys:
+                scale = handle.get_tensor(key)
+                weight_key = key[: -len("weight_scale")] + "weight"
+                module = modules.get(weight_key[: -len(".weight")])
+                if module is None and ".language_model." in weight_key:
+                    # transformers flattens the multimodal wrapper: checkpoint keys
+                    # say model.language_model.layers.N, parameters say model.layers.N.
+                    alt = weight_key.replace(".language_model.", ".")
+                    module = modules.get(alt[: -len(".weight")])
+                if module is None or not hasattr(module, "weight"):
+                    missing_scale.append(key)
+                    continue
+                weight = module.weight.detach()
+                if weight.shape != scale.shape:
+                    # Per-channel scales broadcast over the input dim.
+                    scale = scale.reshape(weight.shape[0], -1)
+                with torch.no_grad():
+                    module.weight.copy_(weight.float() * scale.float())
+                patched += 1
+    return {"patched": patched, "missing_scale": missing_scale[:5]}
+
+
 def main(model_path: str, top_k: int, prompts: list[str]) -> int:
     if top_k < 1:
         print(json.dumps({"state": "CONTRACT_INVALID", "reason": "top_k must be >= 1"}))
@@ -80,6 +139,18 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
         )
         model.eval()
 
+        dequant = _dequantize_int8_weights(model, model_path)
+        if dequant["patched"] == 0:
+            print(
+                json.dumps(
+                    {
+                        "state": "REFERENCE_FAILED",
+                        "reason": "no weight_scale tensors applied; checkpoint may not be quantized",
+                    }
+                )
+            )
+            return 0
+
         results = {}
         for prompt in prompts:
             inputs = tokenizer(prompt, return_tensors="pt")
@@ -98,6 +169,7 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
                     # candidate's reduced precision.
                     "dtype": "float32",
                     "transformers_version": transformers.__version__,
+                    "dequantized": dequant,
                     "results": results,
                 }
             )
