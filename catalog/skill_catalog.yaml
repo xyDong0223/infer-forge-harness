@@ -31,6 +31,8 @@ entries:
     rules:
       - static evidence cannot claim runtime support
       - record unresolved architecture and dispatch assumptions
+      - resolve the arch only after load_general_plugins(): plugin registration overwrites upstream at engine start, so an import-time registry check reports the upstream triton variant even when the Kunlun OOT one serves
+      - recent checkpoints carry dtype instead of torch_dtype; a probe reading only the old key must not fail the identity contract
   - id: capability-matcher
     task_types: [capability_match]
     purpose: match model demands against registered platform capabilities
@@ -120,6 +122,9 @@ entries:
     rules:
       - use independent reference data
       - do not rely on cosine or norm alone
+      - a reference whose top-k is identical across different prompts is broken, not the candidate; treat constant output as a reference failure control
+      - transformers on CPU may ignore the compressed-tensors config of an int-quantized checkpoint (raw int8 magnitudes, NaN after the first layer); the reference must apply weight_scale tensors itself
+      - checkpoint tensor keys may carry a model.language_model. prefix that the loaders flatten; map keys by both spellings before calling a module missing
   - id: memory-budget
     task_types: [memory_budget]
     purpose: reconcile P800 HBM usage against the serving process
@@ -130,6 +135,8 @@ entries:
     rules:
       - server log and xpu_smi snapshot must belong to the same process
       - unknown memory remains unattributed rather than being guessed
+      - reconcile per active rank only; idle cards on a shared pod are context, never scope, and a negative unattributed remainder means the wrong card was picked
+      - cross-check the active-rank count against the TP size the log declares; a mismatch is recorded as a scope warning, not silently accepted
   - id: api-conformance
     task_types: [api_conformance]
     purpose: verify response shape and parser behavior separately from numerical accuracy
