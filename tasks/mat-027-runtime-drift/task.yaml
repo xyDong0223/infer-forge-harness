@@ -1,0 +1,82 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-027-runtime-drift
+  family: model_adaptation
+  task_type: runtime_drift_scan
+  version: 0.1.0
+spec:
+  question: does every module of the installed plugin still import against the installed engine
+  produces: RuntimeDriftReport
+  # Only the pod. No model, no launch parameter, no weights, no XPU — which is
+  # why this can run before anything is chosen about the model.
+  consumes: [EnvironmentProof]
+  runs_with: |
+    python3 tools/scan_runtime_drift.py \
+      --env-status <artifacts>/kdp-001a/status.json \
+      --out <artifacts>/mat-027
+context:
+  model:
+    # Deliberately empty: drift is a property of the installation, not the model.
+    # Recording a model here would invite reruns per model for an identical answer.
+    id: null
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  scope: installed_runtime
+  probe: tools/probe/runtime_drift_probe.py
+  tool: tools/scan_runtime_drift.py
+actions:
+  - resolve_pod_from_environment_proof
+  - import_every_plugin_module
+  - index_engine_definitions
+  - resolve_missing_symbols_to_new_locations
+  - package_drift_report
+checks:
+  coverage:
+    # One import pass over the whole package. Sampling defeats the purpose: the
+    # module that breaks is the one nobody expected to be on the path.
+    walk: every module in the plugin package
+    reject_partial_scan: true
+  resolution:
+    # A failure list is a symptom list. Naming the new location is what makes it
+    # actionable, and is why the probe indexes the engine's own source by AST.
+    method: AST index of engine top-level definitions, matched by name
+    record_per_failure:
+      - module
+      - error_type
+      - message
+      - resolution.kind
+      - resolution.candidates
+  classification:
+    MISSING_SYMBOL: the name moved or was removed from the module it was imported from
+    MISSING_MODULE: the module path itself moved or was removed
+    UNCLASSIFIED: import failed for a reason that is not drift — record, do not repoint
+acceptance:
+  required_fields:
+    - engine.name
+    - engine.path
+    - plugin.modules_scanned
+    - failures
+  require_resolution_candidates: true
+  evidence_required: true
+artifacts:
+  directory: ${ARTIFACT_DIR}
+  files:
+    - runtime_drift.json
+    - runtime_drift_card.md
+    - drift_status.json
+validator: validators/drift_validator.py:validate_drift_report
+exit_states:
+  # DRIFT_FOUND is not a stop. It is a work list, and the graph continues so the
+  # rest of the static picture is gathered before anyone starts repointing imports.
+  clear: DRIFT_CLEAR
+  found: DRIFT_FOUND
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+notes:
+  - Import success is not correctness. A module that imports can still miss an
+    abstract method or hold a stale tensor layout; that is MAT-028's job.
+  - Run this again after any engine or plugin reinstall. The answer is a property
+    of the pair, and both move.
