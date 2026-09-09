@@ -32,6 +32,8 @@ class SkillRegistryTest(unittest.TestCase):
             # The two pre-flight gates. Both run before anything expensive, so both
             # need a Skill for the graph to resolve a method before executing them.
             "runtime_drift_scan", "toy_bringup",
+            # The gate that turns torch shims into operator requests.
+            "torch_shim_handoff",
         }
         self.assertEqual(set(index), expected)
 

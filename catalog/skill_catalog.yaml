@@ -118,6 +118,20 @@ entries:
     rules:
       - emit durable requests and let the main bring-up continue
       - never treat a generated request as an integrated implementation
+      - "the torch fallback written for a dispatched gap is itself a registry input: declare it in the shim registry in the same session, or it serves un-optimised with no request and no record - three GLM-5.2 shims did exactly that"
+  - id: shim-opgen-handoff
+    task_types: [torch_shim_handoff]
+    purpose: ensure every torch shim standing in for a vendor kernel becomes an operator request or an explicit waiver
+    tools: [torch_shim_handoff]
+    verification: shim_validator
+    preconditions: [EnvironmentProof]
+    exit_conditions: [HANDOFF_CLEAR, HANDOFF_FOUND, NEEDS_HUMAN]
+    rules:
+      - "a torch shim is a dispatch input, not a terminal state: register it the session it is written, with location, replaced kernel, call frequency and semantics basis"
+      - the probe is a net, not ground truth; every signal it raises must be declared, dispatched or waived - an unexplained signal is the GLM-5.2 failure repeating
+      - dispatch in the same pass, not later - dispatchable entries become operator_lifecycle requests immediately, so the handoff never waits on a manual step
+      - "a waiver needs a reason someone can audit; glue logic and once-per-startup cost qualify, 'nobody got to it' does not"
+      - a dispatched shim is not an integrated operator; it still passes MAT-025 baseline freeze and MAT-026 integration one candidate at a time
   - id: baseline-freeze
     task_types: [baseline_freeze]
     purpose: freeze a passing service and accuracy baseline for candidate regression
