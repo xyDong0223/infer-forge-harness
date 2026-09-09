@@ -59,6 +59,29 @@ The generic Skill remains the fallback when no specialized fact is present.
 Specialized Skills are deliberately activated by observed context, not by a
 model name or an unverified guess.
 
+### Asynchronous operator loop
+
+`model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable
+`xpu-op-gen` requests and continues model bring-up. After service and independent
+accuracy both pass, it freezes a baseline. Generated candidates are then tested
+one at a time against that baseline; a failed kernel, dispatch, service, or
+accuracy gate is rejected and must be rolled back before the next candidate.
+
+The lifecycle tool can also be driven directly:
+
+```bash
+python3 tools/operator_lifecycle.py integrate \
+  --baseline /path/to/baseline_manifest.json \
+  --candidate /path/to/candidate_manifest.json \
+  --subject Qwen3-8B \
+  --out /path/to/integration
+```
+
+The candidate manifest must reference independent reports for `KERNEL_PASS`,
+`DISPATCH_CONFIRMED`, service regression, and accuracy regression. The tool
+does not mutate the running service; integration and rollback remain explicit
+adapter actions.
+
 ## Repository map
 
 | Directory | Responsibility |

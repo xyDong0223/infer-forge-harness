@@ -70,6 +70,36 @@ entries:
     exit_conditions: [PLAN_READY, NEEDS_HUMAN]
     rules:
       - every launch parameter needs an evidence source or explicit assumption
+  - id: operator-task-dispatch
+    task_types: [operator_task_dispatch]
+    purpose: delegate confirmed XPU operator gaps without blocking model bring-up
+    tools: [operator_task_dispatch]
+    verification: operator_lifecycle_validator
+    preconditions: [GapClassification]
+    exit_conditions: [DISPATCHED, DISPATCH_SKIPPED, NEEDS_HUMAN]
+    rules:
+      - emit durable requests and let the main bring-up continue
+      - never treat a generated request as an integrated implementation
+  - id: baseline-freeze
+    task_types: [baseline_freeze]
+    purpose: freeze a passing service and accuracy baseline for candidate regression
+    tools: [baseline_freeze]
+    verification: operator_lifecycle_validator
+    preconditions: [DeploymentProof, AccuracyDifferential]
+    exit_conditions: [BASELINE_FROZEN, BASELINE_REJECTED, NEEDS_HUMAN]
+    rules:
+      - require service and independent accuracy evidence
+      - record environment and artifact provenance
+  - id: operator-candidate-integration
+    task_types: [operator_candidate_integration]
+    purpose: integrate one generated operator at a time against an immutable baseline
+    tools: [operator_candidate_integration]
+    verification: operator_lifecycle_validator
+    preconditions: [ServingBaseline]
+    exit_conditions: [WAITING_FOR_CANDIDATE, READY_FOR_INTEGRATION, CANDIDATE_REJECTED]
+    rules:
+      - require kernel grade, actual dispatch, service regression, and accuracy regression
+      - rollback on any regression
   - id: patch-placement
     task_types: [patch_placement]
     purpose: select and verify the narrowest reversible patch placement

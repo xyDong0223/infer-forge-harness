@@ -36,8 +36,14 @@ spec:
     # remaining question can only be answered by deploying.
     - id: mat-004-gap-classification
       task: tasks/mat-004-gap-classification/task.yaml
-      on_success: mat-008-capability-evaluation
+      on_success: mat-024-operator-task-dispatch
       on_failure: NEEDS_HUMAN
+    # Operator generation is asynchronous. Durable requests are emitted here,
+    # while the main Agent continues bring-up with a reversible fallback.
+    - id: mat-024-operator-task-dispatch
+      task: tasks/mat-024-operator-task-dispatch/task.yaml
+      on_success: mat-008-capability-evaluation
+      on_failure: mat-008-capability-evaluation
     # The first node whose width depends on an upstream artifact: it fans out over
     # exactly the dimensions the CapabilityMatch says this model demands. Placed
     # before the deployment plan because a capability that is numerically wrong at
@@ -82,8 +88,19 @@ spec:
     # differential runs before anything is claimed about the deployment.
     - id: mat-013-accuracy-differential
       task: tasks/mat-013-accuracy-differential/task.yaml
-      on_success: mem-001-memory-budget
+      on_success: mat-025-baseline-freeze
       on_failure: mat-006-failure-triage
+    # A candidate must be tested against this immutable working baseline.
+    - id: mat-025-baseline-freeze
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: mat-026-operator-candidate-integration
+      on_failure: mat-006-failure-triage
+    # With no candidate yet this records WAITING_FOR_CANDIDATE and allows the
+    # original serving flow to finish. A later run can provide one candidate.
+    - id: mat-026-operator-candidate-integration
+      task: tasks/mat-026-operator-candidate-integration/task.yaml
+      on_success: mem-001-memory-budget
+      on_failure: mem-001-memory-budget
     - id: mem-001-memory-budget
       task: tasks/mem-001-memory-budget/task.yaml
       on_success: mat-009-api-conformance

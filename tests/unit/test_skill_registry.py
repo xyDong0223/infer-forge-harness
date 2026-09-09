@@ -27,6 +27,8 @@ class SkillRegistryTest(unittest.TestCase):
             "platform_kernel_correctness", "end_to_end_accuracy",
             "long_context_sparse_correctness",
             "model_bringup_loop",
+            "operator_task_dispatch", "baseline_freeze",
+            "operator_candidate_integration",
         }
         self.assertEqual(set(index), expected)
 

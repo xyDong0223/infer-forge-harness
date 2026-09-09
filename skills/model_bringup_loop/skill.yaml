@@ -1,6 +1,6 @@
 api_version: infer.kunlun/v1alpha1
 kind: Skill
 id: model-bringup-loop
-task_types: [service_proof, failure_triage, patch_placement]
+task_types: [model_bringup_loop]
 catalog: catalog/skill_catalog.yaml
 method_document: skills/model_bringup_loop/SKILL.md

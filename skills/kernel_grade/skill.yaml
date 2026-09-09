@@ -1,6 +1,6 @@
 api_version: infer.kunlun/v1alpha1
 kind: Skill
 id: kernel-grade
-task_types: [capability_evaluation, accuracy_differential]
+task_types: [platform_kernel_correctness, end_to_end_accuracy, long_context_sparse_correctness]
 catalog: catalog/skill_catalog.yaml
 method_document: skills/kernel_grade/SKILL.md

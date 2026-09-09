@@ -101,3 +101,21 @@ entries:
     side_effect: read_only
     retryable: true
     outputs: [tensor_diff.json]
+  - id: operator_task_dispatch
+    command: python3 tools/operator_lifecycle.py dispatch
+    purpose: create durable asynchronous requests for xpu-op-gen
+    side_effect: write_artifact
+    retryable: true
+    outputs: [dispatch_status.json, requests/]
+  - id: baseline_freeze
+    command: python3 tools/operator_lifecycle.py freeze-baseline
+    purpose: freeze a passing serving and accuracy baseline
+    side_effect: write_artifact
+    retryable: false
+    outputs: [baseline_manifest.json, baseline_status.json]
+  - id: operator_candidate_integration
+    command: python3 tools/operator_lifecycle.py integrate
+    purpose: gate one operator candidate against the frozen baseline
+    side_effect: write_artifact
+    retryable: false
+    outputs: [integration_status.json]

@@ -1,0 +1,36 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-024-operator-task-dispatch
+  family: model_adaptation
+  task_type: operator_task_dispatch
+  version: 0.1.0
+spec:
+  question: which confirmed operator gaps should be delegated asynchronously
+  produces: OperatorTaskDispatch
+  consumes: [GapClassification]
+  runs_with: |
+    python3 tools/operator_lifecycle.py dispatch --gaps <gap_classification.json> \
+      --subject <model> --out <artifacts>
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tools:
+    - tools/operator_lifecycle.py
+actions:
+  - select_operator_gaps
+  - create_independent_requests
+  - continue_main_bringup_without_waiting
+acceptance:
+  dispatch_is_non_blocking: true
+  request_artifacts_are_durable: true
+artifacts:
+  - dispatch_status.json
+  - requests/
+exit_states:
+  dispatched: DISPATCHED
+  no_gap: DISPATCH_SKIPPED
+  invalid: CONTRACT_INVALID
+validator: validators/operator_lifecycle_validator.py:validate_dispatch

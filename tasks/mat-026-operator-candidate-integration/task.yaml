@@ -1,0 +1,38 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-026-operator-candidate-integration
+  family: model_adaptation
+  task_type: operator_candidate_integration
+  version: 0.1.0
+spec:
+  question: can one generated operator be integrated without regressing the baseline
+  produces: OperatorIntegration
+  consumes: [ServingBaseline]
+  runs_with: |
+    python3 tools/operator_lifecycle.py integrate --baseline <baseline_manifest.json> \
+      --candidate <candidate_manifest.json> --subject <model> --out <artifacts>
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tools:
+    - tools/operator_lifecycle.py
+actions:
+  - select_one_candidate
+  - require_kernel_grade_and_dispatch
+  - run_service_regression
+  - run_accuracy_regression
+  - keep_or_rollback
+acceptance:
+  one_candidate_at_a_time: true
+  rollback_on_failure: true
+  candidate_must_not_self_certify: true
+artifacts:
+  - integration_status.json
+exit_states:
+  waiting: WAITING_FOR_CANDIDATE
+  ready: READY_FOR_INTEGRATION
+  rejected: CANDIDATE_REJECTED
+validator: validators/operator_lifecycle_validator.py:validate_integration

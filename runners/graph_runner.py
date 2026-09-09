@@ -68,6 +68,15 @@ NODES: dict[str, dict] = {
         "command": ["python3", "tools/classify_gaps.py", "--out", "{artifacts}"],
         "state_file": "classification_status.json",
     },
+    "operator_task_dispatch": {
+        "produces": "OperatorTaskDispatch",
+        "needs": {"--gaps": "fact:GapClassification:gap_classification.json"},
+        "command": [
+            "python3", "tools/operator_lifecycle.py", "dispatch",
+            "--subject", "{subject}", "--out", "{artifacts}",
+        ],
+        "state_file": "dispatch_status.json",
+    },
     "deployment_plan": {
         "produces": "DeploymentPlan",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
@@ -108,6 +117,27 @@ NODES: dict[str, dict] = {
             "--out", "{artifacts}",
         ],
         "state_file": "accuracy_status.json",
+    },
+    "baseline_freeze": {
+        "produces": "ServingBaseline",
+        "needs": {
+            "--service": "fact:DeploymentProof:status.json",
+            "--accuracy": "fact:AccuracyDifferential:accuracy_differential.json",
+        },
+        "command": [
+            "python3", "tools/operator_lifecycle.py", "freeze-baseline",
+            "--subject", "{subject}", "--out", "{artifacts}",
+        ],
+        "state_file": "baseline_status.json",
+    },
+    "operator_candidate_integration": {
+        "produces": "OperatorIntegration",
+        "needs": {"--baseline": "fact:ServingBaseline:baseline_manifest.json"},
+        "command": [
+            "python3", "tools/operator_lifecycle.py", "integrate",
+            "--subject", "{subject}", "--out", "{artifacts}",
+        ],
+        "state_file": "integration_status.json",
     },
     "support_matrix": {
         "produces": "SupportMatrixEntry",
@@ -304,6 +334,11 @@ SUCCESS_STATES = {
     "CONFORMANT",
     "HANDOFF_READY",
     "PATCH_PLACED",
+    "DISPATCHED",
+    "DISPATCH_SKIPPED",
+    "BASELINE_FROZEN",
+    "WAITING_FOR_CANDIDATE",
+    "READY_FOR_INTEGRATION",
 }
 
 

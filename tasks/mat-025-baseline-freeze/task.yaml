@@ -1,0 +1,36 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-025-baseline-freeze
+  family: model_adaptation
+  task_type: baseline_freeze
+  version: 0.1.0
+spec:
+  question: is the working service stable enough to become the integration baseline
+  produces: ServingBaseline
+  consumes: [DeploymentProof, AccuracyDifferential]
+  runs_with: |
+    python3 tools/operator_lifecycle.py freeze-baseline --service <status.json> \
+      --accuracy <accuracy_status.json> --subject <model> --out <artifacts>
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tools:
+    - tools/operator_lifecycle.py
+actions:
+  - verify_service_ready
+  - verify_accuracy_pass
+  - freeze_environment_and_artifacts
+acceptance:
+  require_deployment_ready: true
+  require_accuracy_pass: true
+  baseline_is_immutable: true
+artifacts:
+  - baseline_manifest.json
+  - baseline_status.json
+exit_states:
+  pass: BASELINE_FROZEN
+  rejected: BASELINE_REJECTED
+validator: validators/operator_lifecycle_validator.py:validate_baseline
