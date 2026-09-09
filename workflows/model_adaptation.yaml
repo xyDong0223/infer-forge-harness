@@ -18,8 +18,18 @@ spec:
     # which is why no separate throwaway pod is needed from here on.
     - id: kdp-001a-environment-proof
       task: tasks/kdp-001a-environment-proof/task.yaml
-      on_success: mat-002-model-scan
+      on_success: mat-027-runtime-drift
       on_failure: NEEDS_HUMAN
+    # The cheapest gate here, and the one whose absence cost the most. A registry
+    # entry proves a name is mapped, not that the module behind it imports; the
+    # engine moves and the plugin does not follow, so an attention backend fails
+    # only when a model finally imports it -- after the weights are loaded. Both
+    # edges continue: drift is a work list, not a stop, and the rest of the static
+    # picture is worth having before anyone repoints an import.
+    - id: mat-027-runtime-drift
+      task: tasks/mat-027-runtime-drift/task.yaml
+      on_success: mat-002-model-scan
+      on_failure: mat-002-model-scan
     # Scanning the installed runtime, not a checkout: what is registered here is
     # what will actually run.
     - id: mat-002-model-scan
@@ -57,8 +67,19 @@ spec:
     # upstream fact it came from.
     - id: mat-005-deployment-plan
       task: tasks/mat-005-deployment-plan/task.yaml
-      on_success: kdp-001b-service-proof
+      on_success: mat-028-toy-bringup
       on_failure: NEEDS_HUMAN
+    # Everything between "the modules import" and "the server answers" is contract,
+    # not weights: an abstract method the engine now requires, a factory whose
+    # return shape changed, a KV-cache tensor whose rank the layer slices wrongly.
+    # A few-layer copy with dummy weights reaches all of it in under a minute, on
+    # the same kernels, so the 700 GiB load stops being the debug loop.
+    - id: mat-028-toy-bringup
+      task: tasks/mat-028-toy-bringup/task.yaml
+      on_success: kdp-001b-service-proof
+      # A blocked bring-up is the cheapest triage input there is: a stage name and
+      # a traceback, with no weights in the loop.
+      on_failure: mat-006-failure-triage
     - id: kdp-001b-service-proof
       task: tasks/kdp-001b-service-proof/task.yaml
       on_success: mat-013-accuracy-differential

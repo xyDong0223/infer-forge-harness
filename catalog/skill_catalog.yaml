@@ -33,6 +33,10 @@ entries:
       - record unresolved architecture and dispatch assumptions
       - resolve the arch only after load_general_plugins(): plugin registration overwrites upstream at engine start, so an import-time registry check reports the upstream triton variant even when the Kunlun OOT one serves
       - recent checkpoints carry dtype instead of torch_dtype; a probe reading only the old key must not fail the identity contract
+      - "a KUNLUN_OOT verdict says a Kunlun implementation is registered, not that it loads; pair every scan with the runtime-drift gate or the reassurance is unearned"
+      - "scan the axes the config actually demands: a model_type carrying index_topk demands sparse attention, and reporting only attention=mla hides the dimension that owns most of the risk"
+      - "derive contested config values from the weights, not the config: GLM-5.2's head_dim alias overwrote qk_rope_head_dim with 192, and kv_a_proj_with_mqa [576, 6144] against kv_lora_rank 512 proved the real value was 64"
+      - "when a ported heuristic reproduces something the checkpoint also states, check it: the derived indexer pattern matched the checkpoint's own indexer_types list entry for entry, which turned an assumption into a fact"
   - id: capability-matcher
     task_types: [capability_match]
     purpose: match model demands against registered platform capabilities
@@ -53,6 +57,9 @@ entries:
     rules:
       - separate model, adapter, platform-kernel, runtime-state, and API causes
       - use a discriminating control before claiming attribution
+      - enumerate the whole missing set before estimating scope; one missing symbol was read as a multi-day backend re-port when the real remainder was a base-class swap and sixty lines, and the enumeration that collapsed it took twenty seconds
+      - name the layer a defect belongs to before fixing it; twelve of GLM-5.2's fourteen defects were engine-drift in the plugin, not model adaptation, and a model-file diff cannot see them
+      - the first failure after a long wait is rarely the only one — prefer a pass that collects every failure over a loop that reports the first
   - id: capability-evaluation
     task_types: [capability_evaluation]
     purpose: exercise only demanded capability dimensions with independent controls
@@ -63,6 +70,35 @@ entries:
     rules:
       - gate with relative L2 where scale errors are possible
       - an unimplemented dimension is partial, never an implicit pass
+  - id: runtime-drift-gate
+    task_types: [runtime_drift_scan]
+    purpose: prove the installed plugin still imports against the installed engine before anything is deployed
+    tools: [runtime_drift_scan]
+    verification: drift_validator
+    preconditions: [EnvironmentProof]
+    exit_conditions: [DRIFT_CLEAR, DRIFT_FOUND, NEEDS_HUMAN]
+    rules:
+      - import every module in one pass; the module that breaks is the one nobody expected on the path
+      - a registry entry proves a name is mapped, never that the module behind it imports
+      - resolve each missing symbol to a candidate new location, or state that it is gone; a bare failure list makes the next Task guess
+      - drift is a property of the (engine, plugin) pair, not of the model — rerun after either is reinstalled, and do not rerun per model
+      - "a pinned version string is not evidence of a matching install: vLLM-Kunlun v0.25.1-dev pairs with a wheel labelled 0.25.1 whose internals are months newer, and every MLA module failed to import while the label matched"
+      - import success is not correctness; a module can import and still miss an abstract method
+  - id: toy-bringup
+    task_types: [toy_bringup]
+    purpose: exercise construction, KV binding, prefill and decode at toy scale before loading real weights
+    tools: [toy_bringup]
+    verification: bringup_validator
+    preconditions: [ModelRequest, EnvironmentProof]
+    exit_conditions: [BRINGUP_PASS, BRINGUP_BLOCKED, NEEDS_HUMAN]
+    rules:
+      - never put a full weight load in a debug loop; contract defects do not need the weights and a 700 GiB load per attempt buys one error message
+      - shrink only depth, expert count and MTP layers; keep every dimension that selects a kernel or backend, or a pass here describes a different code path
+      - truncate per-layer config lists to the new depth, otherwise the config loader fails before anything interesting runs
+      - "keep the quantization config: the quantized linear path is part of what is being proven"
+      - require more than one decoded token; one token proves prefill only, and paged attention and the sparse indexer differ on the decode path
+      - random weights cannot see a wrong scale or a mis-split head dim — a pass is a code path, never an accuracy claim
+      - tp_size 1 leaves collectives uncovered; rerun at the planned TP when an all-reduce or expert dispatch is suspect
   - id: deployment-planning
     task_types: [deployment_plan]
     purpose: derive launch parameters from recorded model and gap facts
@@ -230,6 +266,10 @@ entries:
       - capture the smallest failing request and actual dispatch path before changing code
       - classify missing, bypassed, unlaunchable, wrong, runtime-state, and API failures separately
       - use a reversible workaround and re-run the integrated serving path before claiming progress
+      - clear the runtime-drift gate and the toy bring-up before the first real load; both run without weights and between them they hold most of what a first launch would have found
+      - measure the loop before entering it — when one iteration costs a full weight load, build the cheap reproduction first instead of paying per bug
+      - record each fact in the Journal as it is established, not at the end; the one durable finding here (a version-labelled engine that had moved past the plugin) was written down only after eight discoveries had already paid for it
+      - report progress on a fixed cadence during long waits and keep the wait in the background; silence during a load reads as no progress and invites interruption
   - id: kernel-grade
     task_types: [platform_kernel_correctness, end_to_end_accuracy,
                  long_context_sparse_correctness]
