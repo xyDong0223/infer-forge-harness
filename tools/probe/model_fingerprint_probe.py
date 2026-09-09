@@ -55,7 +55,9 @@ def identity_from_config(config: dict) -> dict:
     return {
         "model_type": config.get("model_type"),
         "architectures": config.get("architectures"),
-        "torch_dtype": config.get("torch_dtype"),
+        # transformers >= 2.56 renamed torch_dtype to dtype; recent checkpoints
+        # (e.g. Qwen3.8) only carry the new key, so both must be read.
+        "torch_dtype": config.get("torch_dtype") or config.get("dtype"),
         "max_position_embeddings": config.get("max_position_embeddings"),
         "num_hidden_layers": config.get("num_hidden_layers"),
         "num_attention_heads": config.get("num_attention_heads"),
