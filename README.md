@@ -1,24 +1,66 @@
+<p align="center">
+  <img src="assets/readme-hero.png" alt="Hand-drawn engineering flow from a task contract through a compute runner and validation to a reproducible artifact" width="100%">
+</p>
+
 # kunlun-inference-agent
 
-An agentic, contract-driven inference engineering platform for vLLM-Kunlun model adaptation and performance optimization.
+> **An agentic, contract-driven inference engineering platform for vLLM-Kunlun model adaptation and performance optimization.**
 
-## Design principle
+**Python 3.10+** · **v0.1 public scaffold** · **Plan-only by default**
 
-> Workflow orchestrates, Task defines acceptance, Skill provides engineering method, Tool performs deterministic actions, Runner executes, Adapter isolates platform differences, Validator decides, and Catalog stores capability facts.
+`kunlun-inference-agent` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact.
 
-The repository separates reusable engineering rules from runtime state. Task contracts, schemas, workflows, skills, tools, adapters, validators, tests, and documentation are versioned here. Logs, traces, benchmark outputs, model caches, Pod state, and temporary worktrees belong in an external artifact root.
+## Contents
 
-## v0.1 scope
+- [What it solves](#what-it-solves)
+- [Design model](#design-model)
+- [Execution path](#execution-path)
+- [Execution model](#execution-model)
+- [Operator integration loop](#operator-integration-loop)
+- [Repository map](#repository-map)
+- [Run the checks](#run-the-checks)
+- [Reference material](#reference-material)
+- [Contributing](#contributing)
+- [Status](#status)
 
-The first milestone is **KDP-001 Kunlun Deployment Proof**: from a fixed Deployment Manifest, prepare a Kunlun P800 environment, start a vLLM-Kunlun service, verify readiness and a chat completion, and produce a reproducible artifact manifest. The initial repository also defines the first model-adaptation workflow stages: model intake and static model scan.
+## What it solves
 
-The runner is intentionally conservative. Plan-only mode is the default; cluster-side execution requires explicit authorization and an environment-specific adapter.
+Inference model adaptation needs more than a sequence of scripts. A reliable workflow must declare the expected input, select a constrained method, record environment-specific facts, execute only authorized platform actions, and prove that the result satisfies an independent acceptance gate.
 
-## Agent execution
+The first milestone is **KDP-001 — Kunlun Deployment Proof**. From a fixed Deployment Manifest, the platform prepares a Kunlun P800 environment, starts a vLLM-Kunlun service, verifies readiness and a chat completion, and produces a reproducible artifact manifest. The initial repository also defines the first model-adaptation stages: model intake and static model scan.
 
-The graph runner keeps the Task Graph for cross-task routing and stores the
-current and completed Loop Blocks in Task Memory. Successful facts can be reused
-only when their Journal environment fingerprint matches:
+Cluster-side execution is intentionally not implicit. The runner operates in plan-only mode by default; an environment-specific Adapter and explicit authorization are required before actions reach a cluster.
+
+## Design model
+
+> **Workflow orchestrates, Task defines acceptance, Skill provides engineering method, Tool performs deterministic actions, Runner executes, Adapter isolates platform differences, Validator decides, and Catalog stores capability facts.**
+
+| Building block | Responsibility |
+| --- | --- |
+| **Workflow** | Orchestrates business stages and cross-task routing through the Task Graph. |
+| **Task** | Defines the verifiable contract, acceptance criteria, and task-local guidance. |
+| **Skill** | Encodes the engineering method, including preconditions, verification, exit conditions, and learned rules. |
+| **Tool** | Performs a deterministic action with a constrained interface. |
+| **Runner** | Coordinates the state machine, task memory, artifacts, and the next decision. |
+| **Adapter** | Isolates Kubernetes, Kunlun P800, and vLLM-Kunlun environment differences. |
+| **Validator** | Applies an independent acceptance gate and determines the verdict. |
+| **Catalog** | Stores model, backend, tool, and support capability facts. |
+
+The repository versions contracts, schemas, workflows, skills, tools, adapters, validators, tests, and documentation. Logs, traces, benchmark outputs, model caches, Pod state, and temporary worktrees belong in an external artifact root.
+
+## Execution path
+
+<p align="center">
+  <a href="docs/assets/agent-workflow.excalidraw">
+    <img src="docs/assets/agent-workflow.png" alt="Hand-drawn workflow showing task contract through deployment manifest, graph runner, tool or adapter, validator, artifact manifest, and final PASS, REWORK, NO_GO, or NEEDS_HUMAN verdict" width="100%">
+  </a>
+</p>
+
+The rendered diagram is backed by an editable [Excalidraw source](docs/assets/agent-workflow.excalidraw). It shows the main contract-to-verdict path, the persistent Task Memory loop, and the explicit outcomes that prevent unverified progress from becoming a capability fact.
+
+## Execution model
+
+The graph runner keeps the Task Graph for cross-task routing and stores the current and completed Loop Blocks in Task Memory. A successful fact can be reused only when its Journal environment fingerprint matches the current execution context.
 
 ```bash
 python3 runners/graph_runner.py \
@@ -30,23 +72,11 @@ python3 runners/graph_runner.py \
   --resume --json
 ```
 
-`--resume` skips nodes whose successful artifact and state file are still
-available. `--json` emits a compact result for each decision with `status`,
-`reason_code`, `next_task`, and artifact paths. Task Memory is written to
-`<artifact-root>/task_memory.json` by default and can be overridden with
-`--loop-state`.
+`--resume` skips nodes whose successful artifact and state file are still available. `--json` emits a compact result for each decision with `status`, `reason_code`, `next_task`, and artifact paths. Task Memory is written to `<artifact-root>/task_memory.json` by default and can be overridden with `--loop-state`.
 
-The tool capability index is in `catalog/tool_catalog.yaml`. It is the first
-lookup for an Agent choosing a deterministic tool; task-specific contracts and
-validators remain authoritative for inputs and acceptance.
+The tool capability index in [`catalog/tool_catalog.yaml`](catalog/tool_catalog.yaml) is the first lookup for an Agent choosing a deterministic tool. Task-specific contracts and validators remain authoritative for inputs and acceptance. The Skill registry in [`catalog/skill_catalog.yaml`](catalog/skill_catalog.yaml) maps every workflow `task_type` to a method unit with its preconditions, tools, verification, exit conditions, and prior P800 adaptation rules. The graph runner records the selected Skill in Task Memory and JSON summaries.
 
-The Skill registry is in `catalog/skill_catalog.yaml`. It maps every workflow
-`task_type` to one method unit with preconditions, tools, verification, exit
-conditions, and rules learned from prior P800 adaptations. `graph_runner` records
-the selected Skill in Task Memory and JSON summaries.
-
-When a Task exposes a more specific fact, the resolver selects a narrower
-method automatically. For example:
+When a Task exposes a more specific fact, the resolver selects the narrower method automatically:
 
 ```bash
 --set issue=cache_layout       # cache-layout-validation
@@ -55,17 +85,11 @@ method automatically. For example:
 --set issue=p800_kernel        # p800-fallback-selection
 ```
 
-The generic Skill remains the fallback when no specialized fact is present.
-Specialized Skills are deliberately activated by observed context, not by a
-model name or an unverified guess.
+The generic Skill remains the fallback when no specialized fact is present. Specialized Skills are activated by observed context, not by a model name or an unverified guess.
 
-### Asynchronous operator loop
+## Operator integration loop
 
-`model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable
-`xpu-op-gen` requests and continues model bring-up. After service and independent
-accuracy both pass, it freezes a baseline. Generated candidates are then tested
-one at a time against that baseline; a failed kernel, dispatch, service, or
-accuracy gate is rejected and must be rolled back before the next candidate.
+`model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.
 
 The lifecycle tool can also be driven directly:
 
@@ -77,52 +101,43 @@ python3 tools/operator_lifecycle.py integrate \
   --out /path/to/integration
 ```
 
-The candidate manifest must reference independent reports for `KERNEL_PASS`,
-`DISPATCH_CONFIRMED`, service regression, and accuracy regression. The tool
-does not mutate the running service; integration and rollback remain explicit
-adapter actions.
+The candidate manifest must reference independent reports for `KERNEL_PASS`, `DISPATCH_CONFIRMED`, service regression, and accuracy regression. The tool does not mutate the running service; integration and rollback remain explicit Adapter actions.
 
 ## Repository map
 
 | Directory | Responsibility |
 | --- | --- |
-| `contracts/` | Stable machine-readable schemas |
-| `workflows/` | Business orchestration and Task Graphs |
-| `tasks/` | Verifiable task contracts and task-local guidance |
-| `skills/` | Domain methods, rules, and human engineering knowledge |
-| `tools/` | Deterministic action interfaces |
-| `runners/` | Execution, state machine, and artifact coordination |
-| `adapters/` | Kubernetes, Kunlun P800, and vLLM-Kunlun differences |
-| `validators/` | Independent acceptance gates |
-| `catalog/` | Model, backend, and support facts |
-| `tests/` | Unit, contract, fake-runner, and P800 integration tests |
-| `docs/` | Architecture and contribution guidance |
+| [`contracts/`](contracts/) | Stable, machine-readable schemas. |
+| [`workflows/`](workflows/) | Business orchestration and Task Graphs. |
+| [`tasks/`](tasks/) | Verifiable task contracts and task-local guidance. |
+| [`skills/`](skills/) | Domain methods, rules, and human engineering knowledge. |
+| [`tools/`](tools/) | Deterministic action interfaces. |
+| [`runners/`](runners/) | Execution, state-machine, and artifact coordination. |
+| [`adapters/`](adapters/) | Kubernetes, Kunlun P800, and vLLM-Kunlun platform differences. |
+| [`validators/`](validators/) | Independent acceptance gates. |
+| [`catalog/`](catalog/) | Model, backend, tool, and support facts. |
+| [`tests/`](tests/) | Unit, contract, fake-runner, and P800 integration tests. |
+| [`docs/`](docs/) | Architecture, contribution guidance, and visual documentation assets. |
 
-## Planned execution path
+## Run the checks
 
-```text
-Task Contract
-  -> Deployment Manifest
-  -> Runner
-  -> Tool / Adapter
-  -> Validator
-  -> Artifact Manifest
-  -> PASS / REWORK / NO_GO / NEEDS_HUMAN
-```
-
-## Development
+Run the documented local validation commands before proposing a change:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
 python -m compileall runners validators tools
 ```
 
-The P800 integration suite is opt-in and must never be run against a shared cluster without an explicit environment configuration.
+The P800 integration suite is opt-in. It must never run against a shared cluster without explicit environment configuration, including the namespace, image digest, model revision, hardware, and cleanup policy.
 
-## OpenWiki reference
+## Reference material
 
 The [`openwiki/`](openwiki/) directory contains the OpenWiki reference copied from the vLLM-Kunlun `v0.25.1-dev` branch. Its provenance and source revision are recorded in [`openwiki/SOURCE.md`](openwiki/SOURCE.md). Use it as runtime and architecture reference material; platform contracts and executable Task definitions in this repository remain the source of truth for the Agent platform.
 
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Changes should identify their affected layer, include the relevant validation evidence, and keep runtime artifacts, model weights, tokens, private endpoints, raw production traffic, and large traces outside the repository.
+
 ## Status
 
-This is an initial public scaffold. Runtime adapters and real P800 execution are intentionally added incrementally behind contracts, fake adapters, and independent validators.
+This repository is an initial public scaffold. Runtime adapters and real P800 execution are added incrementally behind contracts, fake adapters, and independent validators.
