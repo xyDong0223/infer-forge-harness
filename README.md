@@ -15,6 +15,7 @@
 - [What it solves](#what-it-solves)
 - [Design model](#design-model)
 - [Execution path](#execution-path)
+- [MiniMax-M3 real adaptation loop](#minimax-m3-real-adaptation-loop)
 - [Execution model](#execution-model)
 - [Operator integration loop](#operator-integration-loop)
 - [Repository map](#repository-map)
@@ -57,6 +58,18 @@ The repository versions contracts, schemas, workflows, skills, tools, adapters, 
 </p>
 
 The rendered diagram is backed by an editable [Excalidraw source](docs/assets/agent-workflow.excalidraw). It shows the main contract-to-verdict path, the persistent Task Memory loop, and the explicit outcomes that prevent unverified progress from becoming a capability fact.
+
+### MiniMax-M3 real adaptation loop
+
+<p align="center">
+  <a href="docs/assets/minimax-m3-adaptation-loop.excalidraw">
+    <img src="docs/assets/minimax-m3-adaptation-loop.png" alt="Hand-drawn MiniMax-M3 P800 adaptation loop showing intake, P800 proof, capability evaluation fan-out, a service-to-golden-reference diagnosis loop, baseline freeze, candidate integration gates, rollback, and delivery" width="100%">
+  </a>
+</p>
+
+This is the real MiniMax-M3 engineering loop: a static runtime match is only the start; each high-risk dimension is exercised against a CPU float32 reference with relative L2 and a discriminating negative control. A service mismatch enters a trace-to-golden-reference loop before patch placement sends the candidate back through service proof.
+
+The editable [Excalidraw source](docs/assets/minimax-m3-adaptation-loop.excalidraw) distinguishes unit-level evidence from served-model accuracy. Only an accurate service can freeze a baseline. Every generated candidate must then pass kernel, dispatch, service-regression, and accuracy-regression gates; a failure is explicitly rejected and rolled back before the next candidate is evaluated.
 
 ## Execution model
 
