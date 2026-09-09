@@ -1,0 +1,99 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-028-toy-bringup
+  family: model_adaptation
+  task_type: toy_bringup
+  version: 0.1.0
+spec:
+  question: does this architecture construct, bind a KV cache, prefill and decode at all
+  produces: ToyBringupReport
+  consumes: [ModelRequest, EnvironmentProof]
+  runs_with: |
+    python3 tools/toy_bringup.py \
+      --model-request <artifacts>/mat-001/model_request.yaml \
+      --env-status <artifacts>/kdp-001a/status.json \
+      --out <artifacts>/mat-028
+context:
+  model:
+    # Only the path, for the config to copy. The weights are never read.
+    source: ${MODEL_PATH}
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  scope: installed_runtime
+  probe: tools/probe/toy_bringup_probe.py
+  tool: tools/toy_bringup.py
+  weights: dummy
+actions:
+  - derive_toy_config
+  - construct_engine_with_dummy_weights
+  - run_prefill
+  - run_decode_step
+  - package_bringup_report
+checks:
+  toy_config:
+    # The point is a cheaper run of the *same* code path. Shrinking a dimension
+    # that selects a kernel or a backend would make a pass here meaningless.
+    shrink_only:
+      - num_hidden_layers
+      - n_routed_experts
+      - num_nextn_predict_layers
+    keep_at_real_size:
+      - hidden_size
+      - num_attention_heads
+      - qk_nope_head_dim
+      - qk_rope_head_dim
+      - v_head_dim
+      - kv_lora_rank
+      - q_lora_rank
+      - index_topk
+      - index_head_dim
+      - index_n_heads
+      - quantization_config
+    depth_floor: first_k_dense_replace + 2
+    # A config that still declares 78 per-layer entries for a 5-layer model fails
+    # in the config loader, long before anything interesting runs.
+    truncate_per_layer_lists: true
+  stages:
+    # A position, not a verdict. Which stage was reached is the diagnostic.
+    ordered:
+      - CONFIG_DERIVED
+      - ENGINE_CONSTRUCTED
+      - PREFILL_OK
+      - DECODE_OK
+    decode_min_tokens: 2
+  gating:
+    # This is the point of the Task: the expensive load happens only after the
+    # cheap run of the same path has passed.
+    blocks: [deployment_plan, service_proof]
+acceptance:
+  required_fields:
+    - stage
+    - stages_passed
+    - config.architectures
+    - config.num_hidden_layers
+    - config.kept_dimensions
+  require_error_when_incomplete: true
+  evidence_required: true
+artifacts:
+  directory: ${ARTIFACT_DIR}
+  files:
+    - toy_bringup.json
+    - toy_bringup_card.md
+    - bringup_status.json
+validator: validators/bringup_validator.py:validate_bringup_report
+exit_states:
+  pass: BRINGUP_PASS
+  # Not a stop: a blocked bring-up is the cheapest possible failure_triage input,
+  # with a stage name and a traceback and no weights in the loop.
+  blocked: BRINGUP_BLOCKED
+  invalid: CONTRACT_INVALID
+  needs_human: NEEDS_HUMAN
+notes:
+  - "Random weights: this cannot see a wrong scale, a mis-split head dim, or a layer
+    that should have been dense. Correctness belongs to MAT-008 and MAT-013."
+  - tensor_parallel_size defaults to 1, so collective paths (all-reduce, expert
+    dispatch) are not covered. Rerun at the planned TP when those are suspect.
+  - MTP is excluded on purpose so one report carries one failure.
