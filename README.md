@@ -30,8 +30,8 @@
 Use Python 3.10 or later. The repository is **plan-only by default**: local checks resolve contracts and validate artifacts without creating or changing cluster resources.
 
 ```bash
-git clone https://github.com/xyDong0223/kunlun-inference-agent.git
-cd kunlun-inference-agent
+git clone https://github.com/xyDong0223/infer-forge-harness.git
+cd infer-forge-harness
 
 python3 -m venv .venv
 source .venv/bin/activate
