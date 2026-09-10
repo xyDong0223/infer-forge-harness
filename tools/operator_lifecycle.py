@@ -153,6 +153,8 @@ def integration_decision(
     required = {
         "kernel_grade": "KERNEL_PASS",
         "dispatch_report": "DISPATCH_CONFIRMED",
+        "package_swap": "PASS",
+        "path_proof": "PASS",
         "service_regression": "PASS",
         "accuracy_regression": "PASS",
     }
@@ -164,6 +166,8 @@ def integration_decision(
     evidence_fields = {
         "kernel_grade": "kernel_grade_report",
         "dispatch_report": "dispatch_report_path",
+        "package_swap": "package_swap_report",
+        "path_proof": "worker_path_log",
         "service_regression": "service_regression_report",
         "accuracy_regression": "accuracy_regression_report",
     }
