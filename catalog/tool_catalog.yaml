@@ -35,6 +35,16 @@ entries:
       - toy_bringup.json
       - toy_bringup_card.md
       - bringup_status.json
+  - id: torch_shim_handoff
+    command: python3 tools/scan_torch_shims.py
+    purpose: find torch shims standing in for vendor kernels and dispatch one operator request per unwaived shim
+    side_effect: pod_exec
+    retryable: true
+    outputs:
+      - torch_shim_registry.json
+      - torch_shim_card.md
+      - shim_gaps.json
+      - shim_status.json
   - id: capability_evaluation
     command: python3 tools/evaluate_capability.py
     purpose: exercise only the capability dimensions demanded by the model
