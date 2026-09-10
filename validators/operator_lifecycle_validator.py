@@ -23,8 +23,31 @@ def validate_baseline(report: dict[str, Any]) -> list[str]:
     return errors
 
 
+READY_GATES = (
+    # package_swap and path_proof are the GLM-5.2 lesson: a candidate that
+    # cannot show how it was built into the pod and that every rank actually
+    # took its code path stood behind four failed swaps before a green one.
+    ("kernel_grade", "kernel_grade_report"),
+    ("dispatch_report", "dispatch_report_path"),
+    ("package_swap", "package_swap_report"),
+    ("path_proof", "worker_path_log"),
+    ("service_regression", "service_regression_report"),
+    ("accuracy_regression", "accuracy_regression_report"),
+)
+
+
 def validate_integration(report: dict[str, Any]) -> list[str]:
     state = report.get("state")
     if state not in {"WAITING_FOR_CANDIDATE", "READY_FOR_INTEGRATION", "CANDIDATE_REJECTED"}:
         return ["integration state is invalid"]
-    return []
+    errors: list[str] = []
+    if state == "READY_FOR_INTEGRATION":
+        for gate, evidence in READY_GATES:
+            if not report.get(evidence):
+                errors.append(
+                    f"READY_FOR_INTEGRATION claims {gate} but records no {evidence}: "
+                    "an integration without its evidence file is a claim, not a fact"
+                )
+    if state == "CANDIDATE_REJECTED" and not report.get("failed_gates"):
+        errors.append("CANDIDATE_REJECTED must name the gates that failed")
+    return errors

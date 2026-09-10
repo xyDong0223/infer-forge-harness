@@ -78,6 +78,72 @@ class OperatorLifecycleTest(unittest.TestCase):
             self.assertEqual(report["state"], "CANDIDATE_REJECTED")
             self.assertIn("accuracy_regression", report["failed_gates"])
 
+    def _complete_candidate(self, path):
+        return self.write_json(
+            path,
+            {
+                "kernel_grade": "KERNEL_PASS",
+                "dispatch_report": "DISPATCH_CONFIRMED",
+                "package_swap": "PASS",
+                "path_proof": "PASS",
+                "service_regression": "PASS",
+                "accuracy_regression": "PASS",
+                "kernel_grade_report": "kernel_grade.json",
+                "dispatch_report_path": "dispatch_report.json",
+                "package_swap_report": "package_swap.json",
+                "worker_path_log": "worker_path.log",
+                "service_regression_report": "service_regression.json",
+                "accuracy_regression_report": "accuracy_regression.json",
+            },
+        )
+
+    def test_a_candidate_without_swap_evidence_is_rejected(self):
+        # The GLM-5.2 lesson: four swaps failed on glibc, base commit, a
+        # side-car module and a version gate before anyone demanded this
+        # evidence. A candidate that cannot show how it was built into the
+        # pod does not reach the service.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = self.write_json(root / "baseline.json", {"baseline_id": "b-1"})
+            candidate = self.write_json(
+                root / "candidate.json",
+                {
+                    "kernel_grade": "KERNEL_PASS",
+                    "dispatch_report": "DISPATCH_CONFIRMED",
+                    "service_regression": "PASS",
+                    "accuracy_regression": "PASS",
+                },
+            )
+            report = integration_decision(baseline, candidate, root / "integration", "Model")
+            self.assertEqual(report["state"], "CANDIDATE_REJECTED")
+            self.assertIn("package_swap", report["failed_gates"])
+            self.assertIn("path_proof", report["failed_gates"])
+
+    def test_a_candidate_with_full_evidence_is_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = self.write_json(root / "baseline.json", {"baseline_id": "b-1"})
+            candidate = self._complete_candidate(root / "candidate.json")
+            report = integration_decision(baseline, candidate, root / "integration", "Model")
+            self.assertEqual(report["state"], "READY_FOR_INTEGRATION")
+
+    def test_ready_without_evidence_files_is_refused(self):
+        from validators.operator_lifecycle_validator import validate_integration
+
+        report = {
+            "state": "READY_FOR_INTEGRATION",
+            "failed_gates": {},
+        }
+        errors = validate_integration(report)
+        self.assertTrue(any("package_swap_report" in e for e in errors))
+        self.assertTrue(any("worker_path_log" in e for e in errors))
+
+    def test_rejection_must_name_its_gates(self):
+        from validators.operator_lifecycle_validator import validate_integration
+
+        errors = validate_integration({"state": "CANDIDATE_REJECTED"})
+        self.assertTrue(any("name the gates" in e for e in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
