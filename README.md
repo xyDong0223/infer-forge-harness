@@ -89,9 +89,9 @@ A registry entry proves a name is mapped, not that the code behind it loads, and
 
 ### The gate that turns torch shims into operator requests
 
-A torch shim standing in for a vendor kernel is the right way to keep bring-up moving — and a silent way to ship un-optimised hot-path arithmetic forever. GLM-5.2 served with three of them (`kv_spans_from_batches`, `kunlun_convert_req_index_to_global_index`, `kunlun_concat_and_cache_mla`) and zero operator requests, because the dispatch path (MAT-024) was fed only by the static gap classification and nothing connected the place shims are born to it.
+A torch shim standing in for a vendor kernel is the right way to keep bring-up moving — and a silent way to ship un-optimised arithmetic forever. GLM-5.2's adaptation produced three of them; post-hoc inspection showed only one (`kv_spans_from_batches`) was actually on a call path — the other two were dead on arrival because the live paths already called the vendor kernels through `torch.ops.xspeedgate_ops` — but nothing in the loop could have told the difference. The dispatch path (MAT-024) was fed only by the static gap classification, and nothing connected the place shims are born to it, so all three sat unregistered and unexamined.
 
-**MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
+**MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. Its first question to the adapter is the one GLM-5.2 never got asked: is this shim even wired in? A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
 
 ### MiniMax-M3 real adaptation loop
 
