@@ -146,6 +146,8 @@ The generic Skill remains the fallback when no specialized fact is present. Spec
 
 `model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.
 
+The GLM-5.2 candidate integration recorded what the four failed swaps before a green one taught, now checks in MAT-026's contract: build the candidate **in the target environment** (a host-built wheel failed on glibc), from the **commit the operator team ships** (local HEAD had silently diverged and lost eight operators), enumerate **every operator the plugin references** against the new package, **restore side-car modules** the old wheel owned (`cocopod` vanished with the uninstall), and reconcile the **version metadata** a rebuild without git metadata breaks. The verification ladder is fixed: exact numeric equality against the shim on the target device, then worker logs proving every rank took the new path, then service health and a real completion.
+
 The lifecycle tool can also be driven directly:
 
 ```bash

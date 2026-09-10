@@ -119,6 +119,7 @@ entries:
       - emit durable requests and let the main bring-up continue
       - never treat a generated request as an integrated implementation
       - "the torch fallback written for a dispatched gap is itself a registry input: declare it in the shim registry in the same session, or it serves un-optimised with no request and no record - three GLM-5.2 shims did exactly that"
+      - "before dispatching a new operator, search the operator repo for an existing implementation: two of the three GLM-5.2 shim kernels already existed in XSpeedGate and the live paths were even calling two of them, so one dispatch produced a duplicate and two produced work for an op-gen agent that correctly answered 'already exists'"
   - id: shim-opgen-handoff
     task_types: [torch_shim_handoff]
     purpose: ensure every torch shim standing in for a vendor kernel becomes an operator request or an explicit waiver
@@ -152,6 +153,12 @@ entries:
     rules:
       - require kernel grade, actual dispatch, service regression, and accuracy regression
       - rollback on any regression
+      - "a wheel built off-target is unshippable: the build host's glibc was newer than the pod's and the import failed; build inside the target pod, with a toolchain whose builtin types match the pod's SDK headers (XTDK 3.6 lacked xbfloat16 that the pod's torch_xmlir headers require) rather than whatever the host used last time"
+      - "build the candidate from the exact commit the operator team ships, not local HEAD: local HEAD and the official 1.5.1 wheel had diverged, and the rebuild silently lost eight operators the official package carried - diff the op sets, never assume HEAD is a superset"
+      - "verify a swapped operator package by enumerating every operator the plugin references and resolving each one by name against the new build; an op missing from BOTH old and new packages is an unused code path, not a regression, and only that comparison can tell the two apart"
+      - "uninstalling an operator wheel removes every module it ships, including side-car top-level modules (the official xspeedgate_ops wheel also owned a top-level cocopod module that force-reinstall took down with it); take the old dist-info RECORD before replacing and restore anything the new build does not carry"
+      - "a rebuild in a copy without git metadata versions itself 0.0.0+unknown and fails the plugin's operator-version gate; the version lives in dist-info METADATA and must be reconciled after any manual package surgery"
+      - "exact equality on integer ops, on the target device, before any claim of integration: op versus the torch shim it replaces, then worker logs proving every rank took the new path, then service health and a real completion - a pass in the op repo's own test suite proves nothing about the pod"
   - id: patch-placement
     task_types: [patch_placement]
     purpose: select and verify the narrowest reversible patch placement
