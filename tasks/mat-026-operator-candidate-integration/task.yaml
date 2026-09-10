@@ -29,6 +29,27 @@ acceptance:
   one_candidate_at_a_time: true
   rollback_on_failure: true
   candidate_must_not_self_certify: true
+checks:
+  package_swap:
+    # The GLM-5.2 candidate integration failed four times before these were
+    # written down: wrong glibc, wrong base commit, a side-car module that
+    # vanished with the old wheel, and a version gate tripped by a rebuild
+    # without git metadata. Each is cheap to check and expensive to debug
+    # inside a serving pod.
+    build_target: candidate must be built in the target environment (or with a
+      toolchain verified against the target's glibc and SDK headers)
+    base_commit: candidate must name the operator repo commit it was built
+      from, and that commit must be the one the operator team ships
+    op_set_diff: enumerate every operator the plugin references and resolve
+      each against the new package; record missing-in-both as unused paths
+    side_car_modules: restore modules the old wheel shipped that the new build
+      does not, using the old dist-info RECORD as the manifest
+    version_metadata: the installed package version must satisfy the plugin's
+      operator-version gate after any manual metadata surgery
+  verification_ladder:
+    - "numeric equality between the XPU operator and the torch shim it replaces, on the target device; integer ops compare exact, not tolerance-based"
+    - every worker rank logs the code path that uses the new operator
+    - service health and one real completion through the served model
 artifacts:
   - integration_status.json
 exit_states:

@@ -89,9 +89,9 @@ A registry entry proves a name is mapped, not that the code behind it loads, and
 
 ### The gate that turns torch shims into operator requests
 
-A torch shim standing in for a vendor kernel is the right way to keep bring-up moving — and a silent way to ship un-optimised hot-path arithmetic forever. GLM-5.2 served with three of them (`kv_spans_from_batches`, `kunlun_convert_req_index_to_global_index`, `kunlun_concat_and_cache_mla`) and zero operator requests, because the dispatch path (MAT-024) was fed only by the static gap classification and nothing connected the place shims are born to it.
+A torch shim standing in for a vendor kernel is the right way to keep bring-up moving — and a silent way to ship un-optimised arithmetic forever. GLM-5.2's adaptation produced three of them; post-hoc inspection showed only one (`kv_spans_from_batches`) was actually on a call path — the other two were dead on arrival because the live paths already called the vendor kernels through `torch.ops.xspeedgate_ops` — but nothing in the loop could have told the difference. The dispatch path (MAT-024) was fed only by the static gap classification, and nothing connected the place shims are born to it, so all three sat unregistered and unexamined.
 
-**MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
+**MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. Its first question to the adapter is the one GLM-5.2 never got asked: is this shim even wired in? A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
 
 ### MiniMax-M3 real adaptation loop
 
@@ -145,6 +145,8 @@ The generic Skill remains the fallback when no specialized fact is present. Spec
 ## Operator integration loop
 
 `model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.
+
+The GLM-5.2 candidate integration recorded what the four failed swaps before a green one taught, now checks in MAT-026's contract: build the candidate **in the target environment** (a host-built wheel failed on glibc), from the **commit the operator team ships** (local HEAD had silently diverged and lost eight operators), enumerate **every operator the plugin references** against the new package, **restore side-car modules** the old wheel owned (`cocopod` vanished with the uninstall), and reconcile the **version metadata** a rebuild without git metadata breaks. The verification ladder is fixed: exact numeric equality against the shim on the target device, then worker logs proving every rank took the new path, then service health and a real completion.
 
 The lifecycle tool can also be driven directly:
 
