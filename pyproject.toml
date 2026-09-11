@@ -17,6 +17,9 @@ test = [
     "pytest>=8.0",
 ]
 
+[project.scripts]
+run-adaptation = "tools.run_adaptation:main"
+
 [tool.setuptools]
 packages = [
     "adapters",
