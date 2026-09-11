@@ -1,8 +1,10 @@
-"""Coordinate asynchronous XPU operator work and serialized integration.
+"""Coordinate asynchronous XPU operator work and batched integration.
 
 This module deliberately does not generate or grade kernels. It creates durable
-requests for the xpu-op-gen subagent, freezes a serving baseline, and records
-whether one candidate is ready to be integrated against that baseline.
+requests for the xpu-op-gen subagent, freezes a serving baseline, and grades
+candidate readiness against that baseline. Candidates are integrated as a
+batch: N operators cost one regression run, and a failing batch is attributed
+by automated bisection instead of serial one-at-a-time integration.
 """
 
 from __future__ import annotations
@@ -107,7 +109,12 @@ def freeze_baseline(
         "environment": dict(environment),
         "status": "FROZEN",
         "integration_policy": {
-            "one_candidate_at_a_time": True,
+            # One regression run for the whole batch, not one per candidate.
+            # Attribution is recovered by automated bisection only when the
+            # batch fails, instead of paying N serial regressions up front.
+            "one_candidate_at_a_time": False,
+            "batch_integration": True,
+            "attribution_on_failure": "automated_bisect",
             "require_kernel_pass": True,
             "require_dispatch_confirmation": True,
             "require_service_regression": True,
@@ -133,57 +140,113 @@ def freeze_baseline(
     )
 
 
+READY_GATES = {
+    "kernel_grade": "KERNEL_PASS",
+    "dispatch_report": "DISPATCH_CONFIRMED",
+    "package_swap": "PASS",
+    "path_proof": "PASS",
+    "service_regression": "PASS",
+    "accuracy_regression": "PASS",
+}
+
+EVIDENCE_FIELDS = {
+    "kernel_grade": "kernel_grade_report",
+    "dispatch_report": "dispatch_report_path",
+    "package_swap": "package_swap_report",
+    "path_proof": "worker_path_log",
+    "service_regression": "service_regression_report",
+    "accuracy_regression": "accuracy_regression_report",
+}
+
+
+def grade_candidate(candidate: dict) -> dict:
+    """Return the failed gates (status mismatches plus missing evidence)."""
+    failures = {
+        key: candidate.get(key)
+        for key, expected in READY_GATES.items()
+        if candidate.get(key) != expected
+    }
+    missing_evidence = {
+        status: field for status, field in EVIDENCE_FIELDS.items() if not candidate.get(field)
+    }
+    failures.update({f"evidence:{key}": value for key, value in missing_evidence.items()})
+    return failures
+
+
+def bisect_plan(candidates: list[dict]) -> list[dict]:
+    """Batched bisection schedule attributing a failed batch to one candidate.
+
+    Each round integrates half of the still-suspect candidates and reruns the
+    single regression; a failing half is halved again, a passing half exonerates
+    its members. ceil(log2(N)) regression runs instead of N.
+    """
+    suspects = [c.get("candidate_id") or c.get("operator") or str(index)
+                for index, c in enumerate(candidates)]
+    rounds: list[dict] = []
+    round_index = 1
+    while len(suspects) > 1:
+        midpoint = (len(suspects) + 1) // 2
+        probes, carry = suspects[:midpoint], suspects[midpoint:]
+        rounds.append({
+            "round": round_index,
+            "integrate": probes,
+            "exonerated_if_pass": carry,
+        })
+        # The executor keeps whichever half fails; the plan shows both halves so
+        # either outcome has an unambiguous next action.
+        suspects = probes if len(probes) > 1 else carry or probes
+        round_index += 1
+    rounds.append({"round": round_index, "integrate": suspects, "exonerated_if_pass": []})
+    return rounds
+
+
 def integration_decision(
     baseline_path: Path,
-    candidate_path: Path | None,
+    candidate_paths: list[Path],
     out_dir: Path,
     subject: str,
 ) -> dict:
-    """Grade candidate readiness; actual service mutation remains an explicit step."""
+    """Grade a batch of candidates; actual service mutation remains an explicit step."""
     baseline = _load(baseline_path)
-    if candidate_path is None:
+    if not candidate_paths:
         return _status(
             out_dir / "integration_status.json",
             "WAITING_FOR_CANDIDATE",
             subject=subject,
             baseline_id=baseline.get("baseline_id"),
-            next_action="provide one candidate manifest",
+            next_action="provide candidate manifests (repeat --candidate per operator)",
         )
-    candidate = _load(candidate_path)
-    required = {
-        "kernel_grade": "KERNEL_PASS",
-        "dispatch_report": "DISPATCH_CONFIRMED",
-        "package_swap": "PASS",
-        "path_proof": "PASS",
-        "service_regression": "PASS",
-        "accuracy_regression": "PASS",
-    }
-    failures = {
-        key: candidate.get(key)
-        for key, expected in required.items()
-        if candidate.get(key) != expected
-    }
-    evidence_fields = {
-        "kernel_grade": "kernel_grade_report",
-        "dispatch_report": "dispatch_report_path",
-        "package_swap": "package_swap_report",
-        "path_proof": "worker_path_log",
-        "service_regression": "service_regression_report",
-        "accuracy_regression": "accuracy_regression_report",
-    }
-    missing_evidence = {
-        status: field for status, field in evidence_fields.items() if not candidate.get(field)
-    }
-    failures.update({f"evidence:{key}": value for key, value in missing_evidence.items()})
-    state = "READY_FOR_INTEGRATION" if not failures else "CANDIDATE_REJECTED"
+    graded = []
+    rejected = {}
+    for candidate_path in candidate_paths:
+        candidate = _load(candidate_path)
+        candidate_id = candidate.get("candidate_id") or candidate.get("operator") or candidate_path.stem
+        failures = grade_candidate(candidate)
+        graded.append({"candidate_id": candidate_id, "candidate": str(candidate_path),
+                       "failed_gates": failures})
+        if failures:
+            rejected[candidate_id] = failures
+    if rejected:
+        return _status(
+            out_dir / "integration_status.json",
+            "CANDIDATE_REJECTED",
+            subject=subject,
+            baseline_id=baseline.get("baseline_id"),
+            candidates=graded,
+            failed_candidates=sorted(rejected),
+            next_action="drop or rework the rejected candidates; the rest of the batch "
+                        "is still eligible",
+        )
     return _status(
         out_dir / "integration_status.json",
-        state,
+        "READY_FOR_INTEGRATION",
         subject=subject,
         baseline_id=baseline.get("baseline_id"),
-        candidate=str(candidate_path),
-        failed_gates=failures,
-        next_action="integrate and run regression" if not failures else "return candidate for rework",
+        candidates=graded,
+        batch_size=len(graded),
+        next_action="integrate the whole batch and run one regression; on failure run "
+                    "the recorded bisect schedule",
+        bisect_schedule=bisect_plan([_load(p) for p in candidate_paths]),
     )
 
 
@@ -206,7 +269,8 @@ def main() -> int:
 
     integration_parser = sub.add_parser("integrate")
     integration_parser.add_argument("--baseline", type=Path, required=True)
-    integration_parser.add_argument("--candidate", type=Path)
+    integration_parser.add_argument("--candidate", type=Path, action="append", default=[],
+                                    help="candidate manifest; repeat once per operator")
     integration_parser.add_argument("--out", type=Path, required=True)
     integration_parser.add_argument("--subject", required=True)
     args = parser.parse_args()
@@ -219,7 +283,7 @@ def main() -> int:
     else:
         integration_decision(
             args.baseline,
-            Path(args.candidate) if args.candidate else None,
+            [Path(candidate) for candidate in args.candidate],
             args.out,
             args.subject,
         )

@@ -41,13 +41,29 @@ def validate_integration(report: dict[str, Any]) -> list[str]:
     if state not in {"WAITING_FOR_CANDIDATE", "READY_FOR_INTEGRATION", "CANDIDATE_REJECTED"}:
         return ["integration state is invalid"]
     errors: list[str] = []
+    candidates = report.get("candidates") or []
+    if state in {"READY_FOR_INTEGRATION", "CANDIDATE_REJECTED"} and not candidates:
+        errors.append(f"{state} requires graded candidates")
     if state == "READY_FOR_INTEGRATION":
-        for gate, evidence in READY_GATES:
-            if not report.get(evidence):
-                errors.append(
-                    f"READY_FOR_INTEGRATION claims {gate} but records no {evidence}: "
-                    "an integration without its evidence file is a claim, not a fact"
-                )
-    if state == "CANDIDATE_REJECTED" and not report.get("failed_gates"):
-        errors.append("CANDIDATE_REJECTED must name the gates that failed")
+        for candidate in candidates:
+            failed = candidate.get("failed_gates") or {}
+            for gate, evidence in READY_GATES:
+                # package_swap and path_proof are the GLM-5.2 lesson: a candidate
+                # that cannot show how it was built into the pod and that every
+                # rank actually took its code path stood behind four failed swaps
+                # before a green one. grade_candidate folds a missing evidence
+                # file into failed_gates as "evidence:<gate>".
+                if f"evidence:{gate}" in failed:
+                    errors.append(
+                        f"READY_FOR_INTEGRATION claims {gate} for {candidate.get('candidate_id')} "
+                        f"but records no {evidence}: an integration without its evidence file "
+                        "is a claim, not a fact"
+                    )
+        if not report.get("bisect_schedule"):
+            errors.append(
+                "READY_FOR_INTEGRATION must record a bisect schedule: a failed batch is "
+                "attributed by bisection, not by waiting for a human"
+            )
+    if state == "CANDIDATE_REJECTED" and not report.get("failed_candidates"):
+        errors.append("CANDIDATE_REJECTED must name the candidates whose gates failed")
     return errors

@@ -6,12 +6,13 @@ metadata:
   task_type: operator_candidate_integration
   version: 0.1.0
 spec:
-  question: can one generated operator be integrated without regressing the baseline
+  question: can a batch of generated operators be integrated without regressing the baseline
   produces: OperatorIntegration
   consumes: [ServingBaseline]
   runs_with: |
     python3 tools/operator_lifecycle.py integrate --baseline <baseline_manifest.json> \
-      --candidate <candidate_manifest.json> --subject <model> --out <artifacts>
+      --candidate <candidate_manifest.json> --candidate <candidate_manifest.json> ... \
+      --subject <model> --out <artifacts>
 context:
   target:
     hardware: Kunlunxin-3-P800
@@ -20,13 +21,15 @@ execution:
   tools:
     - tools/operator_lifecycle.py
 actions:
-  - select_one_candidate
+  - collect_all_graded_candidates
   - require_kernel_grade_and_dispatch
-  - run_service_regression
-  - run_accuracy_regression
+  - integrate_batch_and_run_one_regression
+  - bisect_on_batch_failure
   - keep_or_rollback
 acceptance:
-  one_candidate_at_a_time: true
+  one_candidate_at_a_time: false
+  batch_integration: true
+  attribution_on_failure: automated_bisect
   rollback_on_failure: true
   candidate_must_not_self_certify: true
 checks:
