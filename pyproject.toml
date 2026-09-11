@@ -8,6 +8,24 @@ version = "0.1.0"
 description = "Agentic harness for inference model bring-up, validation, and optimization"
 requires-python = ">=3.10"
 readme = "README.md"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+packages = [
+    "adapters",
+    "adapters.kunlun_p800",
+    "orchestration",
+    "runners",
+    "tools",
+    "validators",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
