@@ -16,11 +16,17 @@ import argparse
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# How many fan-out children may run at once. Each child is an independent
+# command in its own artifact directory; the cap keeps a wide fan-out from
+# stampeding a shared pod or host.
+FAN_OUT_WORKERS = 8
 
 from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
@@ -557,6 +563,32 @@ def main() -> int:
         if not args.execute:
             for _, command in commands:
                 print(f"[plan] {current}: {' '.join(command)}")
+        elif "fan_out" in spec and len(commands) > 1:
+            # Fan-out children are independent by contract (one per operator or
+            # dimension, each in its own artifact directory), so they run
+            # concurrently — N subagents, not N round trips. The aggregate is
+            # the fan-in and always runs last, serially.
+            children, aggregate = commands[:-1], commands[-1]
+
+            def run_child(entry: tuple[Path, list[str]]) -> tuple[Path, list[str], int]:
+                target, command = entry
+                print(f"[run ] {current}: {' '.join(command)}")
+                target.mkdir(parents=True, exist_ok=True)
+                result = subprocess.run(command, cwd=REPO_ROOT, text=True)
+                return target, command, result.returncode
+
+            with ThreadPoolExecutor(max_workers=min(FAN_OUT_WORKERS, len(children))) as pool:
+                for target, command, code in pool.map(run_child, children):
+                    state = read_state(target, spec)
+                    print(f"[state] {current}: {state} (exit {code})")
+                    returncode = returncode or code
+            print(f"[run ] {current}: {' '.join(aggregate)}")
+            aggregate_target, aggregate_command = aggregate
+            aggregate_target.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(aggregate_command, cwd=REPO_ROOT, text=True)
+            state = read_state(aggregate_target, spec)
+            print(f"[state] {current}: {state} (exit {result.returncode})")
+            returncode = returncode or result.returncode
         else:
             for target, command in commands:
                 print(f"[run ] {current}: {' '.join(command)}")
