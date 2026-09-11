@@ -65,6 +65,40 @@ class WorkflowShapeTest(unittest.TestCase):
             with self.subTest(task_type=task_type):
                 self.assertIn("runs_with", guidance)
 
+    def test_on_manual_edges_point_somewhere_meaningful(self):
+        for node in self.nodes:
+            target = node.get("on_manual")
+            if target is None:
+                continue
+            with self.subTest(node=node["id"]):
+                self.assertIn(target, self.ids)
+
+    def test_operator_chain_failures_route_to_torch_fallback_not_a_human(self):
+        # The whole point of MAT-030: nothing on the operator chain stops for
+        # review. Gap classification and patch placement failures, and the
+        # multi-step triage/placement contracts, all land on the fallback.
+        # Gap classification is a single executable command: only its failure
+        # edge needs routing. Patch placement is a multi-step contract, so it
+        # also needs the on_manual route for when the walk reaches it.
+        gap_node = next(n for n in self.nodes if n["id"] == "mat-004-gap-classification")
+        self.assertEqual(gap_node["on_failure"], "mat-030-torch-fallback")
+        placement = next(n for n in self.nodes if n["id"] == "mat-007-patch-placement")
+        self.assertEqual(placement["on_failure"], "mat-030-torch-fallback")
+        self.assertEqual(placement.get("on_manual"), "mat-030-torch-fallback")
+        triage = next(n for n in self.nodes if n["id"] == "mat-006-failure-triage")
+        self.assertEqual(triage.get("on_manual"), "mat-030-torch-fallback")
+
+    def test_torch_fallback_records_debt_and_returns_to_the_main_flow(self):
+        fallback = next(n for n in self.nodes if n["id"] == "mat-030-torch-fallback")
+        self.assertEqual(fallback["on_success"], "mat-029-shim-handoff")
+        self.assertEqual(fallback["on_failure"], "mat-029-shim-handoff")
+
+    def test_torch_fallback_fans_out_one_child_per_operator(self):
+        spec = NODES["torch_fallback"]
+        self.assertEqual(spec["fan_out"]["var"], "operator")
+        self.assertIn("list-operators", " ".join(spec["fan_out"]["list"]))
+        self.assertIn("{operator}", " ".join(spec["command"]))
+
 
 class InputResolutionTest(unittest.TestCase):
     def context(self, artifacts: Path) -> dict:

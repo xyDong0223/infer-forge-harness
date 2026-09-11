@@ -1,0 +1,39 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: mat-030-torch-fallback
+  family: model_adaptation
+  task_type: torch_fallback
+  version: 0.1.0
+spec:
+  question: which operators should be replaced by torch shims so bring-up keeps moving
+  produces: TorchFallback
+  consumes: [GapClassification]
+  runs_with: |
+    python3 tools/torch_fallback.py apply --gaps <gap_classification.json> \
+      --subject <model> --out <artifacts>
+context:
+  target:
+    hardware: Kunlunxin-3-P800
+execution:
+  mode: execute
+  tools:
+    - tools/torch_fallback.py
+actions:
+  - extract_operator_names_from_failure_evidence
+  - dispatch_one_durable_request_per_operator
+  - fan_out_shim_authoring_to_subagents
+acceptance:
+  fallback_is_automatic: true
+  no_human_review_between_failure_and_fallback: true
+  operator_debt_recorded_in_same_pass: true
+  shims_written_as_torch_not_triton: true
+artifacts:
+  - fallback_status.json
+  - fallback_gaps.json
+  - requests/
+exit_states:
+  applied: FALLBACK_APPLIED
+  nothing_to_shim: FALLBACK_SKIPPED
+  invalid: CONTRACT_INVALID
+validator: validators/operator_lifecycle_validator.py:validate_dispatch

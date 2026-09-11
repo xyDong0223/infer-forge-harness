@@ -47,13 +47,24 @@ spec:
     - id: mat-004-gap-classification
       task: tasks/mat-004-gap-classification/task.yaml
       on_success: mat-024-operator-task-dispatch
-      on_failure: NEEDS_HUMAN
+      # An unclassifiable gap is still a gap: shim it and keep moving, the same
+      # way every real adaptation actually proceeded.
+      on_failure: mat-030-torch-fallback
     # Operator generation is asynchronous. Durable requests are emitted here,
     # while the main Agent continues bring-up with a reversible fallback.
     - id: mat-024-operator-task-dispatch
       task: tasks/mat-024-operator-task-dispatch/task.yaml
       on_success: mat-008-capability-evaluation
       on_failure: mat-008-capability-evaluation
+    # The automatic answer to any operator-chain failure. A kernel that will
+    # not run gets a torch shim — one fan-out child per operator, no review,
+    # no pause — and the operator debt is dispatched in the same pass.
+    - id: mat-030-torch-fallback
+      task: tasks/mat-030-torch-fallback/task.yaml
+      on_success: mat-029-shim-handoff
+      # Even the fallback's own failure still records debt and returns to the
+      # main flow; nothing on this chain stops for a human.
+      on_failure: mat-029-shim-handoff
     # The first node whose width depends on an upstream artifact: it fans out over
     # exactly the dimensions the CapabilityMatch says this model demands. Placed
     # before the deployment plan because a capability that is numerically wrong at
@@ -103,6 +114,9 @@ spec:
       on_success: mat-007-patch-placement
       # A binary-layer verdict has nowhere else to go, and that is a delivery.
       on_failure: mat-020-vendor-handoff
+      # Triage is a multi-step contract the runner will not fake as one
+      # command; instead of stopping, route straight to the torch fallback.
+      on_manual: mat-030-torch-fallback
     # Where a fix is allowed to live. patches/torch_paged_decode.py is the first
     # one; it still needs a placement decision among the four override mechanisms
     # and a numerical comparison against the vendor kernel.
@@ -112,7 +126,9 @@ spec:
       # shim gate, not the service proof: the fix and its operator debt are
       # recorded in the same pass, or the debt is recorded nowhere.
       on_success: mat-029-shim-handoff
-      on_failure: NEEDS_HUMAN
+      # A placement that will not take is one more failing operator: shim it.
+      on_failure: mat-030-torch-fallback
+      on_manual: mat-030-torch-fallback
     # Read-only and downstream of a successful service proof. Kept out of
     # KDP-001b because a capacity threshold must not be able to fail a
     # deployment that is, in fact, serving.
@@ -128,7 +144,7 @@ spec:
       on_success: mat-026-operator-candidate-integration
       on_failure: mat-006-failure-triage
     # With no candidate yet this records WAITING_FOR_CANDIDATE and allows the
-    # original serving flow to finish. A later run can provide one candidate.
+    # original serving flow to finish. A later run provides the whole batch.
     - id: mat-026-operator-candidate-integration
       task: tasks/mat-026-operator-candidate-integration/task.yaml
       on_success: mem-001-memory-budget

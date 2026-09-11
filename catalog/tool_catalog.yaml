@@ -143,7 +143,13 @@ entries:
     outputs: [baseline_manifest.json, baseline_status.json]
   - id: operator_candidate_integration
     command: python3 tools/operator_lifecycle.py integrate
-    purpose: gate one operator candidate against the frozen baseline
+    purpose: gate a batch of operator candidates against the frozen baseline
     side_effect: write_artifact
     retryable: false
     outputs: [integration_status.json]
+  - id: torch_fallback
+    command: python3 tools/torch_fallback.py
+    purpose: turn any failing operator into a torch shim work list and durable requests
+    side_effect: write_artifact
+    retryable: true
+    outputs: [fallback_status.json, fallback_gaps.json, requests/]

@@ -34,6 +34,8 @@ class SkillRegistryTest(unittest.TestCase):
             "runtime_drift_scan", "toy_bringup",
             # The gate that turns torch shims into operator requests.
             "torch_shim_handoff",
+            # The automatic answer to any operator-chain failure.
+            "torch_fallback",
         }
         self.assertEqual(set(index), expected)
 

@@ -96,6 +96,26 @@ NODES: dict[str, dict] = {
         ],
         "state_file": "dispatch_status.json",
     },
+    # MAT-030: the automatic answer to any operator-chain failure. No review,
+    # no pause — the failing operators become a torch shim work list, each
+    # shim authored by its own fan-out child, and the operator debt is
+    # dispatched through the same MAT-024 machinery.
+    "torch_fallback": {
+        "produces": "TorchFallback",
+        "needs": {"--gaps": "fact:GapClassification:gap_classification.json"},
+        "fan_out": {
+            "var": "operator",
+            "list": ["python3", "tools/torch_fallback.py", "list-operators",
+                     "--subject", "{subject}"],
+            "aggregate": ["python3", "tools/torch_fallback.py", "aggregate",
+                          "--out", "{artifacts}"],
+        },
+        "command": [
+            "python3", "tools/torch_fallback.py", "shim", "--operator", "{operator}",
+            "--subject", "{subject}", "--out", "{artifacts}",
+        ],
+        "state_file": "fallback_status.json",
+    },
     "deployment_plan": {
         "produces": "DeploymentPlan",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
@@ -217,8 +237,11 @@ NODES: dict[str, dict] = {
 
 # Nodes that are deliberately not single commands. Triage needs a server rerun
 # between instrumenting and reading the capture; placement needs a rerun between
-# installing and validating. Pretending either is one command would make the graph
-# claim work it did not do, so the walk stops here and says what to run instead.
+# installing and validating. These no longer stop the walk: when the workflow
+# gives the node an `on_manual` edge, the walk follows it automatically — on the
+# operator chain that edge points at the torch fallback, because the practiced
+# answer to any of these failures has always been "write a torch shim and keep
+# moving", and waiting for a human never made one of these steps cheaper.
 MANUAL: dict[str, str] = {
     "failure_triage": "instrument the call, rerun the service proof, read the capture, sweep in "
     "isolation, then restore — see the contract's runs_with",
@@ -355,6 +378,8 @@ SUCCESS_STATES = {
     "PATCH_PLACED",
     "DISPATCHED",
     "DISPATCH_SKIPPED",
+    "FALLBACK_APPLIED",
+    "FALLBACK_SKIPPED",
     "BASELINE_FROZEN",
     "WAITING_FOR_CANDIDATE",
     "READY_FOR_INTEGRATION",
@@ -442,6 +467,18 @@ def main() -> int:
             )
             break
         if task_type in MANUAL:
+            fallback = node.get("on_manual")
+            if fallback and fallback in by_id:
+                print(f"[edge] {current} --manual--> {fallback} "
+                      f"({MANUAL[task_type]})")
+                emit_summary(
+                    {"status": "FALLBACK", "node": current, "next_task": fallback,
+                     "reason_code": "MANUAL_ROUTED", "skill": skill["id"],
+                     "message": MANUAL[task_type]},
+                    args.json,
+                )
+                current = fallback
+                continue
             print(f"stop: {current} is operator-driven — {MANUAL[task_type]}")
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
