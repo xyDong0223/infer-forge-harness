@@ -94,6 +94,17 @@ class EventStore:
         row = self.db.execute("SELECT payload FROM runs WHERE run_id=?", (run.run_id,)).fetchone()
         return AdaptationRun.from_dict(json.loads(row["payload"]))
 
+    def update_run(self, run: AdaptationRun) -> AdaptationRun:
+        """Persist a changed run context without replacing its identity."""
+        now = time.time()
+        run.updated_at = now
+        self.db.execute(
+            "UPDATE runs SET payload=?, updated_at=? WHERE run_id=?",
+            (json.dumps(run.to_dict(), sort_keys=True), now, run.run_id),
+        )
+        self.db.commit()
+        return run
+
     def run(self, run_id: str) -> AdaptationRun | None:
         row = self.db.execute("SELECT payload FROM runs WHERE run_id=?", (run_id,)).fetchone()
         return AdaptationRun.from_dict(json.loads(row["payload"])) if row else None
@@ -180,9 +191,60 @@ class TaskScheduler:
         self._emit(saved.run_id, "run_created", {"model_id": saved.model_id})
         return saved
 
-    def discover_operator(self, run_id: str, spec: OperatorSpec) -> OperatorTask:
-        if self.store.run(run_id) is None:
+    def bind_environment(self, run_id: str, proof: dict[str, Any]) -> AdaptationRun:
+        """Bind a validated deployment environment to a run.
+
+        The caller must supply the output of the environment-proof task.  This
+        method deliberately checks the minimum handoff fields again so a stale
+        or hand-written status cannot unlock discovery.
+        """
+        run = self.store.run(run_id)
+        if run is None:
             raise KeyError(f"unknown run: {run_id}")
+        checks = proof.get("checks") or {}
+        required = {
+            "state": "ENVIRONMENT_READY",
+            "pod": proof.get("pod"),
+            "pod_ready": checks.get("pod_ready"),
+            "runtime_importable": checks.get("runtime_importable"),
+            "code_ready": checks.get("code_ready"),
+            "device_ready": checks.get("device_ready"),
+        }
+        missing = [name for name, value in required.items()
+                   if (name == "state" and value != "ENVIRONMENT_READY")
+                   or (name != "state" and value is not True and name != "pod")
+                   or (name == "pod" and not value)]
+        if missing:
+            raise ValueError("environment proof is not ready: " + ", ".join(missing))
+        artifacts = proof.get("artifacts") or []
+        required_artifacts = {"environment_fingerprint.txt", "runtime_import.txt",
+                              "code_readiness.json", "device_readiness.json"}
+        absent = sorted(required_artifacts - set(artifacts))
+        if absent:
+            raise ValueError(f"environment proof is missing evidence: {', '.join(absent)}")
+        run.environment = {
+            **run.environment,
+            "environment_proof": {
+                "pod": proof["pod"],
+                "checks": dict(checks),
+                "artifacts": list(artifacts),
+                "fingerprint": proof.get("fingerprint") or proof.get("environment_fingerprint"),
+            },
+        }
+        run.status = "ENVIRONMENT_READY"
+        self.store.update_run(run)
+        self._emit(run_id, "environment_bound", {"pod": proof["pod"], "artifacts": list(artifacts)})
+        return run
+
+    def discover_operator(self, run_id: str, spec: OperatorSpec) -> OperatorTask:
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if run.metadata.get("environment_required") and run.status != "ENVIRONMENT_READY":
+            raise ValueError(
+                "environment proof is required before operator discovery; bind a validated "
+                "deployment environment first"
+            )
         key = spec.operator_key
         is_new = self.store.put_operator(run_id, spec)
         existing = next((t for t in self.store.tasks(run_id) if t.operator_key == key and t.stage == "torch"), None)

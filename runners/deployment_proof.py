@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -372,7 +373,48 @@ class DeploymentProofRunner:
             raise ActionFailed("INSTALL_FAILED", f"import failed: {result.stderr.strip()[-1500:]}")
         self.checks["runtime_importable"] = True
         self.record("verify_runtime_importable", True, result.stdout.strip()[-300:])
+        self.verify_code_and_device_ready()
         self.collect_environment_fingerprint()
+
+    def verify_code_and_device_ready(self) -> None:
+        """Prove later investigation runs in the prepared code/XPU context."""
+        pod = self.pod or ""
+        worktree = f"{self.workdir}/vLLM-Kunlun"
+        code_result = self.adapter.exec(
+            pod,
+            " && ".join(
+                [
+                    f"test -d {shlex.quote(worktree)}/.git",
+                    f"test -f {shlex.quote(worktree)}/setup_env.sh",
+                    f"cd {shlex.quote(worktree)} && git rev-parse HEAD",
+                ]
+            ),
+            timeout=120,
+        )
+        code_payload = {
+            "worktree": worktree,
+            "git_head": code_result.stdout.strip().splitlines()[-1]
+            if code_result.stdout.strip()
+            else None,
+            "setup_env": code_result.returncode == 0,
+        }
+        self.write("code_readiness.json", json.dumps(code_payload, indent=2) + "\n")
+        self.checks["code_ready"] = code_result.returncode == 0 and bool(code_payload["git_head"])
+        if not self.checks["code_ready"]:
+            raise ActionFailed("CODE_NOT_READY", "vLLM-Kunlun worktree or setup_env.sh is unavailable")
+
+        try:
+            cards = self.adapter.xpu_smi(pod)
+            expected = int(self.contract.get("context", {}).get("target", {}).get("device_count", 1))
+            device_payload = {"cards": cards, "expected_count": expected, "count": len(cards)}
+            device_ok = len(cards) >= expected
+        except (RuntimeError, ValueError) as error:
+            device_payload = {"cards": [], "error": str(error)}
+            device_ok = False
+        self.write("device_readiness.json", json.dumps(device_payload, indent=2) + "\n")
+        self.checks["device_ready"] = device_ok
+        if not device_ok:
+            raise ActionFailed("DEVICE_NOT_READY", "the prepared pod has no expected XPU devices")
 
     def collect_environment_fingerprint(self) -> None:
         """Record what this conclusion is only true of.
@@ -394,7 +436,5 @@ class DeploymentProofRunner:
         result = self.adapter.exec(pod, script, timeout=300)
         self.write("environment_fingerprint.txt", result.stdout + result.stderr)
         self.record("environment_fingerprint", result.returncode == 0)
-
-
 
 

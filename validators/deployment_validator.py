@@ -37,13 +37,18 @@ def validate_environment_status(status: dict[str, Any]) -> list[str]:
     if status.get("state") != "ENVIRONMENT_READY":
         errors.append("state must be ENVIRONMENT_READY")
     checks = status.get("checks", {})
-    for key in ("pod_ready", "runtime_importable"):
+    for key in ("pod_ready", "runtime_importable", "code_ready", "device_ready"):
         if checks.get(key) is not True:
             errors.append(f"checks.{key} must be True")
     if not status.get("pod"):
         errors.append("pod must be recorded so a later phase can import it")
     artifacts = status.get("artifacts") or []
-    for required in ("environment_fingerprint.txt", "runtime_import.txt"):
+    for required in (
+        "environment_fingerprint.txt",
+        "runtime_import.txt",
+        "code_readiness.json",
+        "device_readiness.json",
+    ):
         if required not in artifacts:
             errors.append(f"{required} must be part of the evidence bundle")
     return errors

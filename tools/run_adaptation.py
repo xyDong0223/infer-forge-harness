@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -53,7 +54,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    create = sub.add_parser("create", help="create or reopen an adaptation run")
+    create = sub.add_parser(
+        "create", aliases=["create-run"], help="create or reopen an adaptation run"
+    )
     create.add_argument("--run-id", required=True)
     create.add_argument("--model", required=True)
     create.add_argument("--backend", required=True)
@@ -61,6 +64,17 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--plugin-revision", default="unknown")
     create.add_argument("--environment", type=Path)
     create.add_argument("--metadata", type=Path)
+
+    environment = sub.add_parser(
+        "environment",
+        aliases=["prove-environment", "bind-environment"],
+        help="run or import the deployment environment proof before discovery",
+    )
+    environment.add_argument("--run-id", required=True)
+    source = environment.add_mutually_exclusive_group(required=True)
+    source.add_argument("--status", type=Path, help="status.json from an environment-proof task")
+    source.add_argument("--contract", type=Path, help="deployment task contract to execute")
+    environment.add_argument("--artifact-dir", type=Path)
 
     discover = sub.add_parser("discover", help="convert a gap report into torch tasks")
     discover.add_argument("--run-id", required=True)
@@ -99,7 +113,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
-    if args.command == "create":
+    if args.command in {"create", "create-run"}:
+        metadata = _json_file(args.metadata, field="metadata")
+        metadata.setdefault("environment_required", True)
         run = scheduler.create_run(
             AdaptationRun(
                 run_id=args.run_id,
@@ -108,22 +124,62 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                 model_revision=args.model_revision,
                 plugin_revision=args.plugin_revision,
                 environment=_json_file(args.environment, field="environment"),
-                metadata=_json_file(args.metadata, field="metadata"),
+                metadata=metadata,
+                status="WAITING_FOR_ENVIRONMENT",
             )
         )
         return {"command": "create", "run": run.to_dict()}
+
+    if args.command in {"environment", "prove-environment", "bind-environment"}:
+        if args.status:
+            proof = _json_file(args.status, field="environment status")
+        else:
+            command = [
+                sys.executable,
+                str(REPO_ROOT / "runners" / "task_runner.py"),
+                str(args.contract),
+                "--execute",
+                "--phase",
+                "environment",
+            ]
+            if args.artifact_dir:
+                command += ["--artifact-dir", str(args.artifact_dir)]
+            completed = subprocess.run(
+                command, cwd=REPO_ROOT, text=True, capture_output=True, check=False
+            )
+            try:
+                proof = json.loads(completed.stdout)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    "environment task did not return JSON status: "
+                    + (completed.stderr.strip() or completed.stdout[-500:])
+                ) from error
+            if completed.returncode != 0:
+                raise ValueError(
+                    f"environment task failed with exit code {completed.returncode}: "
+                    f"{proof.get('state', 'UNKNOWN')}"
+                )
+        run = scheduler.bind_environment(args.run_id, proof)
+        return {"command": "environment", "run": run.to_dict(), "proof": proof}
 
     if args.command == "discover":
         run = scheduler.store.run(args.run_id)
         if run is None:
             raise ValueError(f"unknown run: {args.run_id}")
+        if run.metadata.get("environment_required") and run.status != "ENVIRONMENT_READY":
+            raise ValueError(
+                "environment proof is required before discovery; run the environment command "
+                "with the deployment task status first"
+            )
         report = load_report(args.report)
+        proof_context = run.environment.get("environment_proof", {})
         specs = operator_specs_from_report(
             report,
             model_id=args.model or run.model_id,
             backend=args.backend or run.backend,
             model_revision=args.model_revision or run.model_revision,
             plugin_revision=args.plugin_revision,
+            environment=proof_context,
             include_waived=args.include_waived,
         )
         tasks = [scheduler.discover_operator(args.run_id, spec) for spec in specs]

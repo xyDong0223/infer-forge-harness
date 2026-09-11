@@ -76,6 +76,8 @@ def main() -> int:
             AdaptationRun(
                 run_id=args.run_id, model_id=args.model, model_revision=args.model_revision,
                 plugin_revision=args.plugin_revision, backend=args.backend,
+                status="WAITING_FOR_ENVIRONMENT",
+                metadata={"environment_required": True},
             )
         ).to_dict()
     elif args.command == "discover":

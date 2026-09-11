@@ -3,6 +3,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from orchestration import AdaptationRun, EventStore, IOSpec, OperatorSpec, TaskScheduler
 from orchestration.contracts import BugReport, DiagnosticTask
 
@@ -141,3 +143,18 @@ def test_each_failed_stage_gets_its_own_diagnosis_task():
         scheduler.fail(source.task_id, error="runtime error")
         diagnoses = [t for t in scheduler.store.tasks("r") if t.stage == "diagnosis"]
         assert len(diagnoses) == 2
+
+
+def test_environment_required_run_cannot_discover_before_binding():
+    with tempfile.TemporaryDirectory() as d:
+        scheduler = TaskScheduler(Path(d) / "state.db")
+        scheduler.create_run(
+            AdaptationRun(
+                run_id="r",
+                model_id="m",
+                status="WAITING_FOR_ENVIRONMENT",
+                metadata={"environment_required": True},
+            )
+        )
+        with pytest.raises(ValueError, match="environment proof"):
+            scheduler.discover_operator("r", _spec())

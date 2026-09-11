@@ -34,12 +34,16 @@ acceptance:
   # was installed and `import vllm_kunlun` still died on a C++ extension built
   # by gcc 9 against a -std=c++20 source.
   runtime_importable: true
+  code_ready: true
+  device_ready: true
   fingerprint_required: true
 artifacts:
   - deployment_manifest
   - pod_spec
   - install_log
   - runtime_import
+  - code_readiness
+  - device_readiness
   - environment_fingerprint
 exit_states:
   pass: ENVIRONMENT_READY

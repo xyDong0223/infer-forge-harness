@@ -12,8 +12,9 @@ The objective is to adapt an inference model to a vLLM backend and target XPU
 through a reproducible, evidence-backed loop:
 
 ```text
-intake and scan
-  -> runtime/toy bring-up
+deployment environment proof (prepared Pod + code + XPU)
+  -> model identity intake
+  -> runtime/toy bring-up and scan inside that Pod
   -> missing-operator discovery
   -> OperatorSpec
   -> PyTorch reference task
@@ -37,18 +38,21 @@ that a result passed.
 The Main Agent owns one `AdaptationRun` and its decisions. It must:
 
 1. Create or resume the run in the scheduler.
-2. Read the relevant `openwiki/vllm-core/`, `openwiki/vllm-kunlun/`, and
+2. Run the deployment environment-proof Task before runtime investigation. No
+   model scan, capability evaluation, shim scan, or operator adaptation may
+   start until its status is bound to the run.
+3. Read the relevant `openwiki/vllm-core/`, `openwiki/vllm-kunlun/`, and
    `openwiki/harness/` material before choosing an implementation path.
-3. Run intake, static/runtime checks, and toy bring-up before declaring a model
+4. Run intake, static/runtime checks, and toy bring-up before declaring a model
    usable.
-4. Convert every confirmed gap into an `OperatorSpec` and a durable task.
-5. Keep independent operator branches moving in parallel; do not wait on one
+5. Convert every confirmed gap into an `OperatorSpec` and a durable task.
+6. Keep independent operator branches moving in parallel; do not wait on one
    failed operator before investigating other gaps.
-6. Dispatch work to the appropriate child Agent and consume only its persisted
+7. Dispatch work to the appropriate child Agent and consume only its persisted
    result and evidence.
-7. Use diagnosis conclusions to decide whether to rediscover, repair, retry,
+8. Use diagnosis conclusions to decide whether to rediscover, repair, retry,
    fall back explicitly, or mark a branch blocked.
-8. Declare functional completion only after integration and service regression
+9. Declare functional completion only after integration and service regression
    have passed for the required operators.
 
 The Main Agent may change repository code when the task requires it, but it
@@ -104,10 +108,37 @@ python3 tools/run_adaptation.py \
 Before doing expensive work, record the model revision, plugin revision, target
 hardware, runtime versions, and artifact root in the run context.
 
-### 2. Discover gaps from evidence
+### 2. Prove the deployment environment before discovery
 
-Run the existing intake, runtime drift, toy bring-up, and shim/gap scanners as
-appropriate. A report must include enough evidence to identify tensor inputs,
+Before discovery, the Main Agent must run the deployment environment-proof Task
+and bind its result to the run. Discovery is rejected until the proof records a
+ready Pod, importable runtime, ready vLLM-Kunlun code worktree, and visible XPU
+devices. All later investigation and child tasks must use the Pod and code
+context recorded by this handoff; a new throwaway Pod is not equivalent.
+
+```bash
+python3 tools/run_adaptation.py \
+  --state /path/to/adaptation.db \
+  environment \
+  --run-id <run-id> \
+  --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml
+```
+
+If the deployment proof was already executed by a separate workflow step, its
+validated `status.json` may be imported instead:
+
+```bash
+python3 tools/run_adaptation.py \
+  --state /path/to/adaptation.db \
+  environment \
+  --run-id <run-id> \
+  --status /path/to/environment/status.json
+```
+
+The proof must leave one prepared Pod with an importable runtime, a pinned
+vLLM-Kunlun code worktree, and visible target XPU devices. All runtime
+investigation must execute in that Pod and cite its code/environment fingerprint.
+A report must include enough evidence to identify tensor inputs,
 outputs, shape/rank, dtype, layout, semantics, call site, and failure context.
 Convert the report through the orchestration entry point:
 

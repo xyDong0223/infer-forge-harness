@@ -21,8 +21,19 @@ ENVIRONMENT_STATUS = {
     "state": "ENVIRONMENT_READY",
     "pod": "dongxinyu03-kdp001-qwen3-8b-7c969df894-hsz7d-0",
     "phase": "environment",
-    "checks": {"pod_ready": True, "runtime_importable": True},
-    "artifacts": ["environment_fingerprint.txt", "runtime_import.txt", "status.json"],
+    "checks": {
+        "pod_ready": True,
+        "runtime_importable": True,
+        "code_ready": True,
+        "device_ready": True,
+    },
+    "artifacts": [
+        "environment_fingerprint.txt",
+        "runtime_import.txt",
+        "code_readiness.json",
+        "device_readiness.json",
+        "status.json",
+    ],
 }
 
 
