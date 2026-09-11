@@ -8,7 +8,13 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.operator_lifecycle import dispatch, freeze_baseline, integration_decision  # noqa: E402
+from tools.operator_lifecycle import (  # noqa: E402
+    DEFAULT_KNOWN_OPS,
+    dispatch,
+    freeze_baseline,
+    integration_decision,
+    load_known_operators,
+)
 
 
 class OperatorLifecycleTest(unittest.TestCase):
@@ -41,6 +47,41 @@ class OperatorLifecycleTest(unittest.TestCase):
                 (root / "dispatch/requests/Model-op-001.json").read_text(encoding="utf-8")
             )
             self.assertEqual(request["operator"], "swiglu_oai")
+
+    def test_dispatch_skips_operators_the_repo_already_ships(self):
+        # The GLM-5.2 lesson: two of three dispatches duplicated kernels
+        # XSpeedGate already had. An existing operator is recorded as a
+        # duplicate, never dispatched.
+        self.assertTrue(DEFAULT_KNOWN_OPS.exists(),
+                        "catalog/known_operators.json must be committed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            known = self.write_json(root / "known.json", {"operators": ["existing_op"]})
+            gaps = self.write_json(
+                root / "gaps.json",
+                {"gaps": [{"operator": "existing_op"}, {"operator": "genuinely_new"}]},
+            )
+            report = dispatch(gaps, root / "dispatch", "Model", known_ops=known)
+            self.assertEqual(report["request_count"], 1)
+            self.assertEqual(
+                [dup["operator"] for dup in report["skipped_duplicates"]], ["existing_op"]
+            )
+            self.assertEqual(
+                json.loads(
+                    (root / "dispatch/requests/Model-op-002.json").read_text(encoding="utf-8")
+                )["operator"],
+                "genuinely_new",
+            )
+
+    def test_dispatch_without_an_index_still_dispatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gaps = self.write_json(root / "gaps.json", {"gaps": [{"operator": "any_op"}]})
+            report = dispatch(gaps, root / "dispatch", "Model",
+                              known_ops=root / "missing.json")
+            self.assertEqual(report["state"], "DISPATCHED")
+            self.assertEqual(report["request_count"], 1)
+            self.assertEqual(load_known_operators(root / "missing.json"), set())
 
     def test_baseline_requires_both_service_and_accuracy(self):
         with tempfile.TemporaryDirectory() as tmp:
