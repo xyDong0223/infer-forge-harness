@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adapters.kunlun_p800 import KunlunP800Adapter
+from adapters.kunlun_p800 import KunlunP800Adapter, SafetyViolation
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -503,6 +503,13 @@ class DeploymentProofRunner:
             self.poll_health()
             self.run_chat_smoke()
             self.verify_backend()
+        except SafetyViolation as violation:
+            # The shared-namespace ownership guard is an input error (wrong pod
+            # name, unset USER_ID), not a cluster failure: report it as a
+            # machine-readable status instead of a traceback so the graph can
+            # route it instead of crashing the executor.
+            self.record("outcome", False, f"safety violation: {violation}")
+            return self.collect_artifacts("CONTRACT_INVALID", str(violation))
         except ActionFailed as failure:
             retain = self.contract["execution"].get("retain_on_failure", True)
             self.record("outcome", False, f"{failure.state}; retain_on_failure={retain}")

@@ -226,7 +226,28 @@ def main() -> int:
     if not args.environment:
         print("CONTRACT_INVALID: --environment is required in the single-ticket form", file=sys.stderr)
         return 1
-    triage = json.loads(Path(args.triage).read_text(encoding="utf-8"))
+    triage_path = Path(args.triage)
+    if not triage_path.exists():
+        # A failed triage never writes triage_report.json, and a traceback here
+        # crashed the mat-020 node while the graph was already on a failure
+        # edge (run glm52-int-w8a8-p800-001, 2026-09-14). Emit the state file
+        # the node's validator reads so the walk can route the outcome.
+        (out / "handoff_status.json").write_text(
+            json.dumps(
+                {
+                    "state": "NEEDS_HUMAN",
+                    "form": "ticket",
+                    "reason": f"triage report {args.triage} does not exist; "
+                    "run mat-006 failure triage to completion first",
+                    "validator": {"passed": False, "errors": ["missing triage report"]},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"NEEDS_HUMAN: triage report {args.triage} does not exist", file=sys.stderr)
+        return 1
+    triage = json.loads(triage_path.read_text(encoding="utf-8"))
     if triage.get("state") != "TRIAGE_READY":
         print(f"NEEDS_HUMAN: triage is {triage.get('state')}", file=sys.stderr)
         return 1

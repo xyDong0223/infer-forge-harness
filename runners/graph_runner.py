@@ -560,10 +560,30 @@ def main() -> int:
     by_id = {node["id"]: node for node in nodes}
 
     current = order[start]
+    visits: dict[str, int] = {}
     while current:
         node = by_id.get(current)
         if node is None or node.get("task") in (None, "PLANNED"):
             print(f"stop: {current} has no contract yet")
+            break
+        # Failure edges can declare a cycle (mat-006 --failure--> mat-020
+        # --failure--> mat-006) that is legitimate once — a second upstream
+        # failure may re-enter triage — but never four times: without this
+        # guard the walk looped those two nodes forever while both failed
+        # (run glm52-int-w8a8-p800-001, 2026-09-14, dozens of iterations).
+        visits[current] = visits.get(current, 0) + 1
+        if visits[current] > 3:
+            print(
+                f"stop: {current} re-entered {visits[current]} times in one walk "
+                "(failure-edge cycle with no progress)"
+            )
+            emit_summary(
+                {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                 "reason_code": "FAILURE_EDGE_CYCLE",
+                 "message": f"{current} keeps failing and re-entering; the failure "
+                 "edges form a cycle — a human decision is required"},
+                args.json,
+            )
             break
         task_type = node_task_type(node)
         try:
