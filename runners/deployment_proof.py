@@ -296,7 +296,14 @@ class DeploymentProofRunner:
         # with a group-wide redirect does (reproduced on the prepared pod
         # 2026-09-14: ungrouped hangs kubectl exec until the client timeout,
         # grouped returns in <1s with the server still running).
+        # Archive any previous attempt's log before the launch truncates it.
+        # Without this, a later attempt (the mat-006 triage rerun, a manual
+        # relaunch) destroys the crash evidence of the attempt that just
+        # failed — run glm52-int-w8a8-p800-001 lost the entire engine-side
+        # stack trace of a first-request EngineCore crash this way, 40
+        # seconds after the crash.
         launch = (
+            f"cp -f {self.server_log_path()} {self.server_log_path()}.prev 2>/dev/null; "
             f"( cd {self.workdir} && "
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
             f"{setup + ' && ' if setup else ''}"
@@ -383,7 +390,27 @@ class DeploymentProofRunner:
         if chat.get("expected_non_empty_text", True) and not text.strip():
             self.checks[completion_key] = "empty"
             self.record("run_chat_smoke", False, body[:1000])
-            raise ActionFailed("API_SMOKE_FAILED", "chat completion returned no text")
+            # A 5xx body ("EngineCore encountered an issue") means the engine
+            # process crashed on this request: the health endpoint answered
+            # 200 a moment earlier, so the API server is up while the core is
+            # dead. The engine-side stack trace is the only root cause, and it
+            # lives in the server log — persist it before anything relaunches
+            # and truncates the file (run glm52-int-w8a8-p800-001 lost it).
+            log = ""
+            try:
+                log = self.adapter.exec(
+                    pod, f"tail -n 200 {self.server_log_path()}", timeout=120
+                ).stdout
+            except Exception:  # noqa: BLE001 - log capture must never mask the failure
+                pass
+            if log:
+                key = f"{prefix}chat_failure_server_log.txt" if prefix else "chat_failure_server_log.txt"
+                self.write(key, log)
+            raise ActionFailed(
+                "API_SMOKE_FAILED",
+                f"chat completion returned no text; response: {body[:500]}; "
+                f"server log tail:\n{log[-1500:]}",
+            )
         if finish == "length":
             self.record("run_chat_smoke", True, "truncated by max_tokens; raise it for a full answer")
         self.checks[completion_key] = "non_empty"
