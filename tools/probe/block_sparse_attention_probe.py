@@ -260,6 +260,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=20260908)
     parser.add_argument("--cosine-floor", type=float, default=0.9999)
     parser.add_argument("--max-relative-l2", type=float, default=0.02)
+    parser.add_argument("--dump", help="directory for candidate/reference/control tensor JSONs "
+                                       "and the selected blocks, consumed by tools/tensor_diff.py "
+                                       "(mat-023)")
     return parser.parse_args()
 
 
@@ -441,6 +444,28 @@ def finish(args, case, blocks, result, kunlun_ops, torch, dtype, topk_idx) -> in
         control_error = None
     except Exception as error:
         control, control_error = {}, f"{type(error).__name__}: {error}"
+
+    if args.dump:
+        # mat-023 grades these with tools/tensor_diff.py and records the selected
+        # blocks: a long-context pass without the selection it ran over cannot be
+        # reproduced by anyone else.
+        import os
+
+        os.makedirs(args.dump, exist_ok=True)
+        try:
+            dumps = {
+                "candidate.json": sparse_out.detach().cpu().to(torch.float32).tolist(),
+                "reference.json": sparse_reference(case, topk_idx, args.block_size)
+                .detach().cpu().to(torch.float32).tolist(),
+                "control.json": sparse_reference(case, shifted, args.block_size)
+                .detach().cpu().to(torch.float32).tolist(),
+                "selected_blocks.json": topk_idx.detach().cpu().tolist(),
+            }
+            for name, payload in dumps.items():
+                with open(os.path.join(args.dump, name), "w") as handle:
+                    json.dump(payload, handle)
+        except Exception as error:
+            control, control_error = {}, f"dump failed: {type(error).__name__}: {error}"
     result["control"] = {
         "case": "reference_over_a_different_block_set",
         "description": "every selected block index shifted by one, so the reference reads other keys",

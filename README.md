@@ -171,6 +171,15 @@ prompts: mat-006's instrument/capture/isolate/restore sequence and mat-007's
 apply/validate/compare/reject sequence run as written, and the independent
 validators still decide their verdicts.
 
+The three correctness gates are sequenced the same way
+(`runners/correctness_executor.py`): mat-021 grades a platform kernel against
+an independent CPU reference through `tools/tensor_diff.py`, mat-022 packages
+the integrated-serving-path differential into case-level evidence, and mat-023
+exercises sparse selection beyond `block_size * topk` with a shifted-block
+control. In all three, a control that cannot fail makes the verdict AMBIGUOUS,
+never a pass. With these, every task type in the workflow has an executor and
+none stops for a person.
+
 ## Operator integration loop
 
 `model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.

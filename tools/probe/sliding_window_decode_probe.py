@@ -129,6 +129,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260908)
     parser.add_argument("--cosine-floor", type=float, default=0.9999)
     parser.add_argument("--max-relative-l2", type=float, default=0.01)
+    parser.add_argument("--dump", help="directory for candidate/reference/control tensor JSONs "
+                                       "consumed by tools/tensor_diff.py (mat-021)")
     args = parser.parse_args()
 
     import vllm_kunlun  # noqa: F401 - installs the torch_xmlir mapping and custom ops
@@ -181,10 +183,12 @@ def main() -> int:
     # The vendor kernel is measured, not graded: it is the definition of the
     # convention the backend expects, and disagreement here is a finding about the
     # window's meaning rather than a defect in the fallback.
+    vendor_out = None
     try:
         vendor_case = case(args.window)
         getattr(kunlun_ops, args.kernel)(**vendor_case)
         torch.cuda.synchronize()
+        vendor_out = vendor_case["out"]  # only a completed call may be dumped as candidate
         vendor = {"case": "vendor_kernel_vs_cpu_reference",
                   "reference": "float32 windowed attention on the CPU from the same paged cache",
                   **metrics(vendor_case["out"], reference)}
@@ -207,12 +211,14 @@ def main() -> int:
 
     # Control: ignore the window. At a context longer than the window this must
     # disagree with the reference, or the geometry proves nothing about windowing.
+    control_out = None
     try:
         control_case = case(-1)
         fallback.torch_paged_decode(**control_case)
         torch.cuda.synchronize()
         control_metrics = metrics(control_case["out"], reference)
         control_error: str | None = None
+        control_out = control_case["out"]
     except Exception as error:
         control_metrics, control_error = {}, f"{type(error).__name__}: {error}"
     result["control"] = {
@@ -223,6 +229,25 @@ def main() -> int:
         "discriminates": control_error is not None
         or control_metrics.get("relative_l2", 0.0) > args.max_relative_l2,
     }
+
+    if args.dump:
+        # mat-021 grades these with tools/tensor_diff.py: the platform kernel's
+        # output, the independent CPU reference, and an actually-computed
+        # unwindowed output as the negative control — a kernel that ignored the
+        # window would land on the control and fail the gate, which is what
+        # makes the gate mean something.
+        import os
+
+        if vendor_out is None or control_out is None:
+            result["state"] = "EVALUATION_INCONCLUSIVE"
+            result["error"] = "kernel or control output unavailable, so there is nothing to dump"
+            print(json.dumps(result))
+            return 1
+        os.makedirs(args.dump, exist_ok=True)
+        for name, tensor in (("candidate.json", vendor_out), ("reference.json", reference),
+                             ("control.json", control_out)):
+            with open(os.path.join(args.dump, name), "w") as handle:
+                json.dump(tensor.detach().cpu().to(torch.float32).tolist(), handle)
 
     primary = result["cases"][0]
     passed = (primary["relative_l2"] <= args.max_relative_l2

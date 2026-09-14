@@ -69,9 +69,21 @@ class WorkflowShapeTest(unittest.TestCase):
 
     def test_triage_and_placement_are_executable_not_manual(self):
         """The walk must not stop where a recovery decision needs them."""
-        for task_type in ("failure_triage", "patch_placement"):
+        for task_type in ("failure_triage", "patch_placement",
+                          "platform_kernel_correctness", "end_to_end_accuracy",
+                          "long_context_sparse_correctness"):
             self.assertIn(task_type, NODES)
             self.assertNotIn(task_type, MANUAL)
+
+    def test_every_task_type_in_the_workflow_has_an_executor(self):
+        """With MANUAL empty, no wired node may any longer stop for a person."""
+        self.assertEqual(MANUAL, {})
+        for node in self.nodes:
+            task_type = node_task_type(node)
+            if task_type is None:
+                continue
+            with self.subTest(node=node["id"], task_type=task_type):
+                self.assertIn(task_type, NODES)
 
 
 class FailureReasonTest(unittest.TestCase):

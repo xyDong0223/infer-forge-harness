@@ -207,6 +207,36 @@ NODES: dict[str, dict] = {
         ],
         "state_file": "status.json",
     },
+    # The three correctness gates, sequenced by runners/correctness_executor.py.
+    # Each exercises the real path against an independent reference with a
+    # discriminating control; a control that cannot fail makes the grade
+    # AMBIGUOUS, never a pass.
+    "platform_kernel_correctness": {
+        "produces": "PlatformKernelCorrectness",
+        "command": [
+            "python3", "runners/correctness_executor.py", "kernel",
+            "--pod", "{pod}", "--out", "{artifacts}",
+        ],
+        "state_file": "kernel_status.json",
+    },
+    "end_to_end_accuracy": {
+        "produces": "EndToEndAccuracy",
+        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
+        "command": [
+            "python3", "runners/correctness_executor.py", "end-to-end",
+            "--pod", "{pod}", "--served-model-name", "{served_model_name}",
+            "--port", "{port}", "--out", "{artifacts}",
+        ],
+        "state_file": "accuracy_status.json",
+    },
+    "long_context_sparse_correctness": {
+        "produces": "LongContextSparseCorrectness",
+        "command": [
+            "python3", "runners/correctness_executor.py", "long-context",
+            "--pod", "{pod}", "--out", "{artifacts}",
+        ],
+        "state_file": "long_context_status.json",
+    },
     # The first node whose width is not known until an upstream artifact is read:
     # which capability dimensions are worth exercising depends on what the model
     # demands. `list` prints a JSON array, one child runs per element, and `aggregate`
@@ -241,20 +271,11 @@ NODES: dict[str, dict] = {
     },
 }
 
-# Nodes that are deliberately not single commands. Triage and placement used
-# to live here too; both now have sequenced executors (runners/triage_executor.py,
-# runners/patch_executor.py), so a recovery controller — or the graph on a
-# failure edge — can run them without a person in between. Pretending the rest
-# is one command would make the graph claim work it did not do, so the walk
-# still stops there and says what to run instead.
-MANUAL: dict[str, str] = {
-    "platform_kernel_correctness": "capture candidate/reference/control tensors and run the "
-    "kernel-grade validator — see the contract's runs_with",
-    "end_to_end_accuracy": "run the integrated serving path against the CPU reference and "
-    "validate every case — see the contract's runs_with",
-    "long_context_sparse_correctness": "run geometry beyond block_size * topk, record selected "
-    "blocks, and validate the sparse path — see the contract's runs_with",
-}
+# Every task type in the workflow now has a sequenced executor. The MANUAL
+# mechanism stays because it is the honest answer for a future node whose work
+# genuinely cannot be sequenced: the walk stops and says what to run instead of
+# pretending a command did work it did not do.
+MANUAL: dict[str, str] = {}
 
 
 class Unresolved(RuntimeError):
@@ -378,6 +399,9 @@ SUCCESS_STATES = {
     "HANDOFF_READY",
     "TRIAGE_READY",
     "PATCH_PLACED",
+    "KERNEL_PASS",
+    "ACCURACY_PASS",
+    "LONG_CONTEXT_PASS",
     "DISPATCHED",
     "DISPATCH_SKIPPED",
     "BASELINE_FROZEN",
