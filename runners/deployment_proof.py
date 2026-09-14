@@ -235,14 +235,20 @@ class DeploymentProofRunner:
         serve = " ".join(commands.get("serve", []))
         if not serve:
             raise ActionFailed("CONTRACT_INVALID", "execution.commands.serve is empty")
+        # The whole chain must be grouped and detached, not only the serve
+        # command: `a && b && serve > log &` backgrounds one subshell whose own
+        # stdout/stderr are still the kubectl exec session's pipes, so the
+        # session never sees EOF and a healthy launch is misread as a 120s
+        # timeout. stdin detach alone did not fix this (run
+        # glm52-int-w8a8-p800-001, six NEEDS_HUMAN false negatives); grouping
+        # with a group-wide redirect does (reproduced on the prepared pod
+        # 2026-09-14: ungrouped hangs kubectl exec until the client timeout,
+        # grouped returns in <1s with the server still running).
         launch = (
-            f"cd {self.workdir} && "
+            f"( cd {self.workdir} && "
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
             f"{setup + ' && ' if setup else ''}"
-            # stdin must be detached: the backgrounded server otherwise holds
-            # the kubectl exec session's descriptors open and the launch is
-            # misread as a 120s timeout even though the server started fine.
-            f"{serve} < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
+            f"{serve} ) < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
         )
         result = self.adapter.exec(pod, launch, timeout=120)
         if result.returncode != 0:
