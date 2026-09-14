@@ -186,7 +186,10 @@ def main() -> int:
     if report.get("error"):
         print(f"  {report['error']['type']}: {report['error']['message'][:200]}")
     print(f"artifacts: {out}/toy_bringup_card.md")
-    return 0
+    # A blocked bring-up must fail the node: exiting 0 let the graph continue
+    # past BRINGUP_BLOCKED into the service proof, paying a full model load to
+    # rediscover what the toy had already found.
+    return 0 if report["state"] == "BRINGUP_PASS" else 1
 
 
 if __name__ == "__main__":
