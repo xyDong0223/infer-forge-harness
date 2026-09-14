@@ -137,8 +137,17 @@ class DeploymentProofRunner:
             raise ActionFailed("MODEL_NOT_FOUND", f"base model is not readable: {path}")
         self.record("discover_base_model", True, f"{path}: {len(identity['files'])} weight files")
 
-    def cleanup_service_processes(self) -> None:
+    def cleanup_service_processes(self, skip_if_healthy: bool = False) -> None:
         port = self.contract.get("context", {}).get("server", {}).get("port", 8356)
+        if skip_if_healthy and self.attach_pod:
+            health = self.contract.get("checks", {}).get("health", {})
+            code, _ = self.adapter.http_probe(self.attach_pod, health.get("path", "/health"), port)
+            if code == int(health.get("expected_status", 200)):
+                self.record(
+                    "cleanup_service_processes", True,
+                    f"skipped: {self.attach_pod} is already serving a healthy base model",
+                )
+                return
         command = (
             "for pattern in 'vllm.entrypoints.openai.api_server' 'vllm.engine' 'EngineCore'; do "
             "ps -eo pid=,args= | awk -v p=\"$pattern\" '$0 ~ p {print $1}' | xargs -r kill -9; done; "
@@ -209,7 +218,10 @@ class DeploymentProofRunner:
             f"cd {self.workdir} && "
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
             f"{setup + ' && ' if setup else ''}"
-            f"{serve} > {self.server_log_path()} 2>&1 & echo started $!"
+            # stdin must be detached: the backgrounded server otherwise holds
+            # the kubectl exec session's descriptors open and the launch is
+            # misread as a 120s timeout even though the server started fine.
+            f"{serve} < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
         )
         result = self.adapter.exec(pod, launch, timeout=120)
         if result.returncode != 0:
@@ -368,7 +380,11 @@ class DeploymentProofRunner:
             if self.phase == "environment":
                 self.verify_runtime_importable()
                 self.discover_base_model()
-                self.cleanup_service_processes()
+                # skip_if_healthy: an attached pod that is already serving the
+                # base model is the imported context this phase is supposed to
+                # prove, not a stale server to clear. A re-run must not pay a
+                # second 215 GiB load for the same evidence.
+                self.cleanup_service_processes(skip_if_healthy=True)
                 self.start_server()
                 self.poll_health(prefix="base_")
                 self.run_chat_smoke(prefix="base_")
