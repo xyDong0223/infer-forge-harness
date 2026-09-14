@@ -17,6 +17,19 @@ from .discovery import (
 )
 from .scheduler import EventStore, TaskScheduler
 from .fake_agents import EvidenceError, EvidenceGate, FakeAgentCall, FakeAgentHarness, run_fake_adaptation
+from .autopilot import AutopilotRunner, AutopilotState, Observation
+from .brain import (
+    AgentBrain,
+    Brain,
+    BrainError,
+    Decision,
+    DecisionRequest,
+    FailureEvidence,
+    NEXT_ACTIONS,
+    RuleBrain,
+    brain_from_config,
+)
+from .recovery import RecoveryController, RecoveryOutcome, default_actions
 
 __all__ = [
     "AdaptationRun",
@@ -33,6 +46,21 @@ __all__ = [
     "FakeAgentCall",
     "FakeAgentHarness",
     "run_fake_adaptation",
+    "AutopilotRunner",
+    "AutopilotState",
+    "Observation",
+    "AgentBrain",
+    "Brain",
+    "BrainError",
+    "Decision",
+    "DecisionRequest",
+    "FailureEvidence",
+    "NEXT_ACTIONS",
+    "RuleBrain",
+    "brain_from_config",
+    "RecoveryController",
+    "RecoveryOutcome",
+    "default_actions",
     "DiscoveryError",
     "IncompleteOperatorEvidence",
     "discover_operator_specs",

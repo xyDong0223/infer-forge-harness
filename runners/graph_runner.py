@@ -181,6 +181,32 @@ NODES: dict[str, dict] = {
         ],
         "state_file": "handoff_status.json",
     },
+    # mat-006 as one orchestrated sequence (instrument -> rerun service ->
+    # capture -> isolate -> restore -> verdict). It used to stop the walk as a
+    # MANUAL step, which meant every kernel failure on a new model waited for a
+    # person; the sequence was always mechanical, only unowned.
+    "failure_triage": {
+        "produces": "FailureTriage",
+        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
+        "command": [
+            "python3", "runners/triage_executor.py",
+            "--pod", "{pod}", "--contract-instance", "{contract_instance}",
+            "--out", "{artifacts}",
+        ],
+        "state_file": "status.json",
+    },
+    # mat-007 likewise: apply the reversible fallback, validate in the server,
+    # compare numerically, record the placement — or reject and remove it.
+    "patch_placement": {
+        "produces": "PlacedPatch",
+        "needs": {"--triage": "fact:FailureTriage:triage_report.json"},
+        "command": [
+            "python3", "runners/patch_executor.py",
+            "--pod", "{pod}", "--contract-instance", "{contract_instance}",
+            "--out", "{artifacts}",
+        ],
+        "state_file": "status.json",
+    },
     # The first node whose width is not known until an upstream artifact is read:
     # which capability dimensions are worth exercising depends on what the model
     # demands. `list` prints a JSON array, one child runs per element, and `aggregate`
@@ -215,15 +241,13 @@ NODES: dict[str, dict] = {
     },
 }
 
-# Nodes that are deliberately not single commands. Triage needs a server rerun
-# between instrumenting and reading the capture; placement needs a rerun between
-# installing and validating. Pretending either is one command would make the graph
-# claim work it did not do, so the walk stops here and says what to run instead.
+# Nodes that are deliberately not single commands. Triage and placement used
+# to live here too; both now have sequenced executors (runners/triage_executor.py,
+# runners/patch_executor.py), so a recovery controller — or the graph on a
+# failure edge — can run them without a person in between. Pretending the rest
+# is one command would make the graph claim work it did not do, so the walk
+# still stops there and says what to run instead.
 MANUAL: dict[str, str] = {
-    "failure_triage": "instrument the call, rerun the service proof, read the capture, sweep in "
-    "isolation, then restore — see the contract's runs_with",
-    "patch_placement": "install the patch, rerun the service proof, compare numerically, then "
-    "record the placement — see the contract's runs_with",
     "platform_kernel_correctness": "capture candidate/reference/control tensors and run the "
     "kernel-grade validator — see the contract's runs_with",
     "end_to_end_accuracy": "run the integrated serving path against the CPU reference and "
@@ -352,6 +376,7 @@ SUCCESS_STATES = {
     "BUDGET_ACCEPTABLE",
     "CONFORMANT",
     "HANDOFF_READY",
+    "TRIAGE_READY",
     "PATCH_PLACED",
     "DISPATCHED",
     "DISPATCH_SKIPPED",
@@ -389,6 +414,79 @@ def emit_summary(summary: dict, json_output: bool) -> None:
         )
 
 
+def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
+    """Read what the node itself said, before falling back to the bare state."""
+    path = artifacts / spec["state_file"]
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            payload = {}
+        for key in ("reason", "reason_code", "validation_errors"):
+            if payload.get(key):
+                return str(payload[key])
+    return f"node ended in state {state}"
+
+
+def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
+                     environment: dict, state: str) -> object:
+    """Engage the brain on a failed node; None-handling is the caller's.
+
+    The controller owns the loop; this function only supplies the two things
+    it cannot know: how this node reruns (its command, rebuilt with the
+    decision's parameter overrides) and where the run's artifacts live.
+    """
+    from engine.brain import DecisionRequest, FailureEvidence, brain_from_config
+    from engine.recovery import RecoveryController, default_actions
+
+    run_dir = args.artifact_root / "recovery" / node
+    evidence = FailureEvidence(
+        node=node, state=state,
+        reason=_failure_reason(artifacts, spec, state),
+        artifacts=[str(artifacts)], environment=dict(environment),
+    )
+    request = DecisionRequest(
+        model=args.subject, backend=environment.get("hardware", "p800"),
+        failure=evidence, attempts_remaining=args.recovery_budget,
+        context={k: str(v) for k, v in context.items()},
+    )
+    brain = brain_from_config(
+        {"brain": args.brain, "decide_command": args.decide_command,
+         "decide_timeout": args.decide_timeout},
+        run_dir,
+    )
+
+    def rerun(decision) -> tuple[bool, str]:
+        merged = {**context, **{str(key): str(value)
+                                for key, value in decision.params.items()}}
+        try:
+            if "fan_out" in spec:
+                commands = fan_out_plan(spec, merged, args.journal, environment, artifacts)
+            else:
+                commands = [(artifacts, resolve(spec, merged, args.journal, environment))]
+        except (Unresolved, KeyError) as error:
+            return False, f"UNRESOLVED: {error}"
+        returncode = 0
+        for target, command in commands:
+            print(f"[rerun ] {node}: {' '.join(command)}")
+            target.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(command, cwd=REPO_ROOT, text=True)
+            returncode = returncode or result.returncode
+        new_state = read_state(artifacts, spec)
+        return returncode == 0, new_state
+
+    actions = default_actions(
+        REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir
+    )
+    controller = RecoveryController(brain, rerun, actions, budget=args.recovery_budget)
+    outcome = controller.recover(request)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "recovery_outcome.json").write_text(
+        json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return outcome
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow", type=Path, default=REPO_ROOT / "workflows" / "model_adaptation.yaml")
@@ -408,6 +506,21 @@ def main() -> int:
                         help="Task Memory JSON path; defaults under artifact-root")
     parser.add_argument("--json", action="store_true",
                         help="emit one machine-readable summary per terminal decision")
+    parser.add_argument("--auto-recover", action="store_true",
+                        help="on a failed node, consult the brain before following the "
+                             "failure edge: decide -> act -> rerun, bounded by --recovery-budget")
+    parser.add_argument("--recovery-budget", type=int, default=3,
+                        help="repair attempts per failed node before the failure edge applies")
+    parser.add_argument("--brain", choices=("rule", "agent"), default="agent",
+                        help="decision source: 'agent' delegates to an external decider "
+                             "(LLM) through decision_request/decision files; 'rule' is the "
+                             "deterministic safety net")
+    parser.add_argument("--decide-command", default=None,
+                        help="decider command for --brain agent; receives the request and "
+                             "response paths. Without it the runner waits for decision.json "
+                             "to appear next to the request.")
+    parser.add_argument("--decide-timeout", type=float, default=600.0,
+                        help="seconds to wait for one decision in agent mode")
     args = parser.parse_args()
 
     environment = dict(pair.split("=", 1) for pair in args.env)
@@ -539,25 +652,46 @@ def main() -> int:
             )
             task_memory.save(loop_state, memory)
             if returncode != 0:
-                task_memory.record_observed_issue(
-                    memory,
-                    issue="command_failure",
-                    evidence=[str(artifacts)],
-                    environment=environment,
-                    source=current,
-                )
-                task_memory.save(loop_state, memory)
-                failure = node.get("on_failure", "NEEDS_HUMAN")
-                print(f"[edge] {current} --failure--> {failure}")
-                emit_summary(
-                    {"status": "REWORK", "node": current, "next_task": failure,
-                     "reason_code": "COMMAND_FAILED", "state": state,
-                     "skill": skill["id"],
-                     "artifacts": [str(artifacts)]},
-                    args.json,
-                )
-                current = failure if failure in by_id else None
-                continue
+                recovered = False
+                if args.auto_recover:
+                    outcome = attempt_recovery(
+                        args, node=current, spec=spec, context=context,
+                        artifacts=artifacts, environment=environment, state=state,
+                    )
+                    if outcome.status == "RECOVERED":
+                        recovered = True
+                        state = outcome.final_state or read_state(artifacts, spec)
+                        journal_module.record(args.journal, spec["produces"], args.subject,
+                                              read_state(artifacts, spec), artifacts, environment)
+                        emit_summary(
+                            {"status": "RECOVERED", "node": current,
+                             "next_task": node.get("on_success"),
+                             "reason_code": "AUTO_RECOVERY",
+                             "state": state, "skill": skill["id"],
+                             "artifacts": [str(artifacts)],
+                             "recovery": str(args.artifact_root / "recovery" / current)},
+                            args.json,
+                        )
+                if not recovered:
+                    task_memory.record_observed_issue(
+                        memory,
+                        issue="command_failure",
+                        evidence=[str(artifacts)],
+                        environment=environment,
+                        source=current,
+                    )
+                    task_memory.save(loop_state, memory)
+                    failure = node.get("on_failure", "NEEDS_HUMAN")
+                    print(f"[edge] {current} --failure--> {failure}")
+                    emit_summary(
+                        {"status": "REWORK", "node": current, "next_task": failure,
+                         "reason_code": "COMMAND_FAILED", "state": state,
+                         "skill": skill["id"],
+                         "artifacts": [str(artifacts)]},
+                        args.json,
+                    )
+                    current = failure if failure in by_id else None
+                    continue
 
         if args.until_node and current == args.until_node:
             break

@@ -142,6 +142,35 @@ When a Task exposes a more specific fact, the resolver selects the narrower meth
 
 The generic Skill remains the fallback when no specialized fact is present. Specialized Skills are activated by observed context, not by a model name or an unverified guess.
 
+### Autonomous failure recovery
+
+A new model fails by default, and the interesting part of bring-up is what
+happens next. `--auto-recover` replaces the "stop and wait for a person" step
+with a bounded decide/act/rerun loop:
+
+```bash
+python3 runners/graph_runner.py \
+  --subject Qwen3-8B --artifact-root /path/to/artifacts \
+  --execute --auto-recover --brain agent
+```
+
+When a node fails, the runner packages the failure evidence, the repair
+history, the remaining budget, and the node's current context into a
+`decision_request.json`. A decider — an LLM agent session, a model API behind
+`--decide-command`, or anything else that can write JSON — answers with a
+`decision.json` naming one of `RETRY`, `RETRY_WITH_PARAMS`, `RUN_TRIAGE`,
+`PLACE_PATCH`, `DISPATCH_OPERATOR_TASK`, `REDISCOVER`, `ROLLBACK`, or
+`BLOCKED`. The controller executes the action, reruns the node, and only the
+node's own validator can declare the failure gone. Every failed node gets
+`--recovery-budget` attempts (default 3); a malformed decider answer is
+re-asked once and then degrades to `BLOCKED`, never to a guessed action.
+`--brain rule` swaps in a deterministic classifier for environments without a
+decider. The triage and placement steps the loop can invoke are sequenced
+executors (`runners/triage_executor.py`, `runners/patch_executor.py`), not
+prompts: mat-006's instrument/capture/isolate/restore sequence and mat-007's
+apply/validate/compare/reject sequence run as written, and the independent
+validators still decide their verdicts.
+
 ## Operator integration loop
 
 `model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.

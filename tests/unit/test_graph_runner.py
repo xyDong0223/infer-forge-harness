@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,7 @@ from runners.graph_runner import (  # noqa: E402
     MANUAL,
     NODES,
     Unresolved,
+    _failure_reason,
     load_workflow,
     node_task_type,
     resolve,
@@ -64,6 +66,30 @@ class WorkflowShapeTest(unittest.TestCase):
         for task_type, guidance in MANUAL.items():
             with self.subTest(task_type=task_type):
                 self.assertIn("runs_with", guidance)
+
+    def test_triage_and_placement_are_executable_not_manual(self):
+        """The walk must not stop where a recovery decision needs them."""
+        for task_type in ("failure_triage", "patch_placement"):
+            self.assertIn(task_type, NODES)
+            self.assertNotIn(task_type, MANUAL)
+
+
+class FailureReasonTest(unittest.TestCase):
+    def test_the_node_s_own_reason_reaches_the_brain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = Path(tmp)
+            (artifacts / "status.json").write_text(
+                json.dumps({"state": "DEPLOYMENT_FAILED",
+                            "reason": "Check 0 == ret failed"}), encoding="utf-8")
+            reason = _failure_reason(artifacts, {"state_file": "status.json"},
+                                     "DEPLOYMENT_FAILED")
+            self.assertEqual(reason, "Check 0 == ret failed")
+
+    def test_without_a_reason_the_state_itself_is_the_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reason = _failure_reason(Path(tmp), {"state_file": "status.json"},
+                                     "READINESS_TIMEOUT")
+            self.assertIn("READINESS_TIMEOUT", reason)
 
 
 class InputResolutionTest(unittest.TestCase):
