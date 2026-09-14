@@ -63,6 +63,12 @@ def identity_from_config(config: dict) -> dict:
         "num_attention_heads": config.get("num_attention_heads"),
         "num_key_value_heads": config.get("num_key_value_heads"),
         "head_dim": config.get("head_dim"),
+        # MLA latent dimensions decide the KV-cache floor arithmetic in
+        # MAT-005's pre-flight budget: without kv_lora_rank an MLA model
+        # (GLM-5.2) looks like dense 2*num_kv_heads*head_dim attention and
+        # the estimate is wrong by ~40x. (run glm52-int-w8a8-p800-001)
+        "kv_lora_rank": config.get("kv_lora_rank"),
+        "qk_rope_head_dim": config.get("qk_rope_head_dim"),
         "vocab_size": config.get("vocab_size"),
         "rope_scaling": config.get("rope_scaling"),
         "quantization_config": config.get("quantization_config"),
