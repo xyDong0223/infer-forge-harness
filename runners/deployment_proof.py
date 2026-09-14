@@ -270,9 +270,13 @@ class DeploymentProofRunner:
                 return
             # A server that died mid-startup must fail now, not after the full
             # timeout: the log tail is the diagnosis, and an hour of polling a
-            # corpse (707 GiB models time out at ~1 h) hides it.
+            # corpse (707 GiB models time out at ~1 h) hides it. The bracket
+            # trick keeps pgrep from matching its own command line - an
+            # unbracketed pattern always matched the probe itself and the
+            # check reported every dead server as alive.
             alive = self.adapter.exec(
-                pod, "pgrep -f 'vllm.entrypoints.openai.api_server' >/dev/null && echo up || echo dead",
+                pod,
+                "pgrep -f '[v]llm.entrypoints.openai.api_server' >/dev/null && echo up || echo dead",
                 timeout=30,
             )
             if alive.stdout.strip() == "dead" and streak == 0:
