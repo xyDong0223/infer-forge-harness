@@ -148,12 +148,37 @@ class DeploymentProofRunner:
                     f"skipped: {self.attach_pod} is already serving a healthy base model",
                 )
                 return
+        # vLLM renames its processes after launch (VLLM::APIServer,
+        # VLLM::EngineCore, VLLM::Worker_TP*), so matching only the original
+        # command line leaves the TP workers alive holding HBM: the
+        # 2026-09-14 attach rerun orphaned eight workers at ~89 GiB/card and
+        # the relaunch died on "Free memory on device cuda:0 (6.97/96.0
+        # GiB)". Match the rewritten titles and the multiprocessing
+        # resource_tracker too, then verify nothing survived.
         command = (
-            "for pattern in 'vllm.entrypoints.openai.api_server' 'vllm.engine' 'EngineCore'; do "
+            "for pattern in 'vllm.entrypoints.openai.api_server' 'vllm.engine' 'EngineCore' "
+            "'VLLM::' 'multiprocessing.resource_tracker'; do "
             "ps -eo pid=,args= | awk -v p=\"$pattern\" '$0 ~ p {print $1}' | xargs -r kill -9; done; "
             f"(command -v fuser >/dev/null 2>&1 && fuser -k {int(port)}/tcp) || true"
         )
         self.adapter.exec(self.pod or "", command, timeout=60)
+        survivor = ""
+        for _ in range(10):
+            probe = self.adapter.exec(
+                self.pod or "",
+                "ps -eo pid=,args= | grep -E 'VLLM::|vllm.entrypoints|multiprocessing.resource_tracker' "
+                "| grep -v grep | head -5",
+                timeout=30,
+            )
+            survivor = probe.stdout.strip()
+            if not survivor:
+                break
+            time.sleep(3)
+        if survivor:
+            raise ActionFailed(
+                "NEEDS_HUMAN",
+                f"service processes survived cleanup and still hold HBM:\n{survivor}",
+            )
         self.record("cleanup_service_processes", True, f"service process tree and port {port} cleared")
 
     def wait_for_pod(self, execution: dict[str, Any]) -> str:
@@ -171,6 +196,25 @@ class DeploymentProofRunner:
             time.sleep(10)
         self.checks["pod_ready"] = False
         raise ActionFailed("READINESS_TIMEOUT", "no ready pod for this attempt before the timeout")
+
+    def _runtime_already_installed(self) -> bool:
+        """Cheap idempotence gate for the attach path.
+
+        Reinstalling the venv while a server from an earlier attempt is still
+        serving replaces package files that a running process may lazily
+        import: the 2026-09-14 attach rerun killed a healthy base server that
+        way. If the runtime imports and the pinned worktree is present, the
+        install already happened on this pod and must not run again.
+        """
+        pod = self.pod or ""
+        probe = self.adapter.exec(
+            pod,
+            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            'python3 -c "import torch, vllm, vllm_kunlun" && '
+            f"test -f {shlex.quote(self.workdir)}/vLLM-Kunlun/setup_env.sh",
+            timeout=300,
+        )
+        return probe.returncode == 0
 
     def install_runtime(self, execution: dict[str, Any]) -> None:
         pod = self.pod or ""
@@ -417,9 +461,20 @@ class DeploymentProofRunner:
                 self.write("pod_spec.yaml", self.adapter.get("pod", self.pod, output="yaml").stdout)
                 self.record("attach_pod", True, f"imported context: {self.attach_pod}")
                 if self.phase == "environment":
-                    # An attached Pod may only have the base image. Environment
-                    # proof owns runtime installation before the Base smoke.
-                    self.install_runtime(self.contract["execution"])
+                    # An attached Pod may only have the base image, so
+                    # environment proof owns runtime installation. But
+                    # reinstalling while a server from an earlier attempt is
+                    # still serving replaces package files a lazy import may
+                    # need: the 2026-09-14 attach rerun killed a healthy base
+                    # server that way. The install runs only when this pod
+                    # does not already have an importable runtime.
+                    if self._runtime_already_installed():
+                        self.record(
+                            "install", True,
+                            "skipped: attached pod already has an importable runtime and pinned worktree",
+                        )
+                    else:
+                        self.install_runtime(self.contract["execution"])
             else:
                 self.preflight()
                 self.prepare_environment()
