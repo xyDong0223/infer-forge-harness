@@ -197,13 +197,25 @@ class TriageExecutor:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pod", required=True)
+    parser.add_argument("--pod", default=None,
+                        help="the pod to triage in; defaults to the environment proof's pod")
     parser.add_argument("--contract-instance", type=Path, default=None)
+    # Accepted (and used as the pod source when --pod is absent) because the
+    # graph's failure_triage node resolves its EnvironmentProof input as this
+    # flag; refusing it made the node unrunnable from the graph.
+    parser.add_argument("--env-status", type=Path, default=None,
+                        help="environment proof status.json; supplies --pod when omitted")
     parser.add_argument("--call", default="speculative_attention")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    executor = TriageExecutor(args.pod, args.contract_instance, args.call,
+    pod = args.pod
+    if not pod and args.env_status and args.env_status.exists():
+        pod = json.loads(args.env_status.read_text(encoding="utf-8")).get("pod")
+    if not pod:
+        parser.error("a pod is required: pass --pod or --env-status")
+
+    executor = TriageExecutor(pod, args.contract_instance, args.call,
                               PodOps(KunlunP800Adapter()), args.out)
     status = executor.run()
     print(json.dumps(status, ensure_ascii=False, indent=2))

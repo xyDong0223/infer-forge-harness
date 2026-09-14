@@ -94,16 +94,62 @@ def plan(request: dict, classification: dict, spec: dict, patch: dict | None) ->
     }
 
 
+def _cluster_profile() -> dict:
+    """Namespace, queue, setup flags: deployment identity the plan does not derive.
+
+    Launch parameters come from the model and device facts; where the service
+    runs comes from the cluster profile. Mixing those sources silently is how
+    a plan ends up targeting a namespace the adapter refuses.
+    """
+    import yaml
+
+    profile = yaml.safe_load(
+        (REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml").read_text(encoding="utf-8")
+    ) or {}
+    return {
+        "namespace": (profile.get("cluster") or {}).get("namespace", "pd-test"),
+        "setup": (profile.get("runtime") or {}).get("common_setup", []),
+    }
+
+
 def render_instance(report: dict, request: dict) -> str:
+    import os
+
     import yaml
 
     values = {item["parameter"]: item["value"] for item in report["parameters"]}
     model = request.get("model") or {}
+    profile = _cluster_profile()
+    user_id = os.environ.get("USER_ID", "").strip()
+    subject = str(report["subject"])
+    # Weight-proportional patience: 215 GiB measured ~45 min wall-to-health on
+    # MiniMax, so give ~5 s/GiB with a floor. A timeout before that is a
+    # finding, not a property of the model.
+    weight_gib = int(model.get("total_weight_bytes", 0)) >> 30
+    timeout = max(900, weight_gib * 5)
+    serve = [
+        "python -m vllm.entrypoints.openai.api_server",
+        "--host 0.0.0.0",
+        "--port 8356",
+        f"--model {model.get('source')}",
+    ]
+    if values.get("trust_remote_code"):
+        serve.append("--trust-remote-code")
+    serve += [
+        f"--max-model-len {values['max_model_len']}",
+        f"--tensor-parallel-size {values['tensor_parallel_size']}",
+        f"--dtype {values['dtype']}",
+        f"--served-model-name {subject}",
+        f"--block-size {values['block_size']}",
+        f"--gpu-memory-utilization {values['gpu_memory_utilization']}",
+    ]
+    if values.get("enforce_eager"):
+        serve.append("--enforce-eager")
     instance = {
         "api_version": "infer.kunlun/v1alpha1",
         "kind": "Task",
         "metadata": {
-            "name": f"kdp-001-{str(report['subject']).lower()}",
+            "name": f"kdp-001-{subject.lower()}",
             "task_type": "service_proof",
             "version": "0.1.0",
             "generated_by": "mat-005-deployment-plan",
@@ -113,10 +159,64 @@ def render_instance(report: dict, request: dict) -> str:
                       "pvc": model.get("pvc"), "revision": model.get("revision")},
             "target": {"hardware": report["hardware"],
                        "device_count": values["tensor_parallel_size"]},
-            "server": {k: values[k] for k in ("dtype", "max_model_len", "block_size",
-                                              "gpu_memory_utilization")},
+            "server": {"host": "0.0.0.0", "port": 8356, "served_model_name": subject,
+                       **{k: values[k] for k in ("dtype", "max_model_len", "block_size",
+                                                  "gpu_memory_utilization")}},
         },
         "plan_sources": {item["parameter"]: item["source"] for item in report["parameters"]},
+        # The sections below are what makes the instance a runnable contract:
+        # without them kdp-001b validates CONTRACT_INVALID before touching the
+        # cluster, which is how the graph used to stop here.
+        "actions": ["start_server", "poll_health", "run_chat_smoke", "collect_artifacts"],
+        "acceptance": {
+            "pod_ready": True,
+            "health_check": 200,
+            "chat_completion": "non_empty",
+            "expected_backend": "kunlun",
+            "unexpected_fallback": False,
+            "startup_timeout_seconds": timeout,
+        },
+        "execution": {
+            "mode": "execute",
+            "namespace": profile["namespace"],
+            "resource_name": f"{user_id}-kdp001-{subject.lower()}" if user_id
+                             else f"kdp001-{subject.lower()}",
+            "startup_timeout_seconds": timeout,
+            "health_interval_seconds": 15,
+            "health_successes_required": 3,
+            "retain_on_failure": True,
+            "server_log": f"/workspace/server_{subject.lower()}.log",
+            "commands": {
+                "setup": profile["setup"],
+                "serve": [" ".join(serve)],
+            },
+        },
+        "checks": {
+            "health": {"path": "/health", "expected_status": 200},
+            "chat": {
+                "path": "/v1/chat/completions", "method": "POST",
+                "expected_non_empty_text": True,
+                "payload": {"model": subject,
+                            "messages": [{"role": "user",
+                                          "content": "Say hello in one short sentence."}],
+                            "max_tokens": 32},
+            },
+            "backend": {"expected": "kunlun", "reject_unexpected_fallback": True},
+        },
+        "artifacts": {
+            "directory": str(Path(REPO_ROOT) / "artifacts" / f"kdp-001-{subject.lower()}"),
+            "collect": ["deployment_manifest", "task_contract", "pod_spec", "server_log",
+                        "health_result", "chat_result", "reproduce_command"],
+        },
+        "exit_states": {
+            "pass": "DEPLOYMENT_READY",
+            "startup_failed": "SERVER_START_FAILED",
+            "health_timeout": "READINESS_TIMEOUT",
+            "api_failed": "API_SMOKE_FAILED",
+            "fallback_detected": "UNEXPECTED_FALLBACK",
+            "invalid": "CONTRACT_INVALID",
+            "needs_human": "NEEDS_HUMAN",
+        },
     }
     return yaml.safe_dump(instance, sort_keys=False, allow_unicode=True)
 

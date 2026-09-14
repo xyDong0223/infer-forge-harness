@@ -194,6 +194,21 @@ class DeploymentProofRunner:
         self.write("environment_versions.txt", versions.stdout + versions.stderr)
         self.record("environment_versions", versions.returncode == 0)
 
+    def _serves_target_model(self, body: str) -> bool:
+        """Is the running server serving *this* contract's model?
+
+        Health proves a server exists, not that it is the right server: the
+        environment phase's base-smoke server must not silently answer the
+        target model's service proof.
+        """
+        try:
+            models = json.loads(body).get("data") or []
+        except json.JSONDecodeError:
+            return False
+        served = self.contract.get("context", {}).get("server", {}).get(
+            "served_model_name", "")
+        return any(model.get("id") == served for model in models)
+
     def start_server(self) -> None:
         pod = self.pod or ""
         execution = self.contract["execution"]
@@ -204,12 +219,18 @@ class DeploymentProofRunner:
             # Launching a second server on an occupied port would leave the
             # bundle inconsistent: the checks would answer from the running
             # process while server_log came from the failing duplicate.
-            code, _ = self.adapter.http_probe(pod, health["path"], port)
-            if code == int(health["expected_status"]):
+            code, body = self.adapter.http_probe(pod, "/v1/models", port)
+            if code == 200 and self._serves_target_model(body):
                 self.record(
                     "start_server", True, "imported context: already serving, not relaunched"
                 )
                 return
+            if code == 200:
+                self.cleanup_service_processes()
+                self.record(
+                    "start_server", True,
+                    "imported context served a different model; cleared before launch",
+                )
         setup = " && ".join(commands.get("setup", []))
         serve = " ".join(commands.get("serve", []))
         if not serve:
@@ -247,6 +268,21 @@ class DeploymentProofRunner:
                 self.checks[f"{prefix}health_check" if prefix else "health_check"] = int(health["expected_status"])
                 self.record("poll_health", True, f"{need} consecutive successes")
                 return
+            # A server that died mid-startup must fail now, not after the full
+            # timeout: the log tail is the diagnosis, and an hour of polling a
+            # corpse (707 GiB models time out at ~1 h) hides it.
+            alive = self.adapter.exec(
+                pod, "pgrep -f 'vllm.entrypoints.openai.api_server' >/dev/null && echo up || echo dead",
+                timeout=30,
+            )
+            if alive.stdout.strip() == "dead" and streak == 0:
+                log = self.adapter.exec(pod, f"tail -40 {self.server_log_path()}", timeout=60).stdout
+                self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
+                self.record("poll_health", False, "server process died during startup")
+                raise ActionFailed(
+                    "SERVER_START_FAILED",
+                    f"the server process died during startup; log tail:\n{log[-1500:]}",
+                )
             time.sleep(interval)
         self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
         self.record("poll_health", False, last)
