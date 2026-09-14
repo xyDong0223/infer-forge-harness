@@ -161,7 +161,51 @@ def main() -> int:
         ),
     ])
 
-    if not (ok1 or ok2):
+    #  5. The engine removed VLLM_ATTENTION_BACKEND from vllm.envs entirely;
+    #     the platform's FlashMLA default check died with AttributeError at
+    #     VllmConfig creation (before any weights load). Read the raw
+    #     variable so the unset default still selects FlashMLA.
+    kunlun_platform = SITE / "vllm_kunlun" / "platforms" / "kunlun.py"
+    ok3 = patch(kunlun_platform, [
+        (
+            "import psutil\nimport torch\nimport vllm.envs as envs\n",
+            "import os\n\nimport psutil\nimport torch\nimport vllm.envs as envs\n",
+        ),
+        (
+            "            use_flashmla = (\n"
+            "                envs.VLLM_ATTENTION_BACKEND is None\n"
+            "                or envs.VLLM_ATTENTION_BACKEND == \"FLASHMLA\"\n"
+            "            )\n",
+            "            attention_backend = os.getenv(\"VLLM_ATTENTION_BACKEND\")\n"
+            "            use_flashmla = (\n"
+            "                attention_backend is None\n"
+            "                or attention_backend == \"FLASHMLA\"\n"
+            "            )\n",
+        ),
+        #  6. vllm.attention.ops.flashmla moved to
+        #     vllm.v1.attention.ops.flashmla and is_flashmla_supported was
+        #     split into is_flashmla_dense_supported / is_flashmla_sparse_supported.
+        (
+            "            from vllm.attention.ops.flashmla import is_flashmla_supported\n"
+            "\n"
+            "            if (\n"
+            "                use_flashmla\n"
+            "                and is_flashmla_supported()[0]\n"
+            "                and cache_config.block_size != 64\n"
+            "            ):\n",
+            "            from vllm.v1.attention.ops.flashmla import (\n"
+            "                is_flashmla_dense_supported,\n"
+            "            )\n"
+            "\n"
+            "            if (\n"
+            "                use_flashmla\n"
+            "                and is_flashmla_dense_supported()[0]\n"
+            "                and cache_config.block_size != 64\n"
+            "            ):\n",
+        ),
+    ])
+
+    if not (ok1 or ok2 or ok3):
         print("nothing to do: all repairs already applied")
     return 0
 
