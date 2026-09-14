@@ -17,7 +17,6 @@ from .discovery import (
 )
 from .scheduler import EventStore, TaskScheduler
 from .fake_agents import EvidenceError, EvidenceGate, FakeAgentCall, FakeAgentHarness, run_fake_adaptation
-from .autopilot import AutopilotRunner, AutopilotState, Observation
 from .brain import (
     AgentBrain,
     Brain,
@@ -46,9 +45,6 @@ __all__ = [
     "FakeAgentCall",
     "FakeAgentHarness",
     "run_fake_adaptation",
-    "AutopilotRunner",
-    "AutopilotState",
-    "Observation",
     "AgentBrain",
     "Brain",
     "BrainError",
