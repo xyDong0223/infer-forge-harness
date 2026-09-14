@@ -45,7 +45,10 @@ def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
         if old not in text:
             print(f"FAIL {path.name}: expected text not found:\n{old[:120]}")
             return changed
-        text = text.replace(old, new, 1)
+        # All occurrences: the drifted call sites repeat verbatim (two
+        # get_rope calls in deepseek_v2) and leaving the second one behind
+        # just moves the failure to the next layer's init.
+        text = text.replace(old, new)
         changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
@@ -53,7 +56,89 @@ def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
     return changed
 
 
+PREFILL_STUB = '''\
+# XPU MLA prefill registration for vllm_kunlun.
+#
+# Per the drift map: "Sparse MLA prefill moved to the MLAPrefillBackend
+# registry ... On P800 no registered backend is CUDA-free". The engine
+# instantiates an MLA prefill backend in MLAAttention unconditionally, but
+# the sparse XPU attention impl handles prefill inside forward_mqa, so the
+# MHA prefill path never runs for sparse models. This registration exists
+# so construction has a valid target; reaching the run methods means a
+# dense-MLA model hit an unsupported path on XPU and must fail loudly
+# instead of silently dispatching to CUDA kernels.
+from __future__ import annotations
+
+import torch
+
+from vllm.v1.attention.backends.mla.prefill.base import MLAPrefillBackend
+
+
+class XPUMLAPrefillStub(MLAPrefillBackend):
+
+    @staticmethod
+    def get_name() -> str:
+        return "XPU_MLA_PREFILL_STUB"
+
+    @classmethod
+    def supports_compute_capability(cls, device_capability) -> bool:
+        return True
+
+    @classmethod
+    def supports_dtype(cls, dtype: torch.dtype) -> bool:
+        return dtype in (torch.bfloat16, torch.float16)
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return True
+
+    def __init__(
+        self,
+        *,
+        num_heads: int,
+        scale: float,
+        kv_lora_rank: int,
+        qk_nope_head_dim: int,
+        qk_rope_head_dim: int,
+        v_head_dim: int,
+        vllm_config=None,
+    ) -> None:
+        self.num_heads = num_heads
+        self.scale = scale
+        self.kv_lora_rank = kv_lora_rank
+        self.qk_nope_head_dim = qk_nope_head_dim
+        self.qk_rope_head_dim = qk_rope_head_dim
+        self.v_head_dim = v_head_dim
+        self.vllm_config = vllm_config
+
+    def run_prefill_new_tokens(self, *args, **kwargs):
+        raise NotImplementedError(
+            "dense MLA prefill is not implemented on XPU; the sparse XPU "
+            "MLA impl handles prefill inside forward_mqa"
+        )
+
+    def run_prefill_context_chunk(self, *args, **kwargs):
+        raise NotImplementedError(
+            "dense MLA prefill is not implemented on XPU; the sparse XPU "
+            "MLA impl handles prefill inside forward_mqa"
+        )
+'''
+
+
 def main() -> int:
+    deploy_ported = (
+        SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "flashmla_sparse.py"
+    )
+    ported = Path(__file__).parent / "vllm_kunlun_flashmla_sparse.py"
+    if ported.exists():
+        content = ported.read_text(encoding="utf-8")
+        if not deploy_ported.exists() or deploy_ported.read_text(encoding="utf-8") != content:
+            deploy_ported.write_text(content, encoding="utf-8")
+            print(f"DEPLOYED {deploy_ported}")
+        else:
+            print(f"SKIP {deploy_ported}")
+    else:
+        print(f"WARN {ported} not found; flashmla_sparse port not deployed")
     deepseek_v2 = SITE / "vllm_kunlun" / "models" / "deepseek_v2.py"
     ok1 = patch(deepseek_v2, [
         (
@@ -85,8 +170,153 @@ def main() -> int:
             "    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:\n"
             "        return self.logits_processor(self.lm_head, hidden_states)\n",
         ),
+        #  7. get_rope folded rotary_dim/base/rope_scaling into the single
+        #     rope_parameters dict kwarg. The plugin has two verbatim
+        #     call sites (MLA module and decoder attention); the patch
+        #     replaces both. Per the drift map: rope_type == "default"
+        #     (GlmMoeDsaConfig carries a class-level default) must not be
+        #     forced to deepseek_yarn — that branch requires yarn fields
+        #     and raises KeyError: 'factor'.
+        (
+            "        if rope_scaling:\n"
+            "            rope_scaling[\"rope_type\"] = \"deepseek_yarn\"\n",
+            "        if rope_scaling and rope_scaling.get(\"rope_type\", \"default\") != \"default\":\n"
+            "            rope_scaling[\"rope_type\"] = \"deepseek_yarn\"\n"
+            "        elif rope_scaling:\n"
+            "            rope_scaling = None\n",
+        ),
+        (
+            "        if rope_scaling:\n"
+            "            mscale_all_dim = rope_scaling.get(\"mscale_all_dim\", False)\n"
+            "            scaling_factor = rope_scaling[\"factor\"]\n",
+            "        if rope_scaling and rope_scaling.get(\"rope_type\") == \"deepseek_yarn\":\n"
+            "            mscale_all_dim = rope_scaling.get(\"mscale_all_dim\", False)\n"
+            "            scaling_factor = rope_scaling[\"factor\"]\n",
+        ),
+        (
+            "        self.rotary_emb = get_rope(\n"
+            "            qk_rope_head_dim,\n"
+            "            rotary_dim=qk_rope_head_dim,\n"
+            "            max_position=max_position_embeddings,\n"
+            "            base=rope_theta,\n"
+            "            rope_scaling=rope_scaling,\n"
+            "            is_neox_style=False,\n"
+            "        )\n",
+            "        rope_parameters = {\n"
+            "            \"rope_dim\": qk_rope_head_dim,\n"
+            "            \"rope_theta\": rope_theta,\n"
+            "            **(rope_scaling or {}),\n"
+            "        }\n"
+            "        self.rotary_emb = get_rope(\n"
+            "            qk_rope_head_dim,\n"
+            "            max_position=max_position_embeddings,\n"
+            "            rope_parameters=rope_parameters,\n"
+            "            is_neox_style=False,\n"
+            "        )\n",
+        ),
+        #  9. The new MultiHeadLatentAttentionWrapper takes the indexer rope
+        #     from MLAModules.indexer_rotary_emb; the plugin never built one
+        #     because the old MLA layer constructed it internally, so the
+        #     Indexer received None and the first profile run died on
+        #     "'NoneType' object is not callable". Build it the way the
+        #     engine's attention does and pass it through MLAModules.
+        (
+            "        if self.is_v32:\n"
+            "            self.indexer = Indexer(\n",
+            "        if self.is_v32:\n"
+            "            self.indexer_rope_emb = get_rope(\n"
+            "                qk_rope_head_dim,\n"
+            "                max_position=max_position_embeddings,\n"
+            "                rope_parameters=config.rope_parameters,\n"
+            "                is_neox_style=not getattr(config, \"indexer_rope_interleave\", False),\n"
+            "            )\n"
+            "            self.indexer = Indexer(\n",
+        ),
+        (
+            "        else:\n"
+            "            self.indexer = None\n"
+            "\n"
+            "        mla_modules = MLAModules(\n",
+            "        else:\n"
+            "            self.indexer_rope_emb = None\n"
+            "            self.indexer = None\n"
+            "\n"
+            "        mla_modules = MLAModules(\n",
+        ),
+        (
+            "            indexer=self.indexer,\n"
+            "            is_sparse=self.is_v32,\n",
+            "            indexer=self.indexer,\n"
+            "            indexer_rotary_emb=self.indexer_rope_emb,\n"
+            "            is_sparse=self.is_v32,\n",
+        ),
+        # 10. DeepseekV32IndexerCache.kv_cache is the tensor itself now (it
+        #     starts empty and bind_kv_cache assigns the bound tensor); the
+        #     old list-style [0] indexing crashed the pre-allocation profile
+        #     run with "index 0 is out of bounds for dimension 0 with size
+        #     0". Pass the attribute and let the op's fake-path guard handle
+        #     the unbound case.
+        (
+            "            self.k_cache.kv_cache[0],\n",
+            "            self.k_cache.kv_cache,\n",
+        ),
+        # 11. FusedMoE now fuses the shared-expert add internally
+        #     (MoERunner.forward combines shared_output + fused_output
+        #     before returning) and returns one tensor, not the old
+        #     (shared_output, final_hidden_states) pair; unpacking it
+        #     crashed the first profile run with "too many values to
+        #     unpack (expected 2)" — one tensor row was read as two
+        #     values. shared_experts= at construction is unchanged and
+        #     already wires the addition; drop the plugin's own combine.
+        (
+            "        router_logits, _ = self.gate(hidden_states)\n"
+            "        fused_moe_out = self.experts(\n"
+            "            hidden_states=hidden_states, router_logits=router_logits\n"
+            "        )\n"
+            "\n"
+            "        if self.shared_experts is not None:\n"
+            "            shared_output, final_hidden_states = fused_moe_out\n"
+            "        else:\n"
+            "            shared_output = None\n"
+            "            final_hidden_states = fused_moe_out\n"
+            "\n"
+            "        # Fix FP16 overflow\n"
+            "        # See DeepseekV2DecoderLayer for more details.\n"
+            "        if hidden_states.dtype != torch.float16:\n"
+            "            final_hidden_states *= self.routed_scaling_factor\n"
+            "        elif self.shared_experts is not None:\n"
+            "            assert shared_output is not None\n"
+            "            shared_output *= 1.0 / self.routed_scaling_factor\n"
+            "\n"
+            "        if self.shared_experts is not None:\n"
+            "            assert shared_output is not None\n"
+            "            final_hidden_states += shared_output\n"
+            "\n",
+            "        router_logits, _ = self.gate(hidden_states)\n"
+            "        final_hidden_states = self.experts(\n"
+            "            hidden_states=hidden_states, router_logits=router_logits\n"
+            "        )\n"
+            "\n"
+            "        # Fix FP16 overflow\n"
+            "        # See DeepseekV2DecoderLayer for more details.\n"
+            "        if hidden_states.dtype != torch.float16:\n"
+            "            final_hidden_states *= self.routed_scaling_factor\n"
+            "\n",
+        ),
+        # 12. MoERunner all-reduces internally now (the drift map: "FusedMoE
+        #     fuses shared experts and returns a single tensor" — the same
+        #     change also folded in the old TP all-reduce this method used
+        #     to perform); calling it crashed with "'MoERunner' object has
+        #     no attribute 'maybe_all_reduce_tensor_model_parallel'". Drop
+        #     the now-redundant call.
+        (
+            "        elif self.tp_size > 1:\n"
+            "            final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(\n"
+            "                final_hidden_states\n"
+            "            )\n",
+            "",
+        ),
     ])
-
     indexer = SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "indexer.py"
     ok2 = patch(indexer, [
         # -- import block: engine symbols that moved ------------------------
@@ -166,7 +396,74 @@ def main() -> int:
     #     VllmConfig creation (before any weights load). Read the raw
     #     variable so the unset default still selects FlashMLA.
     kunlun_platform = SITE / "vllm_kunlun" / "platforms" / "kunlun.py"
+    #  8. The engine instantiates an MLA prefill backend in MLAAttention
+    #     unconditionally and no engine-registered backend is
+    #     XPU-compatible ("No valid MLA prefill backend found ...").
+    #     The sparse XPU impl handles prefill inside forward_mqa, so the
+    #     plugin registers the prefill stub (prefill_xpu.py) under CUSTOM
+    #     in _run_startup_stages — which runs at plugin activation in every
+    #     process, because worker processes unpickle VllmConfig and never
+    #     re-run the platform check — and the platform then selects CUSTOM.
+    plugin_init = SITE / "vllm_kunlun" / "__init__.py"
+    prefill_stub = (
+        SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "prefill_xpu.py"
+    )
+    ok4 = True
+    if not prefill_stub.exists() or prefill_stub.read_text(encoding="utf-8") != PREFILL_STUB:
+        prefill_stub.parent.mkdir(parents=True, exist_ok=True)
+        prefill_stub.write_text(PREFILL_STUB, encoding="utf-8")
+        print(f"CREATED {prefill_stub}")
+    else:
+        print(f"SKIP {prefill_stub}")
+    ok5 = patch(plugin_init, [
+        (
+            "    # 7. Add torch_xmlir's missing memory-info API.\n"
+            "    bootstrap.patch_memory_info(logger)\n",
+            "    # 7. Add torch_xmlir's missing memory-info API.\n"
+            "    bootstrap.patch_memory_info(logger)\n"
+            "    # 8. Register the XPU MLA prefill stub for the engine's\n"
+            "    #    prefill registry: sparse XPU MLA handles prefill inside\n"
+            "    #    forward_mqa, the stub makes MLAAttention construction\n"
+            "    #    valid on XPU and fails loudly if the MHA prefill path is\n"
+            "    #    ever reached. Runs at plugin activation so every worker\n"
+            "    #    process sees the registration.\n"
+            "    from vllm.v1.attention.backends.mla.prefill.registry import (\n"
+            "        MLAPrefillBackendEnum,\n"
+            "        register_mla_prefill_backend,\n"
+            "    )\n"
+            "\n"
+            "    register_mla_prefill_backend(\n"
+            "        MLAPrefillBackendEnum.CUSTOM,\n"
+            "        \"vllm_kunlun.v1.attention.backends.mla.prefill_xpu.\"\n"
+            "        \"XPUMLAPrefillStub\",\n"
+            "    )\n",
+        ),
+    ])
     ok3 = patch(kunlun_platform, [
+        # 13. Per the drift map's P800 landmine note: KunlunPlatform is
+        #     PlatformEnum.OOT, so is_cuda_alike() (gated on
+        #     CUDA/ROCM only) returns False even though torch_xmlir maps the
+        #     XPU onto the torch.cuda API end to end. Generic engine code
+        #     that branches on cuda-alike then takes the "else" path meant
+        #     for genuinely exotic backends: bind_kv_cache's multi-layer
+        #     group check raised bare NotImplementedError on every TP rank
+        #     during KV-cache initialization (the first place two attention
+        #     modules per layer — MLA + indexer — share a layer_index).
+        #     Override it to True; the emulated CUDA API is this platform's
+        #     real contract.
+        (
+            "    def is_cuda_alike(self) -> bool:\n"
+            '        """Stateless version of [torch.cuda.is_available][]."""\n'
+            "        return self._enum in (PlatformEnum.CUDA, PlatformEnum.ROCM)\n",
+            "    def is_cuda_alike(self) -> bool:\n"
+            '        """Stateless version of [torch.cuda.is_available][].\n'
+            "\n"
+            "        torch_xmlir maps the XPU onto the torch.cuda API end to end, so\n"
+            "        this platform's real contract is CUDA-alike even though its\n"
+            "        PlatformEnum is OOT, not CUDA/ROCM.\n"
+            '        """\n'
+            "        return True\n",
+        ),
         (
             "import psutil\nimport torch\nimport vllm.envs as envs\n",
             "import os\n\nimport psutil\nimport torch\nimport vllm.envs as envs\n",
@@ -203,9 +500,36 @@ def main() -> int:
             "                and cache_config.block_size != 64\n"
             "            ):\n",
         ),
+        #  8. The engine instantiates an MLA prefill backend in MLAAttention
+        #     unconditionally and no engine-registered backend is
+        #     XPU-compatible ("No valid MLA prefill backend found ...").
+        #     The sparse XPU impl handles prefill inside forward_mqa, so the
+        #     plugin registers the prefill stub (prefill_xpu.py) under CUSTOM
+        #     and the platform selects it; the stub raises loudly if the MHA
+        #     prefill path is ever reached.
+        (
+            "                logger.info(\n"
+            '                    "Forcing kv cache block size to 64 for FlashMLASparse " "backend."\n'
+            "                )\n"
+            "\n"
+            "        from vllm.config import CUDAGraphMode\n",
+            "                logger.info(\n"
+            '                    "Forcing kv cache block size to 64 for FlashMLASparse " "backend."\n'
+            "                )\n"
+            "\n"
+            "        from vllm.v1.attention.backends.mla.prefill.registry import (\n"
+            "            MLAPrefillBackendEnum,\n"
+            "        )\n"
+            "        if vllm_config.attention_config is not None:\n"
+            "            vllm_config.attention_config.mla_prefill_backend = (\n"
+            "                MLAPrefillBackendEnum.CUSTOM\n"
+            "            )\n"
+            "\n"
+            "        from vllm.config import CUDAGraphMode\n",
+        ),
     ])
 
-    if not (ok1 or ok2 or ok3):
+    if not (ok1 or ok2 or ok3 or ok4 or ok5):
         print("nothing to do: all repairs already applied")
     return 0
 
