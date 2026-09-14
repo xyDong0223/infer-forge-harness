@@ -115,6 +115,18 @@ class KunlunP800Adapter:
         result = self.run(["auth", "can-i", "create", "pods"])
         return result.returncode == 0 and result.stdout.strip().lower() == "yes"
 
+    def preflight(self) -> dict[str, object]:
+        """Validate connectivity, namespace access, and basic P800 resources."""
+        version = self.run(["version", "--client", "-o", "json"])
+        if version.returncode != 0:
+            raise RuntimeError(f"kubectl unavailable: {version.stderr.strip()}")
+        if not self.can_create_pods():
+            raise RuntimeError(f"cannot create pods in namespace {self.config.namespace}")
+        nodes = self.run(["get", "nodes", "-o", "json"])
+        if nodes.returncode != 0:
+            raise RuntimeError(f"cannot inspect nodes: {nodes.stderr.strip()}")
+        return {"namespace": self.config.namespace, "kubectl": True, "nodes": True}
+
     def get(self, kind: str, name: str | None = None, output: str | None = None) -> subprocess.CompletedProcess[str]:
         args = ["get", kind]
         if name:
@@ -230,6 +242,10 @@ class KunlunP800Adapter:
         if not confirmed:
             raise SafetyViolation("delete requires an explicit human gate: pass confirmed=True")
         return self.run(["delete", kind, name], timeout=300)
+
+    def rollback_owned(self, kind: str, name: str) -> subprocess.CompletedProcess[str]:
+        """Delete a resource created by this run, guarded by ownership prefix."""
+        return self.delete(kind, name, confirmed=True)
 
     def delete_ephemeral(
         self, kind: str, name: str, task_id: str, attempt_id: str

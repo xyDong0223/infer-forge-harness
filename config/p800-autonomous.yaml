@@ -1,0 +1,13 @@
+execution:
+  mode: autonomous
+  max_attempts: 100
+  auto_rollback: true
+backend: p800
+namespace: default
+image: vllm-kunlun:latest
+xpu_count: 8
+server_port: 8000
+model_mount: /mnt/cluster
+workdir: /workspace
+scheduler: volcano
+node_pool: ""

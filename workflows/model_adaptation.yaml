@@ -12,14 +12,14 @@ spec:
     - id: mat-001-model-intake
       task: tasks/mat-001-model-intake/task.yaml
       on_success: kdp-001a-environment-proof
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Deploy the pod and the stack before deciding anything about the model. This
     # proves the base environment and produces the pod that the scan runs inside,
     # which is why no separate throwaway pod is needed from here on.
     - id: kdp-001a-environment-proof
       task: tasks/kdp-001a-environment-proof/task.yaml
       on_success: mat-027-runtime-drift
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # The cheapest gate here, and the one whose absence cost the most. A registry
     # entry proves a name is mapped, not that the module behind it imports; the
     # engine moves and the plugin does not follow, so an attention backend fails
@@ -35,19 +35,19 @@ spec:
     - id: mat-002-model-scan
       task: tasks/mat-002-model-scan/task.yaml
       on_success: mat-003-capability-match
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Static only: it can say a requirement is missing, never that the model
     # runs. Its MATCHED verdict on Qwen3-8B coexists with a failing server.
     - id: mat-003-capability-match
       task: tasks/mat-003-capability-match/task.yaml
       on_success: mat-004-gap-classification
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Offline: it reads two static findings and routes. NO_STATIC_GAP means the
     # remaining question can only be answered by deploying.
     - id: mat-004-gap-classification
       task: tasks/mat-004-gap-classification/task.yaml
       on_success: mat-024-operator-task-dispatch
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Operator generation is asynchronous. Durable requests are emitted here,
     # while the main Agent continues bring-up with a reversible fallback.
     - id: mat-024-operator-task-dispatch
@@ -68,7 +68,7 @@ spec:
     - id: mat-005-deployment-plan
       task: tasks/mat-005-deployment-plan/task.yaml
       on_success: mat-028-toy-bringup
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Everything between "the modules import" and "the server answers" is contract,
     # not weights: an abstract method the engine now requires, a factory whose
     # return shape changed, a KV-cache tensor whose rank the layer slices wrongly.
@@ -112,7 +112,7 @@ spec:
       # shim gate, not the service proof: the fix and its operator debt are
       # recorded in the same pass, or the debt is recorded nowhere.
       on_success: mat-029-shim-handoff
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Read-only and downstream of a successful service proof. Kept out of
     # KDP-001b because a capacity threshold must not be able to fail a
     # deployment that is, in fact, serving.
@@ -150,12 +150,12 @@ spec:
     - id: mat-016-support-matrix
       task: tasks/mat-016-support-matrix/task.yaml
       on_success: DELIVERED
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
     # Terminal, not a failure: the deliverable is a ticket someone else can act on.
     - id: mat-020-vendor-handoff
       task: tasks/mat-020-vendor-handoff/task.yaml
       on_success: DELIVERED
-      on_failure: NEEDS_HUMAN
+      on_failure: mat-006-failure-triage
   notes:
     - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
       the environment proof's pod.
