@@ -316,6 +316,33 @@ def main() -> int:
             "            )\n",
             "",
         ),
+        # 14. FusedMoE became a factory function, so its old classmethod
+        #     make_expert_params_mapping is gone; weight loading now uses
+        #     the fused_moe_make_expert_params_mapping helper with the
+        #     model as the first argument (the drift map's item 6, second
+        #     half). The toy bring-up passes with dummy weights and never
+        #     reaches load_weights; the real 707 GiB load died here.
+        (
+            "        expert_params_mapping = FusedMoE.make_expert_params_mapping(\n"
+            "            ckpt_gate_proj_name=\"gate_proj\",\n"
+            "            ckpt_down_proj_name=\"down_proj\",\n"
+            "            ckpt_up_proj_name=\"up_proj\",\n"
+            "            num_experts=self.config.n_routed_experts,\n"
+            "            num_redundant_experts=self.num_redundant_experts,\n"
+            "        )\n",
+            "        from vllm.model_executor.layers.fused_moe import (\n"
+            "            fused_moe_make_expert_params_mapping,\n"
+            "        )\n"
+            "\n"
+            "        expert_params_mapping = fused_moe_make_expert_params_mapping(\n"
+            "            self,\n"
+            "            ckpt_gate_proj_name=\"gate_proj\",\n"
+            "            ckpt_down_proj_name=\"down_proj\",\n"
+            "            ckpt_up_proj_name=\"up_proj\",\n"
+            "            num_experts=self.config.n_routed_experts,\n"
+            "            num_redundant_experts=self.num_redundant_experts,\n"
+            "        )\n",
+        ),
     ])
     indexer = SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "indexer.py"
     ok2 = patch(indexer, [
