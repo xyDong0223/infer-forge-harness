@@ -153,12 +153,20 @@ class DeploymentProofRunner:
         # command line leaves the TP workers alive holding HBM: the
         # 2026-09-14 attach rerun orphaned eight workers at ~89 GiB/card and
         # the relaunch died on "Free memory on device cuda:0 (6.97/96.0
-        # GiB)". Match the rewritten titles and the multiprocessing
-        # resource_tracker too, then verify nothing survived.
+        # GiB)". The patterns are bracket-quoted because a plain pattern
+        # matches the bash -lc process running this very command line: the
+        # first kill -9 then terminates the loop's own shell (exit 137) and
+        # nothing is killed at all — the cleanup used to report success
+        # while only fuser reached the port-owning APIServer. The
+        # multiprocessing resource_tracker is included because it outlives
+        # the engine and re-parents to init. The survivor probe then proves
+        # the tree is actually gone instead of assuming it.
         command = (
-            "for pattern in 'vllm.entrypoints.openai.api_server' 'vllm.engine' 'EngineCore' "
-            "'VLLM::' 'multiprocessing.resource_tracker'; do "
-            "ps -eo pid=,args= | awk -v p=\"$pattern\" '$0 ~ p {print $1}' | xargs -r kill -9; done; "
+            "pkill -9 -f '[v]llm.entrypoints.openai.api_server'; "
+            "pkill -9 -f '[v]llm.engine'; "
+            "pkill -9 -f '[E]ngineCore'; "
+            "pkill -9 -f '[V]LLM::'; "
+            "pkill -9 -f '[m]ultiprocessing.resource_tracker'; "
             f"(command -v fuser >/dev/null 2>&1 && fuser -k {int(port)}/tcp) || true"
         )
         self.adapter.exec(self.pod or "", command, timeout=60)
@@ -166,7 +174,7 @@ class DeploymentProofRunner:
         for _ in range(10):
             probe = self.adapter.exec(
                 self.pod or "",
-                "ps -eo pid=,args= | grep -E 'VLLM::|vllm.entrypoints|multiprocessing.resource_tracker' "
+                "ps -eo pid=,args= | grep -E '[V]LLM::|[v]llm.entrypoints|[m]ultiprocessing.resource_tracker' "
                 "| grep -v grep | head -5",
                 timeout=30,
             )
