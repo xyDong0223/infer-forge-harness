@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "harness" / "config.yaml"
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "clusters" / "p800-cluster.yaml"
 
 
 class SafetyViolation(RuntimeError):
@@ -56,7 +56,7 @@ class ClusterConfig:
             kubeconfig=kubeconfig,
             namespace=cluster["namespace"],
             container=cluster["container"],
-            resource_prefix=cluster["resource_prefix"],
+            resource_prefix=os.path.expandvars(str(cluster["resource_prefix"])).replace("${USER_ID}", "<USER_ID>"),
             deployment_kind=cluster["deployment_kind"],
             context=cluster.get("context"),
         )

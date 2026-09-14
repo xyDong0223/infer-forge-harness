@@ -8,7 +8,7 @@ from pathlib import Path
 
 from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter, SafetyViolation
 
-CONFIG = Path(__file__).resolve().parents[2] / "harness" / "config.yaml"
+CONFIG = Path(__file__).resolve().parents[2] / "config" / "clusters" / "p800-cluster.yaml"
 
 
 def make_adapter() -> KunlunP800Adapter:
@@ -49,7 +49,7 @@ class TestHarnessConfig(unittest.TestCase):
         os.environ["KUBECONFIG"] = __file__  # any existing readable path
         config = ClusterConfig.load(CONFIG)
         self.assertEqual(config.namespace, "pd-test")
-        self.assertEqual(config.resource_prefix, "dongxinyu03-")
+        self.assertEqual(config.resource_prefix, "<USER_ID>-")
         self.assertTrue(config.deployment_kind.startswith("feddeployments"))
 
     def test_missing_env_kubeconfig_is_refused(self) -> None:

@@ -162,8 +162,13 @@ The candidate manifest must reference independent reports for `KERNEL_PASS`, `DI
 
 ## Repository map
 
+Cluster and deployment resource profiles are kept separately under
+[`config/clusters/`](config/clusters/). Add one profile per target cluster;
+keep kubeconfig contents and credentials outside the repository.
+
 | Directory | Responsibility |
 | --- | --- |
+| [`config/`](config/) | Harness defaults, cluster resource profiles, and deployment manifests. |
 | [`contracts/`](contracts/) | Stable, machine-readable schemas. |
 | [`workflows/`](workflows/) | Business orchestration and Task Graphs. |
 | [`tasks/`](tasks/) | Verifiable task contracts and task-local guidance. |

@@ -10,7 +10,7 @@ request inside the indexer:
 Triton does compile and run on P800 — the failure is a shared-memory budget, not a
 missing path — but its coverage here is poor enough that tuning block sizes only moves
 the problem to the next shape. So these three entry points get torch implementations,
-the same way `patches/torch_paged_decode.py` replaced a vendor decode kernel for
+the same way `tools/torch/paged_decode.py` replaced a vendor decode kernel for
 Qwen3-8B.
 
 Semantics are taken from the triton kernels they replace, and they are the ones the

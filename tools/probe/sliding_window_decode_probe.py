@@ -117,7 +117,7 @@ def main() -> int:
     import torch
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fallback", required=True, help="path to patches/torch_paged_decode.py")
+    parser.add_argument("--fallback", required=True, help="path to tools/torch/paged_decode.py")
     parser.add_argument("--heads", type=int, default=32)
     parser.add_argument("--kv-heads", type=int, default=8)
     parser.add_argument("--head-dim", type=int, default=128)
@@ -141,7 +141,7 @@ def main() -> int:
                 "context_len": args.context_len, "window": args.window}
     result: dict = {
         "dimension": "msa",
-        "operators": [f"kunlun_ops.{args.kernel}", "patches/torch_paged_decode.py"],
+        "operators": [f"kunlun_ops.{args.kernel}", "tools/torch/paged_decode.py"],
         "geometry": geometry,
         "thresholds": {"min_cosine": args.cosine_floor,
                        "max_relative_l2": args.max_relative_l2},

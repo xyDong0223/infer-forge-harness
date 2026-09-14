@@ -24,7 +24,7 @@ run-adaptation = "tools.run_adaptation:main"
 packages = [
     "adapters",
     "adapters.kunlun_p800",
-    "orchestration",
+    "engine",
     "runners",
     "tools",
     "validators",

@@ -13,7 +13,7 @@ Two explanations survive: the platform's dense attention kernel is wrong, or the
 without the golden: during the prefill of a fresh sequence, causal attention over the
 q/k/v that were just handed to `Attention.forward` is the answer, computed here in fp32
 with no cache, no block table and no sharding arithmetic -- the same instrument that put
-the torch block-sparse attend at 1-2% (`patches/m3_sparse_attend_selfcheck.py`).
+the torch block-sparse attend at 1-2% (`tools/sparse_attention_selfcheck.py`).
 
 If the dense kernel lands at 1e-2 like the sparse stand-in did, the golden is at fault and
 attention is fine. If it lands near 0.25, the kernel is.

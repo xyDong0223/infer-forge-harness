@@ -44,7 +44,7 @@ REPORT = {
         ],
     },
     "workaround": {
-        "description": "route the qlen==1 decode path through patches/torch_paged_decode.py",
+        "description": "route the qlen==1 decode path through tools/torch/paged_decode.py",
         "validated_in_server": True,
     },
 }

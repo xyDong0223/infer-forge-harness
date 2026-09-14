@@ -56,10 +56,10 @@ PROBES: dict[str, str] = {
 # Files a probe needs next to it in the pod. The msa probe grades the patch we
 # actually serve with, so it has to be the same file, not a copy that can drift.
 SIDECARS: dict[str, dict[str, str]] = {
-    "msa": {"--fallback": "patches/torch_paged_decode.py"},
+    "msa": {"--fallback": "tools/torch/paged_decode.py"},
     # Same reason as msa: the probe must grade the file that would be loaded, not a
     # copy of it that can drift.
-    "fused_qknorm_rope_insert": {"--implementation": "patches/m3_fused_qknorm_rope_probe.py"},
+    "fused_qknorm_rope_insert": {"--implementation": "tools/probes/attention/qknorm_rope_probe.py"},
 }
 
 

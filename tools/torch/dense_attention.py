@@ -1,7 +1,7 @@
 """Torch replacement for the platform's dense attention in MiniMax-M3's leading layers.
 
 Measured, with no golden weights and no tensor-parallel assumptions
-(`patches/m3_dense_attn_selfcheck.py`): during a fresh 5-token prefill the platform's
+(`tools/dense_attention_selfcheck.py`): during a fresh 5-token prefill the platform's
 `Attention.forward` output is off by relL2 **0.326 / 0.438 / 0.076** for layers 0/1/2
 against causal attention over the very q/k/v it was handed. The same instrument puts the
 torch block-sparse attend at 1-2%. Three broken dense layers feed 60 sparse ones, which is

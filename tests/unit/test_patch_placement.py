@@ -15,7 +15,7 @@ from validators.patch_validator import validate_patch_placement  # noqa: E402
 
 CONTRACT_PATH = ROOT / "tasks" / "mat-007-patch-placement" / "task.yaml"
 
-# The real 2026-09-07 placement of patches/torch_paged_decode.py.
+# The real 2026-09-07 placement of tools/torch/paged_decode.py.
 REPORT = {
     "state": "PATCH_PLACED",
     "mechanism": "post_import_patch",

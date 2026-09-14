@@ -1,0 +1,43 @@
+api_version: infer.kunlun/v1alpha1
+kind: B200ClusterResources
+metadata:
+  name: b200-cluster
+  description: Public resource profile for a B200/SGLang development cluster.
+
+# Replace angle-bracket placeholders for the target user's environment.
+# Credentials remain outside the repository.
+cluster:
+  kubeconfig: /root/ComateProjects/chats/2026-09-14/chat2/tjzj-bzz2-hajingjing-kubeconfig.txt
+  namespace: <NAMESPACE>
+  context: <KUBERNETES_CONTEXT>
+  container: model-server
+  resource_prefix: <USER_ID>-
+  deployment_kind: feddeployments.eks.baidu.com
+
+deployment:
+  base_manifest: /root/ComateProjects/chats/2026-09-14/chat2/Bzz2_flash.yaml
+  image: <B200_RUNTIME_IMAGE>
+  scheduler: volcano
+  queue: <VOLCANO_QUEUE>
+  node_selector:
+    quota-isolation: <QUOTA_ISOLATION_ID>
+  accelerator_resource: baidu/gpu_bzz2o_8
+  accelerator_count: 8
+  rdma_resource: rdma/hca
+  rdma_count: 1
+  cpu: 100
+  memory: 800Gi
+  model_mounts:
+    - /home/users
+    - /ssd1
+    - /ssd2
+    - /ssd3
+
+runtime:
+  engine: sglang
+  model_path: <MODEL_PATH>
+  served_model_name: <MODEL_ID>
+  tensor_parallel_size: 8
+  data_parallel_size: 8
+  http_proxy: http://agent.baidu.com:8891
+  https_proxy: http://agent.baidu.com:8891

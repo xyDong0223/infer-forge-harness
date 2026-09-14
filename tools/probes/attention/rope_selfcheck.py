@@ -1,7 +1,7 @@
 """Differential self-check for the qk-norm + partial-RoPE stand-in, run inside the
 serving process against vLLM's own rotary module.
 
-`patches/m3_fused_qknorm_rope_probe.py` stands in for
+`tools/probes/attention/qknorm_rope_probe.py` stands in for
 `_C::fused_minimax_m3_qknorm_rope_kv_insert`, and its offline probe graded it
 against a reference *I wrote*.  That leaves the convention itself unverified: if
 the cos/sin cache halves, the NeoX rotate-halves split, or the partial-rotary

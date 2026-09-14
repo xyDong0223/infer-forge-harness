@@ -1,0 +1,6 @@
+api_version: infer.kunlun/v1alpha1
+kind: Skill
+id: torch-fallback
+task_types: [patch_placement]
+catalog: catalog/skill_catalog.yaml
+method_document: skills/torch_fallback/SKILL.md

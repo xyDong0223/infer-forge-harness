@@ -10,7 +10,7 @@ landing in the wrong place: each operator is then individually correct and the c
 is nonsense.
 
 So this recomputes layer 0 end to end in fp32 from the safetensors, and prints exactly the
-quantities `patches/m3_layer_trace.py` prints from the running service, to be compared:
+quantities `tools/diagnostics/layer_trace.py` prints from the running service, to be compared:
 
     layer0 in[1]                  embeddings                       (replicated)
     dense_attn in[hidden_states]  after input_layernorm            (replicated)
@@ -306,7 +306,7 @@ def quantize_activation(x):
 
 
 def compare(dump_dir, name, golden):
-    """Element-wise relative L2 against a tensor dumped by patches/m3_layer_trace.py."""
+    """Element-wise relative L2 against a tensor dumped by tools/diagnostics/layer_trace.py."""
     if not dump_dir:
         return
     path = os.path.join(dump_dir, name + ".pt")
@@ -339,7 +339,7 @@ def main():
     parser.add_argument(
         "--compare",
         default="",
-        help="directory of tensors dumped by patches/m3_layer_trace.py (M3_TRACE_DUMP)",
+        help="directory of tensors dumped by tools/diagnostics/layer_trace.py (M3_TRACE_DUMP)",
     )
     parser.add_argument(
         "--emulate-w8a8",

@@ -48,6 +48,7 @@ def manifest_values(contract: dict[str, Any], attempt_id: str, workdir: str, ima
     target = context["target"]
     server = context["server"]
     return {
+        "USER_ID": execution["resource_name"].split("-", 1)[0],
         "RESOURCE_NAME": execution["resource_name"],
         "NAMESPACE": execution["namespace"],
         "TASK_ID": contract["metadata"]["name"],
@@ -123,6 +124,29 @@ class DeploymentProofRunner:
         self.pod = self.wait_for_pod(execution)
         self.install_runtime(execution)
 
+    def discover_base_model(self) -> None:
+        model = self.contract.get("context", {}).get("model", {})
+        path = model.get("path")
+        if not path:
+            raise ActionFailed("CONTRACT_INVALID", "base model path is missing")
+        result = self.adapter.exec(self.pod or "", f"test -f {shlex.quote(path + '/config.json')} && find {shlex.quote(path)} -maxdepth 1 -type f -name '*.safetensors' | sort", timeout=120)
+        identity = {"name": model.get("name"), "path": path, "files": result.stdout.splitlines()}
+        self.write("base_model_identity.json", json.dumps(identity, indent=2) + "\n")
+        self.checks["base_model_loaded"] = result.returncode == 0 and bool(identity["files"])
+        if not self.checks["base_model_loaded"]:
+            raise ActionFailed("MODEL_NOT_FOUND", f"base model is not readable: {path}")
+        self.record("discover_base_model", True, f"{path}: {len(identity['files'])} weight files")
+
+    def cleanup_service_processes(self) -> None:
+        port = self.contract.get("context", {}).get("server", {}).get("port", 8356)
+        command = (
+            "for pattern in 'vllm.entrypoints.openai.api_server' 'vllm.engine' 'EngineCore'; do "
+            "ps -eo pid=,args= | awk -v p=\"$pattern\" '$0 ~ p {print $1}' | xargs -r kill -9; done; "
+            f"(command -v fuser >/dev/null 2>&1 && fuser -k {int(port)}/tcp) || true"
+        )
+        self.adapter.exec(self.pod or "", command, timeout=60)
+        self.record("cleanup_service_processes", True, f"service process tree and port {port} cleared")
+
     def wait_for_pod(self, execution: dict[str, Any]) -> str:
         deadline = time.time() + int(execution.get("startup_timeout_seconds", 900))
         selector = f"infer.kunlun/attempt-id={self.attempt_id}"
@@ -185,14 +209,14 @@ class DeploymentProofRunner:
             f"cd {self.workdir} && "
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
             f"{setup + ' && ' if setup else ''}"
-            f"nohup {serve} > {self.server_log_path()} 2>&1 & echo started $!"
+            f"{serve} > {self.server_log_path()} 2>&1 & echo started $!"
         )
         result = self.adapter.exec(pod, launch, timeout=120)
         if result.returncode != 0:
             raise ActionFailed("SERVER_START_FAILED", result.stderr.strip())
         self.record("start_server", True, result.stdout.strip())
 
-    def poll_health(self) -> None:
+    def poll_health(self, prefix: str = "") -> None:
         pod = self.pod or ""
         execution = self.contract["execution"]
         health = self.contract["checks"]["health"]
@@ -207,16 +231,16 @@ class DeploymentProofRunner:
             last = f"status={code} body={body[:200]}"
             streak = streak + 1 if code == int(health["expected_status"]) else 0
             if streak >= need:
-                self.write("health_result.txt", last)
-                self.checks["health_check"] = int(health["expected_status"])
+                self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
+                self.checks[f"{prefix}health_check" if prefix else "health_check"] = int(health["expected_status"])
                 self.record("poll_health", True, f"{need} consecutive successes")
                 return
             time.sleep(interval)
-        self.write("health_result.txt", last)
+        self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
         self.record("poll_health", False, last)
         raise ActionFailed("READINESS_TIMEOUT", f"health never stabilised: {last}")
 
-    def run_chat_smoke(self) -> None:
+    def run_chat_smoke(self, prefix: str = "") -> None:
         pod = self.pod or ""
         chat = self.contract["checks"]["chat"]
         port = self.contract["context"]["server"]["port"]
@@ -231,7 +255,7 @@ class DeploymentProofRunner:
             timeout=300,
         )
         body = result.stdout
-        self.write("chat_result.json", body + result.stderr)
+        self.write(f"{prefix}chat_result.json" if prefix else "chat_result.json", body + result.stderr)
         text, finish = "", ""
         try:
             choices = json.loads(body).get("choices", [])
@@ -245,24 +269,30 @@ class DeploymentProofRunner:
                 text = text or message.get("reasoning_content") or ""
         except (json.JSONDecodeError, AttributeError, IndexError):
             text = ""
+        completion_key = f"{prefix}chat_completion" if prefix else "chat_completion"
         if chat.get("expected_non_empty_text", True) and not text.strip():
-            self.checks["chat_completion"] = "empty"
+            self.checks[completion_key] = "empty"
             self.record("run_chat_smoke", False, body[:1000])
             raise ActionFailed("API_SMOKE_FAILED", "chat completion returned no text")
         if finish == "length":
             self.record("run_chat_smoke", True, "truncated by max_tokens; raise it for a full answer")
-        self.checks["chat_completion"] = "non_empty"
+        self.checks[completion_key] = "non_empty"
+        if prefix:
+            # Service reachability is separate from correctness. These fields
+            # only prove that prompt ingestion and token generation occurred.
+            self.checks[f"{prefix}prefill"] = True
+            self.checks[f"{prefix}decode"] = bool(text.strip())
         self.record("run_chat_smoke", True, f"finish_reason={finish} text={text[:160]!r}")
 
     def server_log_path(self) -> str:
         return self.contract["execution"].get("server_log") or f"{self.workdir}/server.log"
 
-    def verify_backend(self) -> None:
+    def verify_backend(self, prefix: str = "") -> None:
         pod = self.pod or ""
         backend = self.contract["checks"].get("backend", {})
         expected = backend.get("expected", "kunlun")
         log = self.adapter.exec(pod, f"cat {self.server_log_path()}", timeout=120).stdout
-        self.write("server_log.txt", log)
+        self.write(f"{prefix}server_log.txt" if prefix else "server_log.txt", log)
         lowered = log.lower()
         self.checks["expected_backend"] = expected if expected in lowered else "unknown"
         fallbacks = [marker for marker in FALLBACK_MARKERS if marker in lowered]
@@ -299,6 +329,7 @@ class DeploymentProofRunner:
         }
         if reason:
             status["reason"] = reason
+            self.write("diagnosis.json", json.dumps({"state": state, "error": reason, "pod": self.pod, "next_action": "DIAGNOSE_RUNTIME"}, indent=2) + "\n")
         self.write("status.json", json.dumps(status, indent=2, ensure_ascii=False) + "\n")
         self.write("execution_records.json", json.dumps(self.records, indent=2, ensure_ascii=False) + "\n")
         # status.json is listed too, so refresh the artifact list once written.
@@ -327,15 +358,21 @@ class DeploymentProofRunner:
                 self.checks["pod_ready"] = True
                 self.write("pod_spec.yaml", self.adapter.get("pod", self.pod, output="yaml").stdout)
                 self.record("attach_pod", True, f"imported context: {self.attach_pod}")
+                if self.phase == "environment":
+                    # An attached Pod may only have the base image. Environment
+                    # proof owns runtime installation before the Base smoke.
+                    self.install_runtime(self.contract["execution"])
             else:
                 self.preflight()
                 self.prepare_environment()
             if self.phase == "environment":
-                # Stop before the server on purpose. A proven environment is what
-                # later Tasks import, and it is provable without knowing a single
-                # launch parameter — which is exactly why the model scan can run
-                # here, before any parameter has been decided.
                 self.verify_runtime_importable()
+                self.discover_base_model()
+                self.cleanup_service_processes()
+                self.start_server()
+                self.poll_health(prefix="base_")
+                self.run_chat_smoke(prefix="base_")
+                self.verify_backend(prefix="base_")
                 return self.collect_artifacts("ENVIRONMENT_READY")
             self.start_server()
             self.poll_health()
@@ -436,5 +473,3 @@ class DeploymentProofRunner:
         result = self.adapter.exec(pod, script, timeout=300)
         self.write("environment_fingerprint.txt", result.stdout + result.stderr)
         self.record("environment_fingerprint", result.returncode == 0)
-
-

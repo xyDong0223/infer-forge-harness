@@ -1,6 +1,6 @@
 import pytest
 
-from orchestration.discovery import (
+from engine.discovery import (
     IncompleteOperatorEvidence,
     operator_spec_from_entry,
     operator_specs_from_report,

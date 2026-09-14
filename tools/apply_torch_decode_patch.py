@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
 
-FALLBACK = REPO_ROOT / "patches" / "torch_paged_decode.py"
+FALLBACK = REPO_ROOT / "tools" / "torch" / "paged_decode.py"
 SITE = "/opt/vllm_kunlun/lib/python3.10/site-packages"
 
 HOOK = '''

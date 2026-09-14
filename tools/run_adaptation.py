@@ -1,7 +1,7 @@
 """Unified command-line entry point for an adaptation run.
 
 The command is deliberately thin: durable state transitions remain owned by
-``orchestration.TaskScheduler`` while this module provides one stable entry
+``engine.TaskScheduler`` while this module provides one stable entry
 point that a main Agent can invoke.  Every successful command writes exactly
 one JSON document to stdout so callers can safely pipe the result to another
 Agent or a workflow step.
@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from orchestration import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
+from engine import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
 
 
 def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
@@ -155,10 +155,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                     + (completed.stderr.strip() or completed.stdout[-500:])
                 ) from error
             if completed.returncode != 0:
-                raise ValueError(
-                    f"environment task failed with exit code {completed.returncode}: "
-                    f"{proof.get('state', 'UNKNOWN')}"
-                )
+                error = f"environment task failed with exit code {completed.returncode}: {proof.get('state', 'UNKNOWN')}"
+                run = scheduler.record_environment_failure(args.run_id, proof, error)
+                return {"command": "environment", "run": run.to_dict(), "proof": proof, "error": error}
         run = scheduler.bind_environment(args.run_id, proof)
         return {"command": "environment", "run": run.to_dict(), "proof": proof}
 

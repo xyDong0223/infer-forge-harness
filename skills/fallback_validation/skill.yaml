@@ -1,0 +1,6 @@
+api_version: infer.kunlun/v1alpha1
+kind: Skill
+id: fallback-validation
+task_types: [patch_placement, capability_evaluation]
+catalog: catalog/skill_catalog.yaml
+method_document: skills/fallback_validation/SKILL.md

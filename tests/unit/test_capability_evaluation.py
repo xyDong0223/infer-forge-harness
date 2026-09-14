@@ -138,8 +138,8 @@ class FusedInsertContractTest(unittest.TestCase):
         # A copy of the stand-in can drift from the one a launch actually uses, so the
         # probe is handed the real path — the same reason the msa dimension does it.
         self.assertEqual(self.sidecars["fused_qknorm_rope_insert"]["--implementation"],
-                         "patches/m3_fused_qknorm_rope_probe.py")
-        self.assertTrue((ROOT / "patches" / "m3_fused_qknorm_rope_probe.py").exists())
+                         "tools/probes/attention/qknorm_rope_probe.py")
+        self.assertTrue((ROOT / "tools" / "probes" / "attention" / "qknorm_rope_probe.py").exists())
 
     def test_it_is_a_sparse_layer_with_a_scattered_slot_mapping(self):
         geometry = self.entry["geometry"]
@@ -456,7 +456,7 @@ class WindowMaskTest(unittest.TestCase):
     def mask(self, lengths, window):
         import torch
 
-        from patches.torch_paged_decode import window_mask
+        from tools.torch.paged_decode import window_mask
 
         span = max(lengths)
         return window_mask(torch.arange(span), torch.tensor(lengths), window)
@@ -493,13 +493,13 @@ class FallbackRefusalTest(unittest.TestCase):
         model here to check an implementation against."""
         import torch
 
-        from patches.torch_paged_decode import UnsupportedDecode, torch_paged_decode
+        from tools.torch.paged_decode import UnsupportedDecode, torch_paged_decode
 
         with self.assertRaises(UnsupportedDecode):
             torch_paged_decode(sink=torch.zeros(4), max_window_size=-1, qlen=1)
 
     def test_a_zero_window_is_refused_rather_than_guessed(self):
-        from patches.torch_paged_decode import UnsupportedDecode, torch_paged_decode
+        from tools.torch.paged_decode import UnsupportedDecode, torch_paged_decode
 
         with self.assertRaises(UnsupportedDecode):
             torch_paged_decode(max_window_size=0, qlen=1)

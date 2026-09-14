@@ -209,6 +209,9 @@ class TaskScheduler:
             "runtime_importable": checks.get("runtime_importable"),
             "code_ready": checks.get("code_ready"),
             "device_ready": checks.get("device_ready"),
+            "base_model_loaded": checks.get("base_model_loaded"),
+            "base_prefill": checks.get("base_prefill"),
+            "base_decode": checks.get("base_decode"),
         }
         missing = [name for name, value in required.items()
                    if (name == "state" and value != "ENVIRONMENT_READY")
@@ -218,7 +221,9 @@ class TaskScheduler:
             raise ValueError("environment proof is not ready: " + ", ".join(missing))
         artifacts = proof.get("artifacts") or []
         required_artifacts = {"environment_fingerprint.txt", "runtime_import.txt",
-                              "code_readiness.json", "device_readiness.json"}
+                              "code_readiness.json", "device_readiness.json",
+                              "base_model_identity.json", "base_health_result.txt",
+                              "base_chat_result.json", "base_server_log.txt"}
         absent = sorted(required_artifacts - set(artifacts))
         if absent:
             raise ValueError(f"environment proof is missing evidence: {', '.join(absent)}")
@@ -234,6 +239,20 @@ class TaskScheduler:
         run.status = "ENVIRONMENT_READY"
         self.store.update_run(run)
         self._emit(run_id, "environment_bound", {"pod": proof["pod"], "artifacts": list(artifacts)})
+        return run
+
+    def record_environment_failure(self, run_id: str, proof: dict[str, Any], error: str) -> AdaptationRun:
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        run.status = "ENVIRONMENT_FAILED"
+        run.environment = {**run.environment, "environment_proof": {
+            "state": proof.get("state", "FAILED"), "pod": proof.get("pod"),
+            "checks": proof.get("checks", {}), "artifacts": proof.get("artifacts", []),
+            "diagnosis": proof.get("reason", error),
+        }}
+        self.store.update_run(run)
+        self._emit(run_id, "environment_failed", {"error": error, "artifacts": proof.get("artifacts", [])})
         return run
 
     def discover_operator(self, run_id: str, spec: OperatorSpec) -> OperatorTask:

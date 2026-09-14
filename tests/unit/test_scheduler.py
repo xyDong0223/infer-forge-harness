@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from orchestration import AdaptationRun, EventStore, IOSpec, OperatorSpec, TaskScheduler
-from orchestration.contracts import BugReport, DiagnosticTask
+from engine import AdaptationRun, EventStore, IOSpec, OperatorSpec, TaskScheduler
+from engine.contracts import BugReport, DiagnosticTask
 
 
 def _spec():

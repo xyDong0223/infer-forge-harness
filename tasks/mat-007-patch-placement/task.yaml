@@ -20,7 +20,7 @@ context:
 execution:
   mode: execute
   tool: tools/apply_torch_decode_patch.py
-  patch: patches/torch_paged_decode.py
+  patch: tools/torch/paged_decode.py
 checks:
   mechanisms:
     # vLLM-Kunlun offers four; the choice is part of the deliverable because a
@@ -68,7 +68,7 @@ exit_states:
 validator: validators/patch_validator.py:validate_patch_placement
 findings:
   - model: Qwen3-8B
-    patch: patches/torch_paged_decode.py
+    patch: tools/torch/paged_decode.py
     # Measured 2026-09-07 against the vendor kernel across eight geometries
     # (batch 1-64, context 1-4096, block_size 16/64/128).
     numerical: cosine 0.999998-1.000000, max relative error 0.0074, exact at context_len 1

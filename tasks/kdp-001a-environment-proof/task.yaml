@@ -8,7 +8,7 @@ metadata:
 spec:
   question: does this stack actually run on this hardware
   produces: EnvironmentProof
-  consumes: [ModelRequest]
+  consumes: [ResourceProfile]
   # This half needs no launch parameter, which is the whole point of splitting
   # it out: everything downstream that inspects the runtime — model scan,
   # failure triage, operator coverage — can run before any parameter is chosen.
@@ -18,6 +18,19 @@ spec:
       tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase environment
   instances_shared_with: kdp-001b-service-proof
 context:
+  validation:
+    base_model:
+      name: MiniMax-M2.5-Int8-W8A8
+      path: /mnt/cluster/MiniMax-M2.5-W8A8-INT8-Dynamic
+      served_model_name: minimax-base-smoke
+      dtype: float16
+      tensor_parallel_size: 8
+      max_model_len: 196608
+      max_num_batched_tokens: 32768
+      max_num_seqs: 312
+      block_size: 128
+      gpu_memory_utilization: 0.92
+      required: true
   target:
     hardware: Kunlunxin-3-P800
     namespace: ${KUNLUN_NAMESPACE}
@@ -27,6 +40,10 @@ actions:
   - preflight
   - prepare_environment
   - verify_runtime_importable
+  - discover_base_model
+  - start_base_model
+  - run_base_prefill_decode_smoke
+  - verify_base_service
   - collect_environment_fingerprint
 acceptance:
   pod_ready: true
@@ -36,6 +53,12 @@ acceptance:
   runtime_importable: true
   code_ready: true
   device_ready: true
+  base_model_loaded: true
+  base_prefill: true
+  base_decode: true
+  base_health_check: 200
+  base_chat_completion: non_empty
+  unexpected_fallback: false
   fingerprint_required: true
 artifacts:
   - deployment_manifest
@@ -45,6 +68,10 @@ artifacts:
   - code_readiness
   - device_readiness
   - environment_fingerprint
+  - base_model_identity
+  - base_server_log
+  - base_health_result
+  - base_chat_result
 exit_states:
   pass: ENVIRONMENT_READY
   install_failed: INSTALL_FAILED

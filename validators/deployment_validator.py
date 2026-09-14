@@ -37,9 +37,15 @@ def validate_environment_status(status: dict[str, Any]) -> list[str]:
     if status.get("state") != "ENVIRONMENT_READY":
         errors.append("state must be ENVIRONMENT_READY")
     checks = status.get("checks", {})
-    for key in ("pod_ready", "runtime_importable", "code_ready", "device_ready"):
+    for key in (
+        "pod_ready", "runtime_importable", "code_ready", "device_ready",
+        "base_model_loaded", "base_prefill", "base_decode",
+    ):
         if checks.get(key) is not True:
             errors.append(f"checks.{key} must be True")
+    for key, expected in (("base_health_check", 200), ("base_chat_completion", "non_empty"), ("unexpected_fallback", False)):
+        if checks.get(key) != expected:
+            errors.append(f"checks.{key} must equal {expected!r}")
     if not status.get("pod"):
         errors.append("pod must be recorded so a later phase can import it")
     artifacts = status.get("artifacts") or []
@@ -48,6 +54,10 @@ def validate_environment_status(status: dict[str, Any]) -> list[str]:
         "runtime_import.txt",
         "code_readiness.json",
         "device_readiness.json",
+        "base_model_identity.json",
+        "base_server_log.txt",
+        "base_health_result.txt",
+        "base_chat_result.json",
     ):
         if required not in artifacts:
             errors.append(f"{required} must be part of the evidence bundle")

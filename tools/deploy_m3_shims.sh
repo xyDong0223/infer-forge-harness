@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble the MiniMax-M3 stand-in tree inside a pod, from patches/ in this repo.
+# Assemble the compatibility stand-in tree inside a pod from repository sources.
 #
 # Why this exists: the tree used to be hand-assembled in /tmp with kubectl cp and
 # appended-to bootstrap lines, and when the dev pod disappeared on 2026-09-08 all of it
@@ -11,7 +11,7 @@
 # would import a shim module in time. Everything lives under PYTHONPATH, never in
 # site-packages, so removing the path removes all of it.
 #
-# Usage, from inside the pod (patches/ copied alongside):
+# Usage, from inside the pod (implementation and probe files copied alongside):
 #   bash deploy_m3_shims.sh /tmp/m3_patches /tmp/m3_shim
 set -euo pipefail
 
@@ -27,7 +27,7 @@ rm -rf "$TARGET"
 mkdir -p "$TARGET/flashinfer"
 
 # The stand-in is imported as m3_probe_ops in the pod; keep that name so the bootstrap and
-# patches/m3_sparse_attend_selfcheck.py (which looks for either name) both resolve.
+# tools/sparse_attention_selfcheck.py (which looks for either name) both resolve.
 install -m 644 "$PATCHES/m3_fused_qknorm_rope_probe.py" "$TARGET/m3_probe_ops.py"
 for module in \
   m3_bind_kv_cache_probe \
@@ -36,10 +36,10 @@ for module in \
   m3_torch_dense_attn \
   m3_moe_routing_activation \
   m3_layer_trace \
-  m3_rope_selfcheck \
-  m3_int8_linear_selfcheck \
-  m3_sparse_attend_selfcheck \
-  m3_dense_attn_selfcheck
+  rope_selfcheck \
+  int8_linear_selfcheck \
+  sparse_attention_selfcheck \
+  dense_attention_selfcheck
 do
   install -m 644 "$PATCHES/$module.py" "$TARGET/$module.py"
 done
@@ -82,13 +82,13 @@ _m3_moe.patch()
 # Diagnostics, each off unless its own env var is set.
 import m3_layer_trace as _m3_trace                      # M3_TRACE (+ M3_TRACE_DUMP)
 _m3_trace.patch()
-import m3_rope_selfcheck as _m3_rope_check              # M3_ROPE_CHECK
+import rope_selfcheck as _m3_rope_check              # M3_ROPE_CHECK
 _m3_rope_check.patch()
-import m3_int8_linear_selfcheck as _m3_linear_check     # M3_LINEAR_CHECK
+import int8_linear_selfcheck as _m3_linear_check     # M3_LINEAR_CHECK
 _m3_linear_check.patch()
-import m3_sparse_attend_selfcheck as _m3_attend_check   # M3_ATTEND_CHECK
+import sparse_attention_selfcheck as _m3_attend_check   # M3_ATTEND_CHECK
 _m3_attend_check.patch()
-import m3_dense_attn_selfcheck as _m3_dense_check       # M3_DENSE_ATTN_CHECK
+import dense_attention_selfcheck as _m3_dense_check       # M3_DENSE_ATTN_CHECK
 _m3_dense_check.patch()
 BOOTSTRAP
 

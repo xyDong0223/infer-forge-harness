@@ -2,7 +2,7 @@
 that never touches the paged cache.
 
 Why this check exists: 60 of MiniMax-M3's 63 layers run through
-``patches/m3_torch_index_topk.py`` + ``patches/m3_torch_sparse_attn.py``, and the
+``tools/torch/index_topk.py`` + ``tools/torch/sparse_attention.py``, and the
 only differential run so far (M3_FORCE_DENSE_ATTEND) compared my sparse path against
 my own dense path -- same ``_attend_row``, same ``_split_kv``, same layout
 assumption. A bug in the shared part is invisible to it.

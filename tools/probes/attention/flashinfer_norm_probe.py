@@ -13,7 +13,7 @@ normalising. Gemma's `1 + w` is why the weight tensor is initialised to zeros.
 
 Installed by copying this file to `/tmp/m3_shim/flashinfer/norm.py` in the pod and
 launching with `PYTHONPATH=/tmp/m3_shim`, never into site-packages, so removing the
-path removes it. `patches/m3_fused_qknorm_rope_probe.py` is registered from the bottom
+path removes it. `tools/probes/attention/qknorm_rope_probe.py` is registered from the bottom
 of the installed copy, because flashinfer.norm is imported at the first layer's norm —
 before the first attention call — and nothing else would import it in time.
 """

@@ -1,0 +1,31 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: kdp-001c-accuracy-smoke
+  family: deployment
+  task_type: accuracy_smoke
+  version: 0.1.0
+spec:
+  question: does the served model agree with an independent reference
+  produces: AccuracySmokeReport
+  consumes: [EnvironmentProof, ModelRequest]
+  runs_with: python3 tools/accuracy_differential.py --pod <pod> --model <model>
+actions:
+  - attach_environment_pod
+  - run_reference
+  - run_served_request
+  - compare_distributions
+acceptance:
+  independent_reference: true
+  relative_l2_required: true
+  discriminating_control_required: true
+  service_http_status_is_insufficient: true
+artifacts:
+  - reference_report.json
+  - served_report.json
+  - differential_report.json
+exit_states:
+  pass: ACCURACY_PASS
+  mismatch: ACCURACY_FAIL
+  needs_human: NEEDS_HUMAN
+validator: validators/accuracy_validator.py:validate

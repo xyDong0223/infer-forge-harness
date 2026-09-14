@@ -1,6 +1,6 @@
 """Torch replacements for MiniMax-M3's triton block-sparse attend kernels.
 
-The seventh launch got past the indexer (`patches/m3_torch_index_topk.py`) and died one
+The seventh launch got past the indexer (`tools/torch/index_topk.py`) and died one
 step later, in the attend:
 
     vllm/models/minimax_m3/common/ops/sparse_attn.py:439 _gqa_sparse_fwd_kernel
@@ -177,7 +177,7 @@ def sparse_attn(q, kv_cache, topk_idx, block_table, cu_seqlens_q, seq_lens,
     # The caller hands in an uninitialised `torch.empty_like(q)`. Rows and heads that end
     # up with no visible keys are skipped by `_attend_row`, so without this the attend
     # returns whatever was in that memory -- measured as NaN by
-    # `patches/m3_sparse_attend_selfcheck.py` (got_norm=nan against a finite reference).
+    # `tools/sparse_attention_selfcheck.py` (got_norm=nan against a finite reference).
     # Zero is the right value for an unattended row.
     output.zero_()
     k_cache, v_cache = _split_kv(kv_cache)

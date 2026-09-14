@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -57,10 +58,6 @@ def execute(
 
     from runners.deployment_proof import DeploymentProofRunner
 
-    errors = validate_executable(contract)
-    if errors:
-        print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
-        return 2
     task_type = contract["metadata"]["task_type"]
     # environment_proof and service_proof are the two halves of a deployment
     # proof: the same executor, stopped at a different exit criterion.
@@ -70,6 +67,30 @@ def execute(
         return 4
 
     repo_root = Path(__file__).resolve().parents[1]
+    if task_type == "environment_proof":
+        profile = load_yaml(repo_root / "config" / "clusters" / "p800-cluster.yaml")
+        base = profile.get("validation", {}).get("base_model", {})
+        deployment = profile.get("deployment", {})
+        cluster = profile.get("cluster", {})
+        user_id = os.environ.get("USER_ID", "").strip()
+        if not user_id:
+            print(json.dumps({"status": "INPUT_REQUIRED", "paths": ["$env.USER_ID"]}, indent=2))
+            return 3
+        if not base.get("required") or not base.get("path"):
+            print(json.dumps({"status": "CONTRACT_INVALID", "message": "base model is not configured"}, indent=2))
+            return 2
+        contract["context"]["model"] = {"name": base["name"], "path": base["path"], "pvc": deployment["model_pvc"]}
+        contract["context"]["server"] = {"host": "0.0.0.0", "port": 8356, **base}
+        contract["context"]["target"] = {"hardware": "Kunlunxin-3-P800", "device_count": deployment["xpu_count"], "namespace": cluster["namespace"], "volcano_queue": deployment["queue"], "dedicated_pool": deployment["node_pool"]}
+        contract["context"]["software"] = {"image": deployment["image"]}
+        common_setup = profile.get("runtime", {}).get("common_setup", [])
+        optional = f" --max-num-batched-tokens {base['max_num_batched_tokens']} --block-size {base['block_size']} --gpu-memory-utilization {base['gpu_memory_utilization']}" if base.get("max_num_batched_tokens") else ""
+        contract["execution"] = {"mode": "execute", "namespace": cluster["namespace"], "resource_name": f"{user_id}-environment-base", "manifest": deployment["base_manifest"], "startup_timeout_seconds": 1800, "health_interval_seconds": 10, "health_successes_required": 3, "retain_on_failure": True, "commands": {"install": ["bash /workspace/install_vllm_kunlun.sh"], "setup": common_setup, "serve": [f"python -m vllm.entrypoints.openai.api_server --host 0.0.0.0 --port 8356 --model {base['path']} --trust-remote-code --max-model-len {base['max_model_len']} --max-num-seqs {base['max_num_seqs']} --tensor-parallel-size {base['tensor_parallel_size']} --dtype {base['dtype']} --served-model-name {base['served_model_name']}{optional}"]}}
+        contract["checks"] = {"health": {"path": "/health", "expected_status": 200}, "chat": {"path": "/v1/chat/completions", "method": "POST", "expected_non_empty_text": True, "payload": {"model": base["served_model_name"], "messages": [{"role": "user", "content": "Say hello in one short sentence."}], "max_tokens": 16}}, "backend": {"expected": "kunlun", "reject_unexpected_fallback": True}}
+    errors = validate_executable(contract)
+    if errors:
+        print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
+        return 2
     config = ClusterConfig.load()
     if contract["execution"]["namespace"] != config.namespace:
         print(
@@ -126,7 +147,7 @@ def main() -> int:
     if errors:
         print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
         return 2
-    placeholders = find_placeholders(contract)
+    placeholders = [] if args.execute and contract.get("metadata", {}).get("task_type") == "environment_proof" else find_placeholders(contract)
     if placeholders:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3

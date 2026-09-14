@@ -1,0 +1,118 @@
+## 请勿修改metadata信息!!!
+apiVersion: eks.baidu.com/v1
+kind: FedDeployment
+metadata:
+  labels:
+    cce.baidubce.com/managed-by: deploytask
+    ernie-ops.baidu-int.com/feddeploy-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+    ernie-ops.baidu-int.com/inference-service-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+    ernie-ops.baidu-int.com/model-name: Deepseek-V3-Hzz1-d32p4
+    ernie-ops.baidu-int.com/platform: ONLINE
+  name: ${USER_ID}-vllm-kunlun-dev
+  namespace: pd-test
+spec:
+  minReadySeconds: 30
+  replicas: 1
+  selector:
+    matchLabels:
+      infer.kunlun/task-id: ${TASK_ID}
+      infer.kunlun/attempt-id: ${ATTEMPT_ID}
+      ernie-ops.baidu-int.com/feddeploy-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+      ernie-ops.baidu-int.com/inference-service-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+      ernie-ops.baidu-int.com/model-name: Deepseek-V3-Hzz1-d32p4
+      ernie-ops.baidu-int.com/platform: ONLINE
+  strategy:
+    canary:
+      maxSurge: 100%
+      maxUnavailable: 100%
+      steps:
+        - pause: {}
+          setWeight: 100
+  template:
+    metadata:
+      labels:
+        infer.kunlun/task-id: ${TASK_ID}
+        infer.kunlun/attempt-id: ${ATTEMPT_ID}
+        ernie-ops.baidu-int.com/feddeploy-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+        ernie-ops.baidu-int.com/inference-service-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+        ernie-ops.baidu-int.com/model-name: Deepseek-V3-Hzz1-d32p4
+        ernie-ops.baidu-int.com/platform: ONLINE
+    spec:
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            infer.kunlun/task-id: ${TASK_ID}
+            infer.kunlun/attempt-id: ${ATTEMPT_ID}
+            ernie-ops.baidu-int.com/feddeploy-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+            ernie-ops.baidu-int.com/inference-service-name: deepseek-v3-decode-d32p4-online-by-fed-deploy
+            ernie-ops.baidu-int.com/model-name: Deepseek-V3-Hzz1-d32p4
+            ernie-ops.baidu-int.com/platform: ONLINE
+          annotations:
+            scheduling.volcano.sh/queue-name: aihcq-8vcrxly8ieyn
+        spec:
+          containers:
+            - command:
+                - /bin/sh
+                - -c
+                - |
+                  mkdir -p /workspace
+                  sleep infinity
+              env:
+                - name: XPU_VISIBLE_DEVICES
+                  value: "0,1,2,3,4,5,6,7"
+                - name: CUDA_VISIBLE_DEVICES
+                  value: "0,1,2,3,4,5,6,7"
+                - name: CUDA_DEVICE_ORDER
+                  value: OAM_ID
+                - name: HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      apiVersion: v1
+                      fieldPath: status.hostIP
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      apiVersion: v1
+                      fieldPath: metadata.name
+              image: iregistry.baidu-int.com/hac_test/aiak-inference-llm:vLLM-Kunlun-Base
+              imagePullPolicy: IfNotPresent
+              name: model-server
+              ports:
+                - containerPort: 8356
+                  protocol: TCP
+              resources:
+                limits:
+                  kunlunxin.com/xpu: "8"
+                  rdma/hca: "1"
+                requests:
+                  kunlunxin.com/xpu: "8"
+                  rdma/hca: "1"
+              securityContext:
+                capabilities:
+                  add:
+                    - SYS_PTRACE
+                    - SYS_ADMIN
+                runAsUser: 0
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: shm-cache
+                - mountPath: /mnt/cluster
+                  name: pvc-model
+          dnsPolicy: ClusterFirst
+          hostNetwork: true
+          nodeSelector:
+            aihc.baidu.com/dedicated-pool: aihcq-sirzhpwo0g1u
+          restartPolicy: Always
+          schedulerName: volcano
+          securityContext: {}
+          shareProcessNamespace: true
+          terminationGracePeriodSeconds: 60
+          volumes:
+            - emptyDir:
+                medium: Memory
+                sizeLimit: 64Gi
+              name: shm-cache
+            - name: pvc-model
+              persistentVolumeClaim:
+                claimName: rapidfs-baige-v3-pvc

@@ -102,7 +102,7 @@ class SignalMatcherTest(unittest.TestCase):
 
     def test_declared_entries_without_signals_are_kept(self):
         # The declaration is the contract; the probe is only a net.
-        entries = [_entry("torch_paged_decode", "patches/torch_paged_decode.py:1")]
+        entries = [_entry("torch_paged_decode", "tools/torch/paged_decode.py:1")]
         unmapped, matched = match_signals_to_entries([], entries)
         self.assertEqual(unmapped, [])
         self.assertEqual(matched, [])

@@ -1,0 +1,54 @@
+api_version: infer.kunlun/v1alpha1
+kind: P800ClusterResources
+metadata:
+  name: p800-cluster
+  description: Kunlunxin-3 P800 development cluster resource pointers.
+
+# Replace user-owned paths and identifiers when deploying this resource profile.
+# The kubeconfig may contain credentials; only its path is recorded here.
+cluster:
+  kubeconfig: ${KUBECONFIG}
+  namespace: pd-test
+  context: pd-test@kubernetes
+  container: model-server
+  resource_prefix: ${USER_ID}-
+  deployment_kind: feddeployments.eks.baidu.com
+
+deployment:
+  base_manifest: config/manifests/p800-vllm-kunlun.yaml
+  image: iregistry.baidu-int.com/hac_test/aiak-inference-llm:vLLM-Kunlun-Base
+  scheduler: volcano
+  queue: aihcq-8vcrxly8ieyn
+  node_pool: aihcq-sirzhpwo0g1u
+  xpu_resource: kunlunxin.com/xpu
+  xpu_count: 8
+  rdma_resource: rdma/hca
+  rdma_count: 1
+  model_pvc: rapidfs-baige-v3-pvc
+  model_mount: /mnt/cluster
+
+validation:
+  base_model:
+    name: MiniMax-M2.5-Int8-W8A8
+    path: /mnt/cluster/MiniMax-M2.5-W8A8-INT8-Dynamic
+    served_model_name: minimax-base-smoke
+    dtype: float16
+    tensor_parallel_size: 8
+    max_model_len: 196608
+    max_num_batched_tokens: 32768
+    max_num_seqs: 312
+    block_size: 128
+    gpu_memory_utilization: 0.92
+    required: true
+
+runtime:
+  venv: /opt/vllm_kunlun
+  workdir: /workspace
+  http_proxy: http://agent.baidu.com:8891
+  https_proxy: http://agent.baidu.com:8891
+  common_setup:
+    - source /workspace/vLLM-Kunlun/setup_env.sh
+    - export XPU_USE_MOE_SORTED_THRES=1 XFT_USE_FAST_SWIGLU=1 XPU_USE_FAST_SWIGLU=1
+    - export XMLIR_CUDNN_ENABLED=1 XPU_USE_DEFAULT_CTX=1 XMLIR_FORCE_USE_XPU_GRAPH=1
+    - export XMLIR_ENABLE_MOCK_TORCH_COMPILE=false XMLIR_DYNAMO_WORKAROUND=1
+    - export VLLM_HOST_IP=$(hostname -i)

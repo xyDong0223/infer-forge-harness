@@ -85,7 +85,7 @@ checks:
       max_relative_l2: 0.01
       control: pass w_pc_max=w_s, i.e. without the scale-to-max conversion
     msa:
-      operators: [kunlun_ops.speculative_attention, patches/torch_paged_decode.py]
+      operators: [kunlun_ops.speculative_attention, tools/torch/paged_decode.py]
       # Sliding window is not a separate operator on this platform: 413 symbols in
       # kunlun_ops contain no window match. It is a parameter — swa_left/swa_right in
       # prefill, max_window_size in decode — so the work is window semantics in the

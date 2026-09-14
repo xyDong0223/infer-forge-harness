@@ -82,4 +82,4 @@ findings:
       - kunlun_ops.decode_paged_attention
     verdict: RUNTIME_STATE_DEPENDENT
     owner: vendor_with_local_workaround
-    workaround: patches/torch_paged_decode.py
+    workaround: tools/torch/paged_decode.py
