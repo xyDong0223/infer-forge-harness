@@ -88,6 +88,28 @@ def render_card(match: dict, request: dict, support: dict, pod: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def device_constraints(model_path: str) -> dict:
+    """Numerical constraints from catalog/xpu_specs.yaml for the target device.
+
+    The GLM-5.2 run (glm52-int-w8a8-p800-001, 2026-09-14) routed an MLA-sparse
+    model onto the engine's generic fp8 path because nothing in the match
+    recorded that this device has no fp8 compute; the catalog entry now does,
+    and the match carries it so MAT-004 and the recovery Brain can see it.
+    """
+    import yaml
+
+    from tools.memory_budget import load_device_spec
+
+    spec = load_device_spec("p800")
+    numerical = spec.get("numerical") or {}
+    if not numerical:
+        return {}
+    constraints = dict(numerical)
+    constraints.pop("evidence", None)
+    constraints["source"] = "catalog/xpu_specs.yaml (observed on cluster)"
+    return constraints
+
+
 def main() -> int:
     import yaml
 
@@ -129,6 +151,9 @@ def main() -> int:
     match["matched_in"] = pod
     match["model"] = {"id": (request.get("model") or {}).get("id"),
                       "revision": (request.get("model") or {}).get("revision")}
+    constraints = device_constraints(model_path)
+    if constraints:
+        match["device_constraints"] = constraints
     (out / "capability_match.json").write_text(json.dumps(match, indent=2), encoding="utf-8")
     (out / "capability_match_card.md").write_text(
         render_card(match, request, support, pod), encoding="utf-8"

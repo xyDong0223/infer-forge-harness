@@ -15,6 +15,40 @@ entries:
       pod: dongxinyu03-kdp001-qwen3-8b-7c969df894-hsz7d-0
       observed_at: '2026-09-07T15:38:52+08:00'
       line: '| N/A   36C  N/A     86W / 400W |  90440MiB / 98304MiB |      0%      Default |'
+    numerical:
+      # Established during the GLM5.2-Int-W8A8 adaptation run
+      # glm52-int-w8a8-p800-001 (2026-09-14). These constraints decide which
+      # engine paths can run at all, not merely which are fast.
+      supported_quantization: [int8, bfloat16, float16]
+      fp8_compute: false
+      attention_dtype: bfloat16
+      evidence:
+        - >-
+          vllm.model_executor.layers.quantization.utils.fp8_utils's Triton
+          fallback rejects fp8e4nv at compile time: "type fp8e4nv not
+          supported in this architecture. The supported fp8 dtypes are
+          ('fp8e4b15', 'fp8e5')" (EngineCore, 2026-09-14 16:26).
+        - >-
+          The plugin's DSA indexer quantizes with torch.ops._C.quant2d to
+          torch.int8 (scale/127) and computes logits with int8_mqa_logits;
+          its k_fp8 buffer is dtype torch.int8 with a uint8 4-byte scale
+          viewed as float32 (vllm_kunlun/models/deepseek_v2.py,
+          sparse_attn_indexer_vllm_kunlun) - "fp8" APIs on this stack are
+          int8 implementations over the int8 hardware.
+        - >-
+          The engine's generic MLA-sparse path assumes fp8e4m3 (per_token_
+          group_quant_fp8 + deepgemm logits) and cannot run here; routing a
+          model to it dead-ends at engine init.
+      consequence: >-
+        Route MLA-sparse models to the plugin's int8 path (quant2d indexer,
+        int8_mqa_logits, topk_per_row, kunlun flashmla decode). Any engine
+        path gated on fp8e4m3 or deep_gemm is unavailable on this device.
     limitations:
       - Compute and bandwidth figures are deliberately absent; nothing in this
         repository has measured them, and the planner only needs capacity.
+      - >-
+        The torch.compile activation-quant fusion pass
+        (vllm/compilation/passes/fusion/act_quant_fusion.py) references
+        torch.ops._C.silu_and_mul_per_block_quant, which this stack does not
+        register; shape-dynamic MLA decode spans therefore require
+        --enforce-eager (observed 2026-09-14, run glm52-int-w8a8-p800-001).
