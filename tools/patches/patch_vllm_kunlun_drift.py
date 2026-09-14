@@ -359,6 +359,54 @@ def main() -> int:
             "    split_indexer_prefill_chunks,\n"
             ")\n",
         ),
+        # 15. The pinned xspeedgate_ops (1.5.1+87067b3) does not register
+        #     kv_spans_from_batches — the old pod ran an upgraded wheel — so
+        #     the first real request crashed every worker with "'_OpNamespace'
+        #     'xspeedgate_ops' object has no attribute 'kv_spans_from_batches'"
+        #     (health stays 200; only the first forward dies). Reversible
+        #     fallback: call the vendor op when present, else the torch
+        #     reference proven exact-equal against it (verify_kv_spans_pod.py).
+        #     Recorded as operator debt: the vendor op should be the eventual
+        #     path once the upgraded wheel is pinned.
+        (
+            "def kv_spans_from_batches(start_seq_loc, seq_len_per_batch, device):\n"
+            "    # The engine removed this helper; the vendor op is the\n"
+            "    # exact-equal replacement (verify_kv_spans_pod.py).\n"
+            "    starts = start_seq_loc.to(torch.int64).to(device).contiguous()\n"
+            "    lens = seq_len_per_batch.to(torch.int64).to(device).contiguous()\n"
+            "    return torch.ops.xspeedgate_ops.kv_spans_from_batches(starts, lens)\n",
+            "def kv_spans_from_batches(start_seq_loc, seq_len_per_batch, device):\n"
+            "    # The engine removed this helper. The pinned xspeedgate_ops does\n"
+            "    # not register the vendor op, so use the torch reference\n"
+            "    # (exact-equal: verify_kv_spans_pod.py) when the op is absent.\n"
+            "    try:\n"
+            "        op = torch.ops.xspeedgate_ops.kv_spans_from_batches\n"
+            "    except AttributeError:\n"
+            "        op = None\n"
+            "    if op is not None:\n"
+            "        starts = start_seq_loc.to(torch.int64).to(device).contiguous()\n"
+            "        lens = seq_len_per_batch.to(torch.int64).to(device).contiguous()\n"
+            "        return op(starts, lens)\n"
+            "    query_start_loc = start_seq_loc.to(torch.long).cpu()\n"
+            "    seq_lens = seq_len_per_batch.to(torch.long).cpu()\n"
+            "    num_reqs = seq_lens.numel()\n"
+            "    query_counts = query_start_loc[1:] - query_start_loc[:-1]\n"
+            "    num_tokens = int(query_start_loc[-1].item())\n"
+            "    kv_starts_per_batch = torch.cumsum(seq_lens, dim=0) - seq_lens\n"
+            "    batch_id = torch.repeat_interleave(torch.arange(num_reqs), query_counts)\n"
+            "    row_starts = kv_starts_per_batch[batch_id]\n"
+            "    pos_within_query = (\n"
+            "        torch.arange(num_tokens)\n"
+            "        - torch.repeat_interleave(query_start_loc[:-1], query_counts)\n"
+            "        + 1\n"
+            "    )\n"
+            "    context_len = torch.repeat_interleave(seq_lens - query_counts, query_counts)\n"
+            "    row_ends = row_starts + context_len + pos_within_query\n"
+            "    return (\n"
+            "        row_starts.int().to(device),\n"
+            "        row_ends.int().to(device),\n"
+            "    )\n",
+        ),
         # -- local kv_spans_from_batches backed by the vendor op ------------
         (
             "from vllm.v1.attention.backends.utils import (\n"
