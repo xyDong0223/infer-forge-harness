@@ -165,6 +165,39 @@ lived only in one pod's site-packages and evaporated on the next pod). A
 repair without a replayable patch is not a repair; it is an incident
 scheduled for the next reinstall.
 
+**Reuse the engine's model network when it exists (hard rule).** Before
+considering any out-of-tree model implementation, check the capability
+match: if the architecture resolves through vLLM's ModelRegistry or the
+plugin's registered models (`REGISTRY` / `MODULE` verdicts), the network
+already exists — do not implement a model layer. Every remaining gap is
+then an operator-level gap and enters the OperatorSpec path directly. An
+OOT model is only for an architecture nothing registers (`ABSENT`) — and
+even the plugin treats its own OOT models as temporary state (upstream
+`models/__init__.py` carries a "Remove all of models registration" TODO;
+Gemma4 already ships without Kunlun-specific model files). Run
+glm52-int-w8a8-p800-001 took the reuse path end to end:
+GlmMoeDsaForCausalLM resolved to the deepseek_v2 network and all the work
+happened at the operator layer.
+
+**Operator integration ladder (prefer the top).** When replacing or adding
+an operator:
+
+1. **Decorator registration** — `@register_oot("LayerName")` or
+   `direct_register_custom_op` into the torch dispatcher. Resolved when
+   vLLM builds the layer, import-order insensitive, no file edits.
+2. **Post-import wrap** — wrap the existing symbol at runtime (the
+   apply_torch_decode_patch pattern). Reversible, but import-order
+   sensitive and invisible to source inspection.
+3. **Text patch** — last resort: an exact-anchor file edit under
+   tools/patches/, carrying all the replayability constraints above.
+
+The mechanics, the four op namespaces (`torch.ops._C` /
+`torch.ops.xspeedgate_ops` / the `kunlun_ops` pybind facade /
+`torch.ops.vllm::*`), and the known traps (PluggableLayer has no
+`forward_oot` dispatch — override `forward()` or it never runs; dispatcher
+registration cannot be rolled back) are documented with upstream line
+numbers in `openwiki/vllm-kunlun/architecture.md`.
+
 A report must include enough evidence to identify tensor inputs,
 outputs, shape/rank, dtype, layout, semantics, call site, and failure context.
 Convert the report through the orchestration entry point:
