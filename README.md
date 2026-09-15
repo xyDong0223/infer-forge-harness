@@ -8,7 +8,7 @@
 
 **Python 3.10+** · **Real-cluster execution behind explicit authorization** · **416 unit tests green** (scheduler and run-adaptation suites deselected pending pre-existing fixes)
 
-`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 with vLLM-Kunlun is the first target stack. Three model bring-ups have run through it on real clusters: Qwen3-8B is `validated` in the support matrix with full evidence; GLM5.2-Int-W8A8's service proof reached `DEPLOYMENT_READY` (accuracy differential still open); MiniMax-M2.5/M3 bring-ups completed, with M3's evidence archived.
+`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 with vLLM-Kunlun is the first target stack; the current adaptation, GLM5.2-Int-W8A8, reached `DEPLOYMENT_READY` on its service proof (accuracy differential still open). Earlier bring-ups are recorded where their evidence lives — Qwen3-8B as a `validated` entry in the support matrix, the MiniMax era in git history.
 
 ## Contents
 
@@ -16,7 +16,6 @@
 - [What it solves](#what-it-solves)
 - [Design model](#design-model)
 - [Execution path](#execution-path)
-- [MiniMax-M3 real adaptation loop](#minimax-m3-real-adaptation-loop)
 - [Execution model](#execution-model)
 - [Operator integration loop](#operator-integration-loop)
 - [Repository map](#repository-map)
@@ -95,18 +94,6 @@ A torch shim standing in for a vendor kernel is the right way to keep bring-up m
 
 **MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. Its first question to the adapter is the one GLM-5.2 never got asked: is this shim even wired in? A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
 
-### MiniMax-M3 real adaptation loop
-
-<p align="center">
-  <a href="docs/assets/minimax-m3-adaptation-loop.excalidraw">
-    <img src="docs/assets/minimax-m3-adaptation-loop.png" alt="Hand-drawn MiniMax-M3 P800 adaptation loop showing intake, P800 proof, capability evaluation fan-out, a service-to-golden-reference diagnosis loop, baseline freeze, candidate integration gates, rollback, and delivery" width="100%">
-  </a>
-</p>
-
-This is the real MiniMax-M3 engineering loop: a static runtime match is only the start; each high-risk dimension is exercised against a CPU float32 reference with relative L2 and a discriminating negative control. A service mismatch enters a trace-to-golden-reference loop before patch placement sends the candidate back through service proof.
-
-The editable [Excalidraw source](docs/assets/minimax-m3-adaptation-loop.excalidraw) distinguishes unit-level evidence from served-model accuracy. Only an accurate service can freeze a baseline. Every generated candidate must then pass kernel, dispatch, service-regression, and accuracy-regression gates; a failure is explicitly rejected and rolled back before the next candidate is evaluated.
-
 ## Execution model
 
 The graph runner keeps the Task Graph for cross-task routing and stores the current and completed Loop Blocks in Task Memory. A successful fact can be reused only when its Journal environment fingerprint matches the current execution context.
@@ -121,7 +108,7 @@ Each task is a bounded evidence loop. The Runner selects the contract and method
 
 ```bash
 python3 runners/graph_runner.py \
-  --subject Qwen3-8B \
+  --subject GLM5.2-Int-W8A8 \
   --artifact-root /path/to/artifacts \
   --journal /path/to/journal.jsonl \
   --env hardware=P800 \
@@ -152,7 +139,7 @@ with a bounded decide/act/rerun loop:
 
 ```bash
 python3 runners/graph_runner.py \
-  --subject Qwen3-8B --artifact-root /path/to/artifacts \
+  --subject GLM5.2-Int-W8A8 --artifact-root /path/to/artifacts \
   --execute --auto-recover --brain agent
 ```
 
@@ -194,7 +181,7 @@ The lifecycle tool can also be driven directly:
 python3 tools/operator_lifecycle.py integrate \
   --baseline /path/to/baseline_manifest.json \
   --candidate /path/to/candidate_manifest.json \
-  --subject Qwen3-8B \
+  --subject GLM5.2-Int-W8A8 \
   --out /path/to/integration
 ```
 
