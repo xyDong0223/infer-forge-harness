@@ -21,11 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 
-DEFAULT_TARGET = (
-    "/opt/vllm_kunlun/lib/python3.10/site-packages/vllm_kunlun/v1/attention/backends/kunlun_attn.py"
-)
 
 WRAPPER = '''
 
@@ -106,7 +105,10 @@ def run_in_pod(adapter: KunlunP800Adapter, pod: str, script: str, args: str, std
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pod", required=True)
-    parser.add_argument("--target", default=DEFAULT_TARGET)
+    parser.add_argument(
+        "--target",
+        default=f"{default_runtime().site_packages}/vllm_kunlun/v1/attention/backends/kunlun_attn.py",
+    )
     parser.add_argument("--call", default="speculative_attention", help="kunlun_ops function name")
     parser.add_argument(
         "--anchor",

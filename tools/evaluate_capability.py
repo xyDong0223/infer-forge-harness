@@ -28,7 +28,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from tools.common import ToolFailed  # noqa: E402
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
 
@@ -108,7 +110,7 @@ def run_probe(adapter: KunlunP800Adapter, pod: str, probe: Path, argv: list[str]
         pushes.append(push_snippet(source, remote))
         argv = argv + [flag, remote]
     script = (
-        "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+        f"{default_runtime().env_prefix()}; "
         + " && ".join(pushes)
         + f" && python3 /tmp/mat008_{probe.stem}.py "
         + " ".join(shlex.quote(part) for part in argv)

@@ -29,7 +29,9 @@ if str(REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+
+KunlunP800Adapter = get_hardware()
 from validators.correctness_validator import (  # noqa: E402
     validate_end_to_end,
     validate_kernel_grade,

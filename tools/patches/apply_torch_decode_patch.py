@@ -32,10 +32,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 
 FALLBACK = REPO_ROOT / "tools" / "torch" / "paged_decode.py"
-SITE = "/opt/vllm_kunlun/lib/python3.10/site-packages"
 
 HOOK = '''
 
@@ -127,7 +128,7 @@ def in_pod(adapter: KunlunP800Adapter, pod: str, script: str, args: str, stdin: 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pod", required=True)
-    parser.add_argument("--site", default=SITE)
+    parser.add_argument("--site", default=default_runtime().site_packages)
     parser.add_argument("--remove", action="store_true")
     args = parser.parse_args()
 

@@ -27,7 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet, SafetyViolation  # noqa: E402
+from adapters import SafetyViolation, get_hardware, push_snippet  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from tools.common import ToolFailed  # noqa: E402
 from runners.deployment_proof import render_manifest  # noqa: E402
 from validators.intake_validator import validate_model_request  # noqa: E402

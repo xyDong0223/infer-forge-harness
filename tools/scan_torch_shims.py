@@ -28,7 +28,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from tools.common import ToolFailed  # noqa: E402
 from tools.operator_lifecycle import dispatch as dispatch_requests  # noqa: E402
 from validators.shim_validator import validate_shim_handoff  # noqa: E402
@@ -44,7 +46,7 @@ class ShimScanFailed(ToolFailed):
 def run_probe(adapter: KunlunP800Adapter, pod: str, plugin: str, timeout: int) -> dict:
     push = push_snippet(PROBE, '/tmp/mat029_probe.py')
     script = (
-        "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+        f"{default_runtime().env_prefix()}; "
         f"{push} && "
         f"python3 /tmp/mat029_probe.py {shlex.quote(plugin)} 2>/dev/null"
     )

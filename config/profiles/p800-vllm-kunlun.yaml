@@ -1,0 +1,9 @@
+api_version: infer.kunlun/v1alpha1
+kind: RuntimeProfile
+# Static environment identity of the vllm-kunlun install inside a prepared
+# pod. Stack state, not cluster state — the cluster yaml no longer carries it.
+framework: vllm-kunlun
+cluster: p800-cluster
+venv: /opt/vllm_kunlun
+site_packages: /opt/vllm_kunlun/lib/python3.10/site-packages
+engine_module: vllm_kunlun

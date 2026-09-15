@@ -16,8 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adapters.kunlun_p800 import KunlunP800Adapter, SafetyViolation, push_snippet
+from adapters import SafetyViolation, get_hardware, push_snippet
+from runtimes import default_runtime
 from runners import evidence
+
+KunlunP800Adapter = get_hardware()
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -316,7 +319,7 @@ class DeploymentProofRunner:
         pod = self.pod or ""
         probe = self.adapter.exec(
             pod,
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            f"{default_runtime().env_prefix()}; "
             'python3 -c "import torch, vllm, vllm_kunlun" && '
             f"test -f {shlex.quote(self.workdir)}/vLLM-Kunlun/setup_env.sh",
             timeout=300,
@@ -338,7 +341,7 @@ class DeploymentProofRunner:
             self.record("install", True, command)
         versions = self.adapter.exec(
             pod,
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            f"{default_runtime().env_prefix()}; "
             "uv pip list | grep -iE '^(vllm|vllm-kunlun|torch|kunlun-ops|xspeedgate-ops) '; "
             f"cd {self.workdir}/vLLM-Kunlun && git rev-parse HEAD",
         )
@@ -404,7 +407,7 @@ class DeploymentProofRunner:
         launch = (
             evidence.archive_before_truncate(self.server_log_path())
             + f"( cd {self.workdir} && "
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
+            f"{default_runtime().env_prefix()} && "
             f"{setup + ' && ' if setup else ''}"
             f"{serve} ) < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
         )
@@ -557,7 +560,7 @@ class DeploymentProofRunner:
         for script in scripts:
             remote = f"/tmp/{script.name}"
             command = (
-                "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+                f"{default_runtime().env_prefix()}; "
                 f"{push_snippet(script, remote)} && python3 {remote}"
             )
             result = self.adapter.exec(self.pod or "", command, timeout=600)
@@ -596,7 +599,7 @@ class DeploymentProofRunner:
         model_path = self.contract.get("context", {}).get("model", {}).get("path")
         model_config = f"{model_path}/config.json" if model_path else ""
         script = (
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            f"{default_runtime().env_prefix()}; "
             + push_snippet(probe, "/tmp/kdp_drift_precheck.py")
             + " && python3 /tmp/kdp_drift_precheck.py"
             + (f" --model-config {shlex.quote(model_config)}" if model_config else "")
@@ -799,7 +802,7 @@ class DeploymentProofRunner:
         """
         pod = self.pod or ""
         script = (
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            f"{default_runtime().env_prefix()}; "
             'python3 -c "import json, torch, vllm, vllm_kunlun; '
             "print(json.dumps({'torch': torch.__version__, 'vllm': vllm.__version__, "
             "'vllm_kunlun': getattr(vllm_kunlun, '__version__', 'unknown')}))\""
@@ -863,7 +866,7 @@ class DeploymentProofRunner:
         """
         pod = self.pod or ""
         script = (
-            "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+            f"{default_runtime().env_prefix()}; "
             "echo '## packages'; uv pip list | grep -iE "
             "'^(vllm|vllm-kunlun|torch|torch-xmlir|kunlun-ops|xspeedgate-ops|triton) '; "
             f"echo '## vllm-kunlun commit'; (cd {self.workdir}/vLLM-Kunlun && git rev-parse HEAD); "

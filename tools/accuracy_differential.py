@@ -27,7 +27,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from tools.common import ToolFailed  # noqa: E402
 from validators.accuracy_validator import validate_accuracy_report  # noqa: E402
 
@@ -72,7 +74,7 @@ def reference_topk(adapter: KunlunP800Adapter, pod: str, model_path: str,
                    prompts: list[str], top_k: int, timeout: int) -> dict:
     push = push_snippet(REFERENCE_PROBE, '/tmp/mat013_reference.py')
     script = (
-        "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH "
+        f"{default_runtime().env_prefix()} "
         # The reference must not touch the accelerator, or it stops being independent.
         "CUDA_VISIBLE_DEVICES= XPU_VISIBLE_DEVICES=; "
         f"{push} && "

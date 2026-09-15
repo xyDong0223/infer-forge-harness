@@ -21,7 +21,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from tools.common import ToolFailed  # noqa: E402
 from validators.scan_validator import validate_support_card  # noqa: E402
 
@@ -37,7 +39,7 @@ class ScanFailed(ToolFailed):
 def run_probe(adapter: KunlunP800Adapter, pod: str, archs: list[str], proxy: str) -> dict:
     push = push_snippet(PROBE, '/tmp/mat002_probe.py')
     script = (
-        "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH "
+        f"{default_runtime().env_prefix()} "
         f"https_proxy={shlex.quote(proxy)} http_proxy={shlex.quote(proxy)} "
         "no_proxy=localhost,127.0.0.1,.baidu-int.com; "
         f"{push} && "

@@ -24,7 +24,10 @@ if str(REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from adapters import get_hardware, push_snippet  # noqa: E402
+from runtimes import default_runtime  # noqa: E402
+
+KunlunP800Adapter = get_hardware()
 from validators.patch_validator import validate_patch_placement  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-007-patch-placement" / "task.yaml"
@@ -256,7 +259,7 @@ class PatchExecutor:
             },
             "server_validation": server,
             "reversibility": {
-                "backup_path": "/opt/vllm_kunlun/lib/python3.10/site-packages/"
+                "backup_path": f"{default_runtime().site_packages}/"
                                "vllm_kunlun/__init__.py.kdp_backup",
                 "runtime_switch": "KDP_DECODE_KERNEL",
                 "backup_required": True,

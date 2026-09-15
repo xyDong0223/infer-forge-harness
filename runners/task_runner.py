@@ -54,7 +54,9 @@ def execute(
     phase: str = "all",
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
-    from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter
+    from adapters import ClusterConfig, get_hardware
+
+    KunlunP800Adapter = get_hardware()
 
     from runners.deployment_proof import DeploymentProofRunner
 

@@ -39,31 +39,36 @@ TargetContext = {
 
 Today this tuple exists but is scattered: the model comes from the task
 instance, hardware-ish values are read from the cluster config (through a
-field confusingly named `--backend`), and the runtime is implicit — 19
-hardcoded `/opt/vllm_kunlun` strings in Python (`runners/` 8 + `tools/` 11;
-2 more inside `tools/install_vllm_kunlun.sh`), a serve command assembled
-inside `runners/task_runner.py`, and 17 direct imports of the concrete
-`KunlunP800Adapter` (runners 5 + tools 12). The refactor plan (phases 1-2)
-makes the axes explicit: a runtime registry, a hardware split out of the
-cluster adapter, and a compatibility check that fails unsupported
-combinations before any work starts.
+field confusingly named `--backend`), and the runtime still leaks through a
+serve command assembled inside `runners/task_runner.py` plus two
+stack-specific paths kept on purpose (`tools/patches/` repair content and
+`tools/install_vllm_kunlun.sh`). Phase 1 landed the static half: the venv /
+site-packages / engine-module strings now come from
+`config/profiles/p800-vllm-kunlun.yaml` through `runtimes/` (registry +
+`default_runtime()`), and all 17 direct `KunlunP800Adapter` imports go
+through `adapters.get_hardware()` — `tests/unit/test_runtimes.py` enforces
+both invariants. Phase 2 makes the behavioural half explicit: the serve
+command and readiness shape move into the runtime, `xpu_smi` splits into a
+hardware layer, `--backend` splits into `--runtime`/`--hardware`, and a
+compatibility check fails unsupported combinations before any work starts.
 
 ### Component ownership map
 
-Every component, classified by the axis it *should* carry (components that
-import the concrete `KunlunP800Adapter` carry a Hardware leak by that fact
-alone, whatever else they mix in):
+Every component, classified by the axis it *should* carry (post phase 1;
+the factory imports are noted as the seam, the remaining leaks are the
+phase-2 worklist):
 
 | Component | Class | Notes |
 | --- | --- | --- |
 | `engine/` (scheduler, contracts, discovery, recovery, brain, fake_agents) | Core | verified zero platform leakage (no vllm/kunlun/p800/kubectl references) |
 | `runners/graph_runner.py` | Core | one leak: reads `environment.get("hardware", "p800")` into a field named `backend` |
 | `runners/evidence.py`, `runners/watch.py`, `tools/journal.py`, `tools/task_memory.py` | Core | crash-first snapshots, heartbeats, fingerprint-scoped facts |
-| `runners/task_runner.py` | Core + Runtime + Hardware | renders contracts; assembles the `python -m vllm.entrypoints.openai.api_server` serve command itself; imports `KunlunP800Adapter` (task_runner.py:57) |
-| `runners/deployment_proof.py` | Core + Runtime + Hardware | install/replay/precheck/readiness; the largest mixed site (876 lines); imports `KunlunP800Adapter` (deployment_proof.py:19) |
-| `runners/{triage,patch,correctness}_executor.py` | Core + Runtime + Hardware | one direct `KunlunP800Adapter` import each (3 sites) |
-| `adapters/kunlun_p800/` | Hardware + Cluster | kubectl primitives, safety gates, `xpu_smi` device probes — cluster and hardware still fused; split planned |
-| `tools/` (task CLIs + `probe/`) | Core + Runtime + Hardware | 8 CLIs embed the venv prefix string; 12 import `KunlunP800Adapter` directly; probes are mostly stack-aware by nature |
+| `runners/task_runner.py` | Core + Runtime + Hardware (via factory) | renders contracts; still assembles the `python -m vllm.entrypoints.openai.api_server` serve command itself (phase 2) |
+| `runners/deployment_proof.py` | Core + Runtime + Hardware (via factory) | install/replay/precheck/readiness; the largest mixed site (876 lines) |
+| `runners/{triage,patch,correctness}_executor.py` | Core + Hardware (via factory) | behaviour-neutral; reach the adapter through `get_hardware()` |
+| `runtimes/` | Runtime | registry, profile, `VllmKunlunRuntime` env surface; behavioural methods grow here in phase 2 |
+| `adapters/` (+ `get_hardware()`) | Hardware + Cluster | kubectl primitives, safety gates, `xpu_smi` device probes — cluster and hardware still fused; split planned |
+| `tools/` (task CLIs + `probe/`) | Core + Runtime + Hardware (via factory) | venv strings read the profile; probes are mostly stack-aware by nature |
 | `tools/patches/` | Runtime | repair content for the vllm-kunlun stack — stack-specific on purpose |
 | `validators/` | Core (5 files carry platform concepts) | functional: `deployment_validator.py` (`expected_backend: kunlun`); concept-level: intake, scan, handoff, triage |
 | `tasks/`, `workflows/`, `skills/`, `catalog/`, `contracts/`, `config/clusters/` | Capability + declarative | catalog already separates device facts (`xpu_specs`) from support facts (`support_matrix`); `b200-cluster.yaml` is a second-cluster template with no adapter wired |

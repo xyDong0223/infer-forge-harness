@@ -1,0 +1,10 @@
+api_version: infer.kunlun/v1alpha1
+kind: RuntimeCatalog
+# Declared support relationships. A declaration without a wired loader
+# fails loudly in runtimes.registry — declaring sglang-kunlun here is how
+# its phase-5 work starts, not how it pretends to exist.
+entries:
+  - name: vllm-kunlun
+    profile: config/profiles/p800-vllm-kunlun.yaml
+    supported_hardware:
+      - kunlun-p800

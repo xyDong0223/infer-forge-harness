@@ -28,7 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters import get_hardware  # noqa: E402
+KunlunP800Adapter = get_hardware()
 from validators.memory_validator import validate_memory_budget  # noqa: E402
 
 SPECS_PATH = REPO_ROOT / "catalog" / "xpu_specs.yaml"
