@@ -3,8 +3,8 @@
 Layer 0 is dense (first_k_dense_replace=3 in the real config) with real weights;
 layers 1..N are MoE layers with dummy experts so the plugin's model init finds a
 MoE layer (it refuses a fully dense model). Layer-0's hook in/out is unaffected
-by the dummy layers. Same 6 tokens as glm52_layer0_golden.py.
-Usage: python3 glm52_layer0_xpu.py <model_root> <out_dir>
+by the dummy layers. Same 6 tokens as layer0_golden.py.
+Usage: python3 layer0_xpu.py <model_root> <out_dir>
 """
 import json
 import os
@@ -18,7 +18,7 @@ from safetensors.torch import save_file
 MODEL_ROOT = sys.argv[1]
 OUT_DIR = sys.argv[2]
 TOKENS = [785, 3974, 13867, 38627, 34041, 916]
-WORK = "/tmp/glm52_layer0_model"
+WORK = "/tmp/layer0_swap_model"
 DUMMY_LAYERS = [1, 2, 3, 4]  # MoE layers, dummy experts
 
 

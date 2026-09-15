@@ -36,7 +36,7 @@ testable:
             silent-corruption failure.
 
 The reference leg can be anything that produces the same tensor-dict
-format: the CPU golden (e.g. glm52_layer0_golden.py), another build,
+format: the CPU golden (e.g. layer0_golden.py), another build,
 another platform, another engine version.
 
 Limits, honestly: the conventions cover the DeepSeek/GLM MoE family the

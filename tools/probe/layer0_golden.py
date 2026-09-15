@@ -1,9 +1,12 @@
-"""Golden reference for GLM5.2-Int-W8A8's first decoder layer (GLM MoE/DSA, DeepseekV2-style
-MLA, W8A8 INT8 dynamic quantized), computed on the CPU straight from the checkpoint.
+"""Golden reference for a decoder layer of the DeepSeekV2-style MLA family
+(MoE + DSA, W8A8 INT8 dynamic quantized), computed on the CPU straight from
+the checkpoint. Any model of this family works — shapes and conventions are
+read from config.json and the safetensors; GLM5.2-Int-W8A8 is simply the
+first model this ran against (see openwiki/harness/experiences/attention-mla.md).
 
-Same role as tools/probe/m3_layer0_golden.py: every per-operator check grades one operator
-against another implementation of the same operator, so none of them can catch a weight
-landing in the wrong place. This recomputes layer 0 end to end in fp32 from the safetensors
+Every per-operator check grades one operator against another implementation of
+the same operator, so none of them can catch a weight landing in the wrong
+place. This recomputes layer 0 end to end in fp32 from the safetensors
 -- never via a transformers forward -- and dumps every intermediate stage as .pt files plus
 one JSON status line, so a served-side layer trace can be diffed against it stage by stage.
 
@@ -42,8 +45,8 @@ and the layer recomputed, so a comparison harness that reports a flat metric on 
 perturbed input is exposed as broken.
 
 Run inside the pod:
-    python3 tools/probe/glm52_layer0_golden.py /mnt/cluster/GLM-5.2-W8A8-INT8-Dynamic
-    python3 tools/probe/glm52_layer0_golden.py <model> --prompt-file p.txt \
+    python3 tools/probe/layer0_golden.py /mnt/cluster/GLM-5.2-W8A8-INT8-Dynamic
+    python3 tools/probe/layer0_golden.py <model> --prompt-file p.txt \
         --compare /dump/dir [--emulate-w8a8]
 """
 
@@ -454,7 +457,7 @@ def main():
         help="directory of tensors dumped by the served-side layer trace",
     )
     parser.add_argument(
-        "--out-dir", default="glm52_layer0_golden_out", help="where the .pt stage dumps go"
+        "--out-dir", default="layer0_golden_out", help="where the .pt stage dumps go"
     )
     parser.add_argument(
         "--emulate-w8a8",
