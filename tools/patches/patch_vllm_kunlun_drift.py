@@ -46,9 +46,9 @@ def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
             print(f"FAIL {path.name}: expected text not found:\n{old[:120]}")
             # None, not "unchanged so far": the caller must distinguish
             # "nothing to do" from "the plugin file no longer matches the
-            # expected state" — the deployment proof replays this script and
-            # exits the run on a failure, so a silent zero here would let a
-            # broken replay pass as a repair.
+            # expected state" — a different exit code lets the replay record
+            # this as SKIPPED (non-matching pair) instead of a silent zero
+            # that would read as "repair applied".
             return None
         # All occurrences: the drifted call sites repeat verbatim (two
         # get_rope calls in deepseek_v2) and leaving the second one behind

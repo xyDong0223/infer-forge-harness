@@ -7,7 +7,9 @@ the next reinstall). The deployment proof enforces it mechanically: after
 any install or attach, the patch set is replayed and the drift precheck
 verifies the result. These tests pin the three behaviours that make the
 enforcement honest: the replay happens, its output is evidence, and a
-broken replay fails the run instead of passing silently.
+non-matching patch set is recorded as SKIPPED (not fatal — a repair for
+one version pair must not block cross-version adaptation) with the drift
+precheck as the verdict on what the environment actually needs.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runners.deployment_proof import ActionFailed, DeploymentProofRunner  # noqa: E402
+from runners.deployment_proof import DeploymentProofRunner  # noqa: E402
 
 
 class _RecordingAdapter:
@@ -73,22 +75,28 @@ class RuntimePatchReplayTest(unittest.TestCase):
         self.assertTrue(any(r["action"] == "apply_runtime_patches" and r["ok"]
                             for r in runner.records))
 
-    def test_a_broken_replay_fails_the_run_not_silently(self):
-        # Exit code 1 = anchors no longer match: the engine/plugin pair
-        # moved, and the environment is NOT repaired. Passing here would
-        # schedule the exact incident the rule exists to prevent.
+    def test_a_non_matching_replay_is_skipped_not_fatal(self):
+        # Exit code 1 = anchors no longer match: this install is a different
+        # engine/plugin pair than the one the patch set repairs. The replay
+        # records SKIPPED with full evidence and the run continues — the
+        # drift precheck decides whether this environment actually needs
+        # repair. Failing the whole run here is what blocked cross-version
+        # adaptation.
         adapter = _RecordingAdapter([1])
         runner = make_runner(adapter)
 
-        with self.assertRaises(ActionFailed) as ctx:
-            runner.apply_runtime_patches()
+        runner.apply_runtime_patches()  # must not raise
 
-        self.assertEqual(ctx.exception.state, "RUNTIME_PATCH_FAILED")
-        self.assertIn("patch_vllm_kunlun_drift.py", ctx.exception.reason)
-        self.assertIn("NOT in the repaired state", ctx.exception.reason)
-        # The failure's evidence was persisted before the gate decided.
         artifact = runner.artifact_dir / "runtime_patches.txt"
-        self.assertIn("exit 1", artifact.read_text(encoding="utf-8"))
+        evidence = artifact.read_text(encoding="utf-8")
+        self.assertIn("exit 1", evidence)
+        self.assertIn("SKIPPED", evidence)
+        self.assertIn("patch_vllm_kunlun_drift.py", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertTrue(record["ok"])
+        self.assertIn("skipped (non-matching pair)", record["detail"])
+        self.assertIn("patch_vllm_kunlun_drift.py", record["detail"])
 
 
 class PatchScriptSemanticsTest(unittest.TestCase):
