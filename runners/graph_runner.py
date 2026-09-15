@@ -748,7 +748,13 @@ def main() -> int:
                 next_block={"sub_target": node.get("on_failure" if returncode else "on_success")},
             )
             task_memory.save(loop_state, memory)
-            if returncode != 0:
+            # Exit code 0 is not success either: the node's own state file
+            # is the contract, and a state outside SUCCESS_STATES riding the
+            # success edge would skip triage for a failure that already
+            # happened — the failure edge must be selected by EITHER signal.
+            state_mismatch = returncode == 0 and state not in SUCCESS_STATES
+            if returncode != 0 or state_mismatch:
+                reason_code = "STATE_NOT_SUCCESS" if state_mismatch else "COMMAND_FAILED"
                 recovered = False
                 if args.auto_recover:
                     outcome = attempt_recovery(
@@ -782,7 +788,7 @@ def main() -> int:
                     print(f"[edge] {current} --failure--> {failure}")
                     emit_summary(
                         {"status": "REWORK", "node": current, "next_task": failure,
-                         "reason_code": "COMMAND_FAILED", "state": state,
+                         "reason_code": reason_code, "state": state,
                          "skill": skill["id"],
                          "artifacts": [str(artifacts)] + crash_logs},
                         args.json,
