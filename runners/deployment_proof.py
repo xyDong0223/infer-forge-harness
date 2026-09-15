@@ -534,6 +534,51 @@ class DeploymentProofRunner:
     def server_log_path(self) -> str:
         return self.contract["execution"].get("server_log") or f"{self.workdir}/server.log"
 
+    def apply_runtime_patches(self) -> None:
+        """Replay the repo's idempotent runtime patches (protocol hard rule).
+
+        AGENTS.md: repairs written into runtime state must also exist as
+        replayable patches under tools/patches/. This runs them after every
+        install and every attach, before the drift precheck verifies the
+        result — so a reinstalled pod self-heals instead of silently
+        regressing to the unpatched state (run glm52-int-w8a8-p800-001:
+        thirteen drift repairs lived only in one pod's site-packages and
+        evaporated on the next pod). Idempotence is the patch scripts' own
+        contract: already-applied repairs report SKIP; a moved anchor is a
+        failure that stops the run, not a warning.
+        """
+        patches_dir = self.repo_root / "tools" / "patches"
+        scripts = sorted(patches_dir.glob("patch_*.py")) if patches_dir.exists() else []
+        if not scripts:
+            self.record("apply_runtime_patches", True,
+                        "no patch scripts under tools/patches/")
+            return
+        output: list[str] = []
+        failed: list[str] = []
+        for script in scripts:
+            payload = base64.b64encode(script.read_bytes()).decode()
+            remote = f"/tmp/{script.name}"
+            command = (
+                "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
+                f"echo {payload} | base64 -d > {remote} && python3 {remote}"
+            )
+            result = self.adapter.exec(self.pod or "", command, timeout=600)
+            output.append(f"$ {script.name} (exit {result.returncode})\n"
+                          f"{result.stdout}{result.stderr}")
+            if result.returncode != 0:
+                failed.append(script.name)
+        self.write("runtime_patches.txt", "\n".join(output))
+        if failed:
+            raise ActionFailed(
+                "RUNTIME_PATCH_FAILED",
+                f"patch replay failed for {', '.join(failed)}: the runtime does "
+                "not match the patch set's expected anchors. The engine/plugin "
+                "pair moved — re-derive the patches; see runtime_patches.txt. "
+                "The environment is NOT in the repaired state.",
+            )
+        self.record("apply_runtime_patches", True,
+                    f"replayed {len(scripts)} idempotent patch script(s)")
+
     def engine_core_drift_precheck(self) -> None:
         """Engine-core-init drift dry-run: seconds, not one reload per drift.
 
@@ -699,6 +744,11 @@ class DeploymentProofRunner:
             else:
                 self.preflight()
                 self.prepare_environment()
+            # Protocol hard rule (AGENTS.md): repairs must be replayable. The
+            # repo's idempotent patch set is applied after any install or
+            # attach, and the drift precheck that follows verifies the result
+            # rather than trusting it — a reinstalled pod self-heals here.
+            self.apply_runtime_patches()
             if self.phase == "environment":
                 self.verify_runtime_importable()
                 # Before the first server launch: the whole point of the

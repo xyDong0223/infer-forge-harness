@@ -138,6 +138,20 @@ python3 tools/run_adaptation.py \
 The proof must leave one prepared Pod with an importable runtime, a pinned
 vLLM-Kunlun code worktree, and visible target XPU devices. All runtime
 investigation must execute in that Pod and cite its code/environment fingerprint.
+
+**Repairs to runtime state must be replayable (hard constraint).** Any repair
+written into the runtime environment — plugin site-packages, the pinned
+worktree, in-pod state — must also exist in the repository as an idempotent,
+replayable patch (`tools/patches/`, exact-anchor text edits that skip
+already-applied replacements), committed before or with the run that depends
+on it. The environment proof applies the patch set after every install and
+after every attach, then verifies the result with the engine-core drift
+precheck — so a reinstalled pod self-heals instead of silently regressing to
+the unpatched state (run glm52-int-w8a8-p800-001: thirteen drift repairs
+lived only in one pod's site-packages and evaporated on the next pod). A
+repair without a replayable patch is not a repair; it is an incident
+scheduled for the next reinstall.
+
 A report must include enough evidence to identify tensor inputs,
 outputs, shape/rank, dtype, layout, semantics, call site, and failure context.
 Convert the report through the orchestration entry point:
@@ -263,6 +277,9 @@ functional task verdict.
 - Do not silently replace an XPU path with a Torch/CPU fallback.
 - Do not let one operator failure terminate unrelated operator discovery.
 - Do not report fake-agent or simulator results as real hardware evidence.
+- Do not repair the runtime environment (plugin site-packages, pinned
+  worktree, in-pod state) without a committed, idempotent, replayable patch
+  under `tools/patches/`. A fix that lives only in a pod dies with the pod.
 - Do not place model weights, credentials, PATs, private endpoints, raw traffic,
   or large traces in the repository.
 

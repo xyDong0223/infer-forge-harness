@@ -44,7 +44,12 @@ def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
             continue  # already applied
         if old not in text:
             print(f"FAIL {path.name}: expected text not found:\n{old[:120]}")
-            return changed
+            # None, not "unchanged so far": the caller must distinguish
+            # "nothing to do" from "the plugin file no longer matches the
+            # expected state" — the deployment proof replays this script and
+            # exits the run on a failure, so a silent zero here would let a
+            # broken replay pass as a repair.
+            return None
         # All occurrences: the drifted call sites repeat verbatim (two
         # get_rope calls in deepseek_v2) and leaving the second one behind
         # just moves the failure to the next layer's init.
@@ -588,12 +593,23 @@ def main() -> int:
             "                )\n"
             "\n"
             "        from vllm.config import CUDAGraphMode\n",
+            # The deployed, serving-validated variant of repair 8: register
+            # the stub here AND select CUSTOM when attention_config exists.
+            # An earlier new-text (enum import + bare selection) never
+            # matched the file the run actually deployed; the replay's
+            # honest exit code caught it on 2026-09-15.
             "                logger.info(\n"
             '                    "Forcing kv cache block size to 64 for FlashMLASparse " "backend."\n'
             "                )\n"
             "\n"
             "        from vllm.v1.attention.backends.mla.prefill.registry import (\n"
             "            MLAPrefillBackendEnum,\n"
+            "            register_mla_prefill_backend,\n"
+            "        )\n"
+            "        register_mla_prefill_backend(\n"
+            "            MLAPrefillBackendEnum.CUSTOM,\n"
+            '            "vllm_kunlun.v1.attention.backends.mla.prefill_xpu."\n'
+            '            "XPUMLAPrefillStub",\n'
             "        )\n"
             "        if vllm_config.attention_config is not None:\n"
             "            vllm_config.attention_config.mla_prefill_backend = (\n"
@@ -604,7 +620,13 @@ def main() -> int:
         ),
     ])
 
-    if not (ok1 or ok2 or ok3 or ok4 or ok5):
+    results = [ok1, ok2, ok3, ok5]
+    if any(result is None for result in results):
+        print("PATCH REPLAY FAILED: the plugin tree does not match the "
+              "expected anchors — the engine/plugin pair moved; the patch "
+              "set must be re-derived, not ignored")
+        return 1
+    if not any(results):
         print("nothing to do: all repairs already applied")
     return 0
 
