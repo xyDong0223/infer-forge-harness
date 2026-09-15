@@ -220,7 +220,6 @@ keep kubeconfig contents and credentials outside the repository.
 | [`validators/`](validators/) | Independent acceptance gates. |
 | [`catalog/`](catalog/) | Model, runtime/hardware, tool, and support facts. |
 | [`openwiki/`](openwiki/) | Layered references, including capability-axis experience homes (`openwiki/harness/experiences/`). |
-| [`archive/`](archive/) | Frozen artifacts from completed adaptation eras (MiniMax-M3). |
 | [`tests/`](tests/) | Unit, contract, fake-runner, failure-edge, integration, and path-resolution guard tests (`test_common.py`). |
 | [`docs/`](docs/) | Architecture, contribution guidance, and visual documentation assets. |
 
