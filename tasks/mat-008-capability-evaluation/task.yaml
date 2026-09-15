@@ -30,14 +30,20 @@ context:
   # smallest unit that still carries the convention risk, the operators the serving
   # path uses, a float32 reference off the accelerator, and a control — so four
   # near-identical contracts would only drift apart.
-  dimensions_declared: [quantization, msa, moe, block_sparse,
+  #
+  # Terminology migration (2026-09-15): the sliding-window decode dimension was
+  # keyed `msa`, a misnomer — MSA is MiniMax-M3 Sparse Attention, the msa_* vendor
+  # ops exercised by the block_sparse dimension. The key is now `swa`
+  # (sliding-window attention, matching vLLM's own abbreviation). Run evidence
+  # recorded before this change reports dimension "msa" for the same check.
+  dimensions_declared: [quantization, swa, moe, block_sparse,
                         fused_qknorm_rope_insert, swiglu_oai, multimodal]
 execution:
   mode: execute
   tool: tools/evaluate_capability.py
   probes:
     quantization: tools/probe/quantized_linear_probe.py
-    msa: tools/probe/sliding_window_decode_probe.py
+    swa: tools/probe/sliding_window_decode_probe.py
     moe: tools/probe/moe_layer_probe.py
     block_sparse: tools/probe/block_sparse_attention_probe.py
     fused_qknorm_rope_insert: tools/probe/qknorm_rope_insert_probe.py
@@ -84,7 +90,7 @@ checks:
       # on P800, gated at 0.01.
       max_relative_l2: 0.01
       control: pass w_pc_max=w_s, i.e. without the scale-to-max conversion
-    msa:
+    swa:
       operators: [kunlun_ops.speculative_attention, tools/torch/paged_decode.py]
       # Sliding window is not a separate operator on this platform: 413 symbols in
       # kunlun_ops contain no window match. It is a parameter — swa_left/swa_right in
@@ -302,7 +308,7 @@ limitations:
   - EXERCISED covers one layer under one shape. It says the operators compute the
     right thing there, not that a deployment serves — KDP-001b and MAT-013 still own
     that claim.
-  - Only the quantization, msa, moe, block_sparse, fused_qknorm_rope_insert and
+  - Only the quantization, swa, moe, block_sparse, fused_qknorm_rope_insert and
     swiglu_oai dimensions have probes. multimodal reports EVALUATION_UNIMPLEMENTED, which is a
     fact about this repo and not a verdict about the platform.
   - fused_qknorm_rope_insert grades a torch stand-in, not a vendor kernel. It says the
@@ -318,7 +324,7 @@ limitations:
   - The moe dimension uses synthetic bfloat16 experts, which keeps it independent of
     the quantization dimension. An int8 MoE layer is a different path
     (compressed_tensors_moe.py) and is not covered.
-  - The msa dimension exercises decode only. Prefill takes the window through
+  - The swa dimension exercises decode only. Prefill takes the window through
     swa_left/swa_right on a different call and is not covered here.
   - The block_sparse dimension also exercises decode only, and it verifies the three
     kernels in isolation against synthetic caches. It says nothing about the index

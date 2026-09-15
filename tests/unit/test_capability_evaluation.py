@@ -51,7 +51,7 @@ class DimensionSelectionTest(unittest.TestCase):
         kernels, so the dimension has to come from what attention requires."""
         axes = [{"axis": "attention", "required": "sliding_window",
                  "verdict": "PROVIDED_MODULE_ONLY"}]
-        self.assertEqual(dimensions_for(match_payload(axes)), ["msa"])
+        self.assertEqual(dimensions_for(match_payload(axes)), ["swa"])
 
     def test_block_sparse_is_a_different_dimension_from_a_window(self):
         """Both live on the attention axis and they are not the same capability: a
@@ -136,7 +136,7 @@ class FusedInsertContractTest(unittest.TestCase):
 
     def test_it_grades_the_file_that_would_be_loaded(self):
         # A copy of the stand-in can drift from the one a launch actually uses, so the
-        # probe is handed the real path — the same reason the msa dimension does it.
+        # probe is handed the real path — the same reason the swa dimension does it.
         self.assertEqual(self.sidecars["fused_qknorm_rope_insert"]["--implementation"],
                          "tools/probe/qknorm_rope_probe.py")
         self.assertTrue((ROOT / "tools" / "probe" / "qknorm_rope_probe.py").exists())
@@ -396,10 +396,10 @@ class ContractTest(unittest.TestCase):
         self.assertIn("scale_mm.py", text)
         self.assertIn("127", text)
 
-    def test_the_msa_geometry_makes_the_window_observable(self):
+    def test_the_swa_geometry_makes_the_window_observable(self):
         """context_len <= window makes windowed and unwindowed decode the same
         computation, so the probe would pass while measuring nothing."""
-        geometry = CONTRACT["checks"]["dimensions"]["msa"]["geometry"]
+        geometry = CONTRACT["checks"]["dimensions"]["swa"]["geometry"]
         self.assertGreater(geometry["context_len"], geometry["window"])
 
     def test_every_registered_probe_has_an_argument_mapping(self):
@@ -413,14 +413,14 @@ class ContractTest(unittest.TestCase):
                 argv = probe_argv(dimension, Args(), CONTRACT["checks"]["dimensions"][dimension])
                 self.assertIn("--max-relative-l2", argv)
 
-    def test_the_msa_probe_takes_its_geometry_from_the_contract(self):
+    def test_the_swa_probe_takes_its_geometry_from_the_contract(self):
         class Args:
             model_path = None
             tensor = None
             tokens = None
 
-        argv = probe_argv("msa", Args(), CONTRACT["checks"]["dimensions"]["msa"])
-        geometry = CONTRACT["checks"]["dimensions"]["msa"]["geometry"]
+        argv = probe_argv("swa", Args(), CONTRACT["checks"]["dimensions"]["swa"])
+        geometry = CONTRACT["checks"]["dimensions"]["swa"]["geometry"]
         self.assertIn(str(geometry["window"]), argv)
         # No weights: the window lives in the kernel and the mask, not in a checkpoint.
         self.assertNotIn("--model-path", argv)

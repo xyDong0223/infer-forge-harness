@@ -46,18 +46,18 @@ DIMENSION_FROM_AXIS: dict[str, str] = {
 
 PROBES: dict[str, str] = {
     "quantization": "tools/probe/quantized_linear_probe.py",
-    "msa": "tools/probe/sliding_window_decode_probe.py",
+    "swa": "tools/probe/sliding_window_decode_probe.py",
     "moe": "tools/probe/moe_layer_probe.py",
     "block_sparse": "tools/probe/block_sparse_attention_probe.py",
     "fused_qknorm_rope_insert": "tools/probe/qknorm_rope_insert_probe.py",
     "swiglu_oai": "tools/probe/swiglu_oai_probe.py",
 }
 
-# Files a probe needs next to it in the pod. The msa probe grades the patch we
+# Files a probe needs next to it in the pod. The swa probe grades the patch we
 # actually serve with, so it has to be the same file, not a copy that can drift.
 SIDECARS: dict[str, dict[str, str]] = {
-    "msa": {"--fallback": "tools/torch/paged_decode.py"},
-    # Same reason as msa: the probe must grade the file that would be loaded, not a
+    "swa": {"--fallback": "tools/torch/paged_decode.py"},
+    # Same reason as swa: the probe must grade the file that would be loaded, not a
     # copy of it that can drift.
     "fused_qknorm_rope_insert": {"--implementation": "tools/probe/qknorm_rope_probe.py"},
 }
@@ -76,7 +76,7 @@ def dimensions_for(match: dict) -> list[str]:
         if name and name not in selected:
             selected.append(name)
         if axis.get("axis") == "attention" and axis.get("required") == "sliding_window":
-            selected.append("msa")
+            selected.append("swa")
         # Two different capabilities share the "attention" axis: a window is a
         # parameter on a dense kernel, block-sparse selection is three kernels and a
         # cache of its own, so they cannot be one dimension.
@@ -180,7 +180,7 @@ def probe_argv(dimension: str, args, thresholds: dict) -> list[str]:
             "--tensor", args.tensor or thresholds["tensor"],
             "--tokens", str(args.tokens or thresholds["tokens"]),
         ] + common
-    if dimension == "msa":
+    if dimension == "swa":
         # No weights: the window is a property of the kernel and the mask, so the
         # geometry is what has to be pinned. Taking it from the contract keeps a
         # passing run from having been a differently shaped one.
@@ -308,7 +308,7 @@ def main() -> int:
                         help="print the dimensions this model demands, as JSON")
     parser.add_argument("--aggregate", action="store_true", help="fan-in over --child dirs")
     parser.add_argument("--child", action="append", type=Path, default=[])
-    parser.add_argument("--dimension", choices=["quantization", "msa", "moe", "multimodal"])
+    parser.add_argument("--dimension", choices=["quantization", "swa", "moe", "multimodal"])
     parser.add_argument("--subject")
     parser.add_argument("--pod")
     parser.add_argument("--model-path", help="weights to exercise; may differ from the subject")

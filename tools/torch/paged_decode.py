@@ -35,7 +35,7 @@ Measured 2026-09-08, and it changes what "fallback" means for windowed models:
 *unwindowed* float32 reference to bfloat16 precision (relative L2 0.0017) and sits
 0.80 away from the windowed one. For a sliding-window model this file is therefore
 the correct implementation and the vendor kernel is the wrong one — see MAT-008's
-msa dimension for the evidence.
+swa dimension for the evidence.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class UnsupportedDecode(NotImplementedError):
     behaviour: the caller then keeps the vendor kernel, which does implement them.
 
     The window half is now implemented and checked against the vendor kernel by
-    MAT-008's msa dimension. Sinks are still refused: `sink` is a per-head logit
+    MAT-008's swa dimension. Sinks are still refused: `sink` is a per-head logit
     that joins the softmax denominator, and there is no sink model on this cluster
     to check an implementation against.
     """

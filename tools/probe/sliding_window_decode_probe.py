@@ -142,7 +142,7 @@ def main() -> int:
                 "block_size": args.block_size, "batch": args.batch,
                 "context_len": args.context_len, "window": args.window}
     result: dict = {
-        "dimension": "msa",
+        "dimension": "swa",
         "operators": [f"kunlun_ops.{args.kernel}", "tools/torch/paged_decode.py"],
         "geometry": geometry,
         "thresholds": {"min_cosine": args.cosine_floor,
