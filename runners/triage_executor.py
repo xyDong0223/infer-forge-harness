@@ -19,6 +19,7 @@ import argparse
 import base64
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -62,10 +63,16 @@ class PodOps:
         return (result.stdout + result.stderr).strip()
 
     def rerun_service(self, pod: str, contract_instance: Path, out: Path) -> dict[str, Any]:
+        # The reproof relaunches the server in the same pod. If it wrote the
+        # original attempt's server.log, the triage itself would truncate the
+        # crash evidence it exists to explain (run glm52-int-w8a8-p800-001,
+        # 2026-09-14: the log was truncated 40 s after the crash). The rerun
+        # gets its own timestamped log path instead, recorded in its status.
         command = [
             "python3", "runners/task_runner.py", str(contract_instance),
             "--execute", "--phase", "service", "--attach-pod", pod,
             "--artifact-dir", str(out),
+            "--server-log", self.rerun_server_log(contract_instance),
         ]
         import subprocess
 
@@ -74,6 +81,19 @@ class PodOps:
         payload = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
         payload.setdefault("reason", result.stderr.strip()[-500:])
         return payload
+
+    @staticmethod
+    def rerun_server_log(contract_instance: Path | None) -> str:
+        """The reproof's own log path: the contract's, plus a rerun stamp."""
+        base = "/workspace/server.log"
+        if contract_instance:
+            try:
+                contract = yaml.safe_load(contract_instance.read_text(encoding="utf-8"))
+                base = contract.get("execution", {}).get("server_log") or base
+            except (OSError, ValueError, yaml.YAMLError):
+                pass
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return f"{base}.rerun-{stamp}"
 
     def fetch_trace(self, pod: str) -> str:
         result = self.adapter.exec(pod, f"cat {TRACE_PATH_IN_POD} 2>/dev/null", timeout=60)

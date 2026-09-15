@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from runners import evidence  # noqa: E402
 from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
@@ -494,7 +495,13 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         for target, command in commands:
             print(f"[rerun ] {node}: {' '.join(command)}")
             target.mkdir(parents=True, exist_ok=True)
-            result = subprocess.run(command, cwd=REPO_ROOT, text=True)
+            # Same crash-first contract as the main walk: a recovery rerun
+            # writes the live node_console.log, and a dead child is snapshotted
+            # before the next attempt can replace it.
+            result = evidence.run_logged(
+                command, cwd=REPO_ROOT, log_path=target / "node_console.log",
+                crash_tag=f"{node}:recovery",
+            )
             returncode = returncode or result.returncode
         new_state = read_state(artifacts, spec)
         return returncode == 0, new_state
@@ -663,6 +670,7 @@ def main() -> int:
             return 2
 
         returncode = 0
+        crash_logs: list[str] = []
         if args.execute:
             task_memory.start_block(
                 memory,
@@ -681,9 +689,22 @@ def main() -> int:
             for target, command in commands:
                 print(f"[run ] {current}: {' '.join(command)}")
                 target.mkdir(parents=True, exist_ok=True)
-                result = subprocess.run(command, cwd=REPO_ROOT, text=True)
+                # A node's console output is evidence, not noise: it is teed
+                # live to the terminal (a long bring-up must show progress) and
+                # to node_console.log, and a non-zero exit is snapshotted to a
+                # non-overwritable crash/<node>.crash.log before the failure
+                # edge reruns anything into this directory. Before this, a
+                # crashing node's traceback scrolled past unrecorded (run
+                # glm52-int-w8a8-p800-001, 2026-09-14).
+                result = evidence.run_logged(
+                    command, cwd=REPO_ROOT, log_path=target / "node_console.log",
+                    crash_tag=current,
+                )
                 state = read_state(target, spec)
                 print(f"[state] {current}: {state} (exit {result.returncode})")
+                if result.crash_log:
+                    print(f"[crash] {current}: evidence snapshotted to {result.crash_log}")
+                    crash_logs.append(str(result.crash_log))
                 returncode = returncode or result.returncode
             journal_module.record(args.journal, spec["produces"], args.subject,
                                   read_state(artifacts, spec), artifacts, environment)
@@ -731,7 +752,7 @@ def main() -> int:
                         {"status": "REWORK", "node": current, "next_task": failure,
                          "reason_code": "COMMAND_FAILED", "state": state,
                          "skill": skill["id"],
-                         "artifacts": [str(artifacts)]},
+                         "artifacts": [str(artifacts)] + crash_logs},
                         args.json,
                     )
                     current = failure if failure in by_id else None

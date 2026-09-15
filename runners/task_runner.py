@@ -140,6 +140,12 @@ def main() -> int:
         "--attach-pod",
         help="Prove against an already prepared Pod instead of creating one (Imported Context)",
     )
+    parser.add_argument(
+        "--server-log",
+        help="Override execution.server_log with a path of this attempt's own. "
+             "A reproof (e.g. the MAT-006 triage rerun) must not truncate the "
+             "log of the attempt it exists to explain.",
+    )
     args = parser.parse_args()
 
     errors = validate_contract_file(args.contract)
@@ -147,6 +153,8 @@ def main() -> int:
     if errors:
         print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
         return 2
+    if args.server_log:
+        contract.setdefault("execution", {})["server_log"] = args.server_log
     placeholders = [] if args.execute and contract.get("metadata", {}).get("task_type") == "environment_proof" else find_placeholders(contract)
     if placeholders:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))

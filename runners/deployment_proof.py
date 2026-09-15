@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from adapters.kunlun_p800 import KunlunP800Adapter, SafetyViolation
+from runners import evidence
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -103,6 +104,39 @@ class DeploymentProofRunner:
         path = self.artifact_dir / name
         path.write_text(content, encoding="utf-8")
         return path
+
+    def write_unique(self, name: str, content: str) -> Path:
+        """Write evidence that no later attempt can overwrite.
+
+        ``write`` replaces — correct for state, fatal for crash evidence: a
+        rerun of this task must not destroy the previous attempt's proof while
+        "recording" its own.
+        """
+        return evidence.write_unique(self.artifact_dir / name, content)
+
+    def archive_server_crash(self, tag: str) -> str:
+        """Crash-first: freeze the server log the moment death is detected.
+
+        Two copies, both non-overwritable: the pod-side ``server.log.crash-N``
+        survives even a manual relaunch inside the pod, and the artifact copy
+        carries the full log — not a tail, because the stack trace is not
+        always in the last 40 lines of a 707 GiB load. Archiving failures are
+        recorded but never mask the failure being archived.
+        """
+        pod = self.pod or ""
+        log = ""
+        try:
+            self.adapter.exec(pod, evidence.archive_crash_remote(self.server_log_path()), timeout=60)
+            log = self.adapter.exec(pod, f"cat {self.server_log_path()}", timeout=120).stdout
+        except Exception:  # noqa: BLE001 - log capture must never mask the failure
+            self.record("archive_server_crash", False, f"{tag}: log unreachable")
+            return ""
+        if log:
+            path = self.write_unique(f"server_crash_log_{tag}.txt", log)
+            self.record("archive_server_crash", True, f"{tag}: {path.name}")
+        else:
+            self.record("archive_server_crash", False, f"{tag}: server log was empty")
+        return log
 
     # ---- actions ---------------------------------------------------------
     def preflight(self) -> None:
@@ -296,15 +330,15 @@ class DeploymentProofRunner:
         # with a group-wide redirect does (reproduced on the prepared pod
         # 2026-09-14: ungrouped hangs kubectl exec until the client timeout,
         # grouped returns in <1s with the server still running).
-        # Archive any previous attempt's log before the launch truncates it.
-        # Without this, a later attempt (the mat-006 triage rerun, a manual
-        # relaunch) destroys the crash evidence of the attempt that just
-        # failed — run glm52-int-w8a8-p800-001 lost the entire engine-side
-        # stack trace of a first-request EngineCore crash this way, 40
-        # seconds after the crash.
+        # Archive any previous attempt's log before the launch truncates it,
+        # to the next free .prev-N — never a fixed name. A single `.prev`
+        # protected exactly one generation: the third attempt (a manual
+        # relaunch, the MAT-006 triage reproof) destroyed the second's crash
+        # evidence while "archiving" it, 40 s after the crash it was sent to
+        # explain (run glm52-int-w8a8-p800-001, 2026-09-14).
         launch = (
-            f"cp -f {self.server_log_path()} {self.server_log_path()}.prev 2>/dev/null; "
-            f"( cd {self.workdir} && "
+            evidence.archive_before_truncate(self.server_log_path())
+            + f"( cd {self.workdir} && "
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH && "
             f"{setup + ' && ' if setup else ''}"
             f"{serve} ) < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
@@ -345,7 +379,12 @@ class DeploymentProofRunner:
                 timeout=30,
             )
             if alive.stdout.strip() == "dead" and streak == 0:
-                log = self.adapter.exec(pod, f"tail -40 {self.server_log_path()}", timeout=60).stdout
+                # Crash-first: the full log is snapshotted pod-side and as an
+                # artifact before anything else runs; the tail below is only a
+                # fallback when archiving itself failed.
+                log = self.archive_server_crash("startup_death")
+                if not log:
+                    log = self.adapter.exec(pod, f"tail -40 {self.server_log_path()}", timeout=60).stdout
                 self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
                 self.record("poll_health", False, "server process died during startup")
                 raise ActionFailed(
@@ -394,18 +433,11 @@ class DeploymentProofRunner:
             # process crashed on this request: the health endpoint answered
             # 200 a moment earlier, so the API server is up while the core is
             # dead. The engine-side stack trace is the only root cause, and it
-            # lives in the server log — persist it before anything relaunches
-            # and truncates the file (run glm52-int-w8a8-p800-001 lost it).
-            log = ""
-            try:
-                log = self.adapter.exec(
-                    pod, f"tail -n 200 {self.server_log_path()}", timeout=120
-                ).stdout
-            except Exception:  # noqa: BLE001 - log capture must never mask the failure
-                pass
-            if log:
-                key = f"{prefix}chat_failure_server_log.txt" if prefix else "chat_failure_server_log.txt"
-                self.write(key, log)
+            # lives in the server log — crash-first: the full log is frozen
+            # pod-side (.crash-N) and as a non-overwritable artifact before
+            # anything relaunches and truncates the file (run
+            # glm52-int-w8a8-p800-001 lost it this way).
+            log = self.archive_server_crash("chat_failure")
             raise ActionFailed(
                 "API_SMOKE_FAILED",
                 f"chat completion returned no text; response: {body[:500]}; "
@@ -461,6 +493,10 @@ class DeploymentProofRunner:
             # exact pod, and a scan Task runs inside it.
             "pod": self.pod,
             "phase": self.phase,
+            # Which in-pod log this attempt wrote; a reproof (triage rerun)
+            # records its own .rerun-* path here, so the original attempt's
+            # log can always be identified from the status that produced it.
+            "server_log": self.server_log_path(),
             "checks": self.checks,
             "artifacts": sorted(str(p.name) for p in self.artifact_dir.iterdir()),
         }
