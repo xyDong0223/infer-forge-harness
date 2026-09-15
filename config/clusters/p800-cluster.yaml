@@ -42,7 +42,11 @@ validation:
     required: true
 
 runtime:
-  venv: /opt/vllm_kunlun
+  # venv moved to the runtime profile (phase-1 refactor); it is stack state, not
+  # cluster state. common_setup below IS consumed: task_runner.py and
+  # tools/plan_deployment.py render it into contract execution.setup. The
+  # deployment block is likewise runtime-tinted (vLLM-Kunlun image, manifest)
+  # and migrates with phase 2.
   workdir: /workspace
   http_proxy: http://agent.baidu.com:8891
   https_proxy: http://agent.baidu.com:8891

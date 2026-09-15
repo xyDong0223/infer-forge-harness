@@ -6,9 +6,9 @@
 
 > **An agentic harness for bringing up, validating, and optimizing inference models across heterogeneous accelerators.**
 
-**Python 3.10+** · **v0.1 public scaffold** · **Plan-only by default**
+**Python 3.10+** · **Real-cluster execution behind explicit authorization** · **416 unit tests green** (scheduler and run-adaptation suites deselected pending pre-existing fixes)
 
-`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 is the first backend and real-world adaptation case.
+`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 with vLLM-Kunlun is the first target stack. Three model bring-ups have run through it on real clusters: Qwen3-8B is `validated` in the support matrix with full evidence; GLM5.2-Int-W8A8's service proof reached `DEPLOYMENT_READY` (accuracy differential still open); MiniMax-M2.5/M3 bring-ups completed, with M3's evidence archived.
 
 ## Contents
 
@@ -27,7 +27,7 @@
 
 ## Quick start
 
-Use Python 3.10 or later. The repository is **plan-only by default**: local checks resolve contracts and validate artifacts without creating or changing cluster resources.
+Use Python 3.10 or later. Local checks resolve contracts and validate artifacts without creating or changing cluster resources — plan-only is what you get by *not* passing `--execute`, not a limitation of the scaffold. Real-cluster execution (pod creation, service bring-up, in-pod probes) is wired and E2E-proven; it requires an authorized Kubernetes context, a reachable cluster, the model volume and revision, and a vLLM-Kunlun image. Those environment-specific prerequisites are intentionally not created by this repository.
 
 ```bash
 git clone https://github.com/xyDong0223/infer-forge-harness.git
@@ -49,9 +49,9 @@ The full unit suite uses **PyYAML** to load contracts and **PyTorch** for CPU re
 
 Inference model adaptation needs more than a sequence of scripts. A reliable workflow must declare the expected input, select a constrained method, record environment-specific facts, execute only authorized platform actions, and prove that the result satisfies an independent acceptance gate.
 
-The first milestone is **KDP-001 — Kunlun Deployment Proof**. From a fixed Deployment Manifest, the platform prepares a Kunlun P800 environment, starts a vLLM-Kunlun service, verifies readiness and a chat completion, and produces a reproducible artifact manifest. The initial repository also defines the first model-adaptation stages: model intake and static model scan.
+**KDP-001 — Kunlun Deployment Proof** was the first vertical slice and is now fully equipped: from a fixed Deployment Manifest, the platform prepares a Kunlun P800 environment, installs and drift-checks the vLLM-Kunlun stack, starts a service, verifies readiness and a chat completion, and produces a reproducible artifact manifest. On top of it stand the complete model-adaptation chain (intake, scan, capability match, gap classification, evaluation, toy bring-up, shim handoff, accuracy differential, support matrix) and the operator-integration loop. See [docs/architecture.md](docs/architecture.md) for the target axes (Runtime / Hardware / Capability) and the component ownership map.
 
-Cluster-side execution is intentionally not implicit. The runner operates in plan-only mode by default; an environment-specific Adapter and explicit authorization are required before actions reach a cluster.
+Cluster-side execution is intentionally not implicit. The runner stays in plan mode unless `--execute` is passed; an environment-specific Adapter and explicit authorization are required before actions reach a cluster.
 
 ## Design model
 
@@ -64,9 +64,11 @@ Cluster-side execution is intentionally not implicit. The runner operates in pla
 | **Skill** | Encodes the engineering method, including preconditions, verification, exit conditions, and learned rules. |
 | **Tool** | Performs a deterministic action with a constrained interface. |
 | **Runner** | Coordinates the state machine, task memory, artifacts, and the next decision. |
-| **Adapter** | Isolates Kubernetes, Kunlun P800, and vLLM-Kunlun environment differences. |
+| **Adapter** | Isolates Kubernetes and Kunlun P800 platform differences (safety-gated writes, pod exec, file push). |
 | **Validator** | Applies an independent acceptance gate and determines the verdict. |
-| **Catalog** | Stores model, backend, tool, and support capability facts. |
+| **Catalog** | Stores model, runtime/hardware, tool, and support capability facts. |
+
+The building blocks are *what* something is; three orthogonal axes — **Runtime** (vllm-kunlun today, sglang-kunlun planned), **Hardware** (kunlun-p800), and **Capability** (model adaptation today; performance and memory analysis planned) — describe *what it is about*. `docs/architecture.md` carries the full ownership map and the refactor plan that makes the axes explicit.
 
 The repository versions contracts, schemas, workflows, skills, tools, adapters, validators, tests, and documentation. Logs, traces, benchmark outputs, model caches, Pod state, and temporary worktrees belong in an external artifact root.
 
@@ -208,17 +210,19 @@ keep kubeconfig contents and credentials outside the repository.
 | --- | --- |
 | [`config/`](config/) | Harness defaults, cluster resource profiles, and deployment manifests. |
 | [`contracts/`](contracts/) | Stable, machine-readable schemas. |
-| [`workflows/`](workflows/) | Business orchestration and Task Graphs. |
-| [`tasks/`](tasks/) | Verifiable task contracts and task-local guidance. |
+| [`workflows/`](workflows/) | Business orchestration and Task Graphs (model adaptation is fully equipped; performance and test-release are stubs pending their capability work). |
+| [`tasks/`](tasks/) | Verifiable task contracts, per-model instances, and manifests. |
 | [`skills/`](skills/) | Domain methods, rules, and human engineering knowledge. |
-| [`tools/`](tools/) | Deterministic action interfaces. |
-| [`runners/`](runners/) | Execution, state-machine, and artifact coordination. |
-| [`adapters/`](adapters/) | Kubernetes, Kunlun P800, and vLLM-Kunlun platform differences. |
+| [`engine/`](engine/) | Core: the adaptation-run scheduler, operator contracts, discovery, and recovery loop — platform-neutral. |
+| [`tools/`](tools/) | Deterministic action interfaces, pod-side probes (`probe/`), and replayable runtime patches (`patches/`). |
+| [`runners/`](runners/) | Execution, state-machine, and artifact coordination (graph runner, deployment proof, triage/patch/correctness executors, evidence and watch). |
+| [`adapters/`](adapters/) | Kubernetes and Kunlun P800 platform differences. |
 | [`validators/`](validators/) | Independent acceptance gates. |
-| [`catalog/`](catalog/) | Model, backend, tool, and support facts. |
-| [`tests/`](tests/) | Unit, contract, fake-runner, and P800 integration tests. |
+| [`catalog/`](catalog/) | Model, runtime/hardware, tool, and support facts. |
+| [`openwiki/`](openwiki/) | Layered references, including capability-axis experience homes (`openwiki/harness/experiences/`). |
+| [`archive/`](archive/) | Frozen artifacts from completed adaptation eras (MiniMax-M3). |
+| [`tests/`](tests/) | Unit, contract, fake-runner, failure-edge, integration, and path-resolution guard tests (`test_common.py`). |
 | [`docs/`](docs/) | Architecture, contribution guidance, and visual documentation assets. |
-| [`openwiki/`](openwiki/) | Layered upstream, plugin, and project-practice inference references. |
 
 ## Run the checks
 
@@ -241,6 +245,6 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Changes
 
 ## Status
 
-This repository is an initial public scaffold. Its current scope is contracts, workflow planning, fake-runner coverage, validators, and integration hooks. Runtime adapters and real P800 execution are added incrementally behind independent evidence gates.
+The harness runs real adaptation end to end on the P800 + vLLM-Kunlun target stack: three model bring-ups have produced durable evidence, and the current refactor track ([docs/architecture.md](docs/architecture.md), target axes) is separating the Runtime / Hardware / Capability axes so that SGLang-Kunlun support, performance, and memory-analysis capabilities can be added without touching the core.
 
-It does **not** ship model weights, provide a hosted inference endpoint, or create a turnkey multi-node production deployment. Runtime artifacts, model caches, credentials, private endpoints, and raw production traffic remain outside the repository.
+It does **not** ship model weights, provide a hosted inference endpoint, or create a turnkey multi-node production deployment. Runtime artifacts, model caches, credentials, private endpoints, raw production traffic, and large traces remain outside the repository.
