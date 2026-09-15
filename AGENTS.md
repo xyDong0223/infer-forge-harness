@@ -124,6 +124,19 @@ python3 tools/run_adaptation.py \
   --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml
 ```
 
+To re-prove an environment whose Pod already exists, pass `--attach-pod`
+(the "Imported Context" mode): without it every `--contract` run creates a
+new FedDeployment, and a reproof must not mint a second one.
+
+```bash
+python3 tools/run_adaptation.py \
+  --state /path/to/adaptation.db \
+  environment \
+  --run-id <run-id> \
+  --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml \
+  --attach-pod <prepared-pod>
+```
+
 If the deployment proof was already executed by a separate workflow step, its
 validated `status.json` may be imported instead:
 

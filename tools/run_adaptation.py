@@ -47,6 +47,29 @@ def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
     return value
 
 
+def _environment_command(
+    contract: Path, artifact_dir: Path | None, attach_pod: str | None
+) -> list[str]:
+    """The task_runner invocation behind `environment --contract`.
+
+    Without --attach-pod this creates a new FedDeployment; a reproof must
+    pass the prepared pod instead of minting a second one.
+    """
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "runners" / "task_runner.py"),
+        str(contract),
+        "--execute",
+        "--phase",
+        "environment",
+    ]
+    if artifact_dir:
+        command += ["--artifact-dir", str(artifact_dir)]
+    if attach_pod:
+        command += ["--attach-pod", attach_pod]
+    return command
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -74,6 +97,11 @@ def _parser() -> argparse.ArgumentParser:
     source = environment.add_mutually_exclusive_group(required=True)
     source.add_argument("--status", type=Path, help="status.json from an environment-proof task")
     source.add_argument("--contract", type=Path, help="deployment task contract to execute")
+    environment.add_argument(
+        "--attach-pod",
+        help="prove against an already-prepared Pod (Imported Context) instead of "
+             "creating a new FedDeployment; required for re-proofs of an existing run",
+    )
     environment.add_argument("--artifact-dir", type=Path)
 
     discover = sub.add_parser("discover", help="convert a gap report into torch tasks")
@@ -134,16 +162,7 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         if args.status:
             proof = _json_file(args.status, field="environment status")
         else:
-            command = [
-                sys.executable,
-                str(REPO_ROOT / "runners" / "task_runner.py"),
-                str(args.contract),
-                "--execute",
-                "--phase",
-                "environment",
-            ]
-            if args.artifact_dir:
-                command += ["--artifact-dir", str(args.artifact_dir)]
+            command = _environment_command(args.contract, args.artifact_dir, args.attach_pod)
             completed = subprocess.run(
                 command, cwd=REPO_ROOT, text=True, capture_output=True, check=False
             )
