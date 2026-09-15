@@ -16,7 +16,6 @@ independent triage validator has the final word before TRIAGE_READY is written.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import sys
 from datetime import datetime, timezone
@@ -29,7 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
 from validators.triage_validator import validate_triage  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-006-failure-triage" / "task.yaml"
@@ -101,9 +100,8 @@ class PodOps:
 
     def replay_in_pod(self, pod: str, call: str) -> dict[str, Any]:
         """Run the isolation sweep where kunlun_ops actually exists: the pod."""
-        payload = base64.b64encode(REPLAY_TOOL.read_bytes()).decode()
         command = (
-            f"echo {payload} | base64 -d > {REPLAY_PATH_IN_POD} && "
+            push_snippet(REPLAY_TOOL, REPLAY_PATH_IN_POD) + " && "
             f"python3 {REPLAY_PATH_IN_POD} --from-trace {TRACE_PATH_IN_POD} "
             f"--kernel {call} --json"
         )

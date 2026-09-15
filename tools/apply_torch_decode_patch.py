@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
 
 FALLBACK = REPO_ROOT / "tools" / "torch" / "paged_decode.py"
 SITE = "/opt/vllm_kunlun/lib/python3.10/site-packages"
@@ -113,12 +113,11 @@ print("REMOVED")
 
 
 def in_pod(adapter: KunlunP800Adapter, pod: str, script: str, args: str, stdin: str = "") -> str:
-    payload = base64.b64encode(script.encode()).decode()
     feed = (
         f"echo {base64.b64encode(stdin.encode()).decode()} | base64 -d | " if stdin else ""
     )
     command = (
-        f"echo {payload} | base64 -d > /tmp/kdp_placement_step.py && "
+        push_snippet(script, "/tmp/kdp_placement_step.py") + " && "
         f"{feed}python3 /tmp/kdp_placement_step.py {args}"
     )
     result = adapter.exec(pod, command, timeout=300)
@@ -140,9 +139,7 @@ def main() -> int:
 
     copied = adapter.exec(
         args.pod,
-        "echo {} | base64 -d > {}/kdp_torch_paged_decode.py && echo COPIED".format(
-            base64.b64encode(FALLBACK.read_bytes()).decode(), args.site
-        ),
+        push_snippet(FALLBACK, f"{args.site}/kdp_torch_paged_decode.py") + " && echo COPIED",
         timeout=120,
     )
     print((copied.stdout + copied.stderr).strip())

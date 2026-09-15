@@ -6,7 +6,7 @@ import os
 import unittest
 from pathlib import Path
 
-from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter, SafetyViolation
+from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter, SafetyViolation, push_snippet
 
 CONFIG = Path(__file__).resolve().parents[2] / "config" / "clusters" / "p800-cluster.yaml"
 
@@ -61,6 +61,25 @@ class TestHarnessConfig(unittest.TestCase):
     def test_config_holds_no_credential_path(self) -> None:
         """A public repository must not point at a credential file."""
         self.assertNotIn("kconf", CONFIG.read_text(encoding="utf-8").lower())
+
+
+class TestPushSnippet(unittest.TestCase):
+    """The one pod-push transport every harness site must share."""
+
+    def test_round_trips_bytes(self) -> None:
+        snippet = push_snippet(b"print('hi')", "/tmp/probe.py")
+        self.assertIn("base64 -d", snippet)
+        self.assertTrue(snippet.startswith("echo "))
+        self.assertTrue(snippet.endswith("| base64 -d > /tmp/probe.py"))
+
+    def test_str_and_path_agree_with_bytes(self) -> None:
+        by_bytes = push_snippet(b"data", "/tmp/a.py")
+        by_str = push_snippet("data", "/tmp/a.py")
+        self.assertEqual(by_bytes, by_str)
+
+    def test_remote_is_quoted(self) -> None:
+        snippet = push_snippet(b"x", "/tmp/with space.py")
+        self.assertIn("'/tmp/with space.py'", snippet)
 
 
 if __name__ == "__main__":

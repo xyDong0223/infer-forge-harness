@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
 
 DEFAULT_TARGET = (
     "/opt/vllm_kunlun/lib/python3.10/site-packages/vllm_kunlun/v1/attention/backends/kunlun_attn.py"
@@ -94,10 +94,9 @@ print("RESTORED")
 
 
 def run_in_pod(adapter: KunlunP800Adapter, pod: str, script: str, args: str, stdin: str = "") -> str:
-    payload = base64.b64encode(script.encode()).decode()
     feed = f"printf %s {base64.b64encode(stdin.encode()).decode()} | base64 -d | " if stdin else ""
     command = (
-        f"echo {payload} | base64 -d > /tmp/kdp_instrument_step.py && "
+        push_snippet(script, "/tmp/kdp_instrument_step.py") + " && "
         f"{feed}python3 /tmp/kdp_instrument_step.py {args}"
     )
     result = adapter.exec(pod, command, timeout=300)

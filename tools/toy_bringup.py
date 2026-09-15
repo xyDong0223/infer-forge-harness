@@ -17,7 +17,6 @@ proof. Produces a position -- which stage was reached -- not an opinion.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -27,26 +26,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.bringup_validator import validate_bringup_report  # noqa: E402
 
 PROBE = REPO_ROOT / "tools" / "probe" / "toy_bringup_probe.py"
 CONTRACT = REPO_ROOT / "tasks" / "mat-028-toy-bringup" / "task.yaml"
 
 
-class BringupFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class BringupFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, model_path: str, layers: int, experts: int,
               tp_size: int, max_len: int, timeout: int) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat028_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > /tmp/mat028_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat028_probe.py {shlex.quote(model_path)} {layers} {experts} "
         f"{tp_size} {max_len} 2>/dev/null"
     )

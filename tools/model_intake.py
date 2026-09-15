@@ -15,7 +15,6 @@ the ref with `git ls-remote`.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import shlex
@@ -28,7 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter, SafetyViolation  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet, SafetyViolation  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from runners.deployment_proof import render_manifest  # noqa: E402
 from validators.intake_validator import validate_model_request  # noqa: E402
 
@@ -39,11 +39,8 @@ TASK_ID = "mat-001-model-intake"
 UPSTREAM = "https://github.com/baidu/vLLM-Kunlun"
 
 
-class IntakeFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class IntakeFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def resolve_stack_commit(ref: str, repo: str = UPSTREAM, attempts: int = 3) -> str:
@@ -78,9 +75,9 @@ def resolve_stack_commit(ref: str, repo: str = UPSTREAM, attempts: int = 3) -> s
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, model_path: str, timeout: int) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat001_probe.py')
     script = (
-        f"echo {payload} | base64 -d > /tmp/mat001_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat001_probe.py {shlex.quote(model_path)}"
     )
     result = adapter.exec(pod, script, timeout=timeout)

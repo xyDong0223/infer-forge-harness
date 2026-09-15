@@ -18,7 +18,6 @@ with the accelerator in a meaningful way.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -28,7 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.accuracy_validator import validate_accuracy_report  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-013-accuracy-differential" / "task.yaml"
@@ -40,11 +40,8 @@ PROMPTS = [
 ]
 
 
-class AccuracyFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class AccuracyFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def server_topk(adapter: KunlunP800Adapter, pod: str, port: int, model: str,
@@ -73,12 +70,12 @@ def server_topk(adapter: KunlunP800Adapter, pod: str, port: int, model: str,
 
 def reference_topk(adapter: KunlunP800Adapter, pod: str, model_path: str,
                    prompts: list[str], top_k: int, timeout: int) -> dict:
-    payload = base64.b64encode(REFERENCE_PROBE.read_bytes()).decode()
+    push = push_snippet(REFERENCE_PROBE, '/tmp/mat013_reference.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH "
         # The reference must not touch the accelerator, or it stops being independent.
         "CUDA_VISIBLE_DEVICES= XPU_VISIBLE_DEVICES=; "
-        f"echo {payload} | base64 -d > /tmp/mat013_reference.py && "
+        f"{push} && "
         f"python3 /tmp/mat013_reference.py {shlex.quote(model_path)} {top_k} "
         + " ".join(shlex.quote(prompt) for prompt in prompts)
     )

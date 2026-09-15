@@ -19,7 +19,6 @@ does not get a quantization verdict it never needed.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -29,7 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-008-capability-evaluation" / "task.yaml"
@@ -49,7 +49,7 @@ PROBES: dict[str, str] = {
     "msa": "tools/probe/sliding_window_decode_probe.py",
     "moe": "tools/probe/moe_layer_probe.py",
     "block_sparse": "tools/probe/block_sparse_attention_probe.py",
-    "fused_qknorm_rope_insert": "tools/probe/m3_qknorm_rope_insert_probe.py",
+    "fused_qknorm_rope_insert": "tools/probe/qknorm_rope_insert_probe.py",
     "swiglu_oai": "tools/probe/swiglu_oai_probe.py",
 }
 
@@ -63,11 +63,8 @@ SIDECARS: dict[str, dict[str, str]] = {
 }
 
 
-class EvaluationFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class EvaluationFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def dimensions_for(match: dict) -> list[str]:
@@ -104,12 +101,11 @@ def thresholds_for(contract: dict, dimension: str) -> dict:
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, probe: Path, argv: list[str],
               sidecars: dict[str, str] | None = None) -> dict:
-    pushes = [f"echo {base64.b64encode(probe.read_bytes()).decode()} | base64 -d > "
-              f"/tmp/mat008_{probe.stem}.py"]
+    pushes = [push_snippet(probe, f"/tmp/mat008_{probe.stem}.py")]
     for flag, relative in (sidecars or {}).items():
         source = REPO_ROOT / relative
         remote = f"/tmp/mat008_{Path(relative).name}"
-        pushes.append(f"echo {base64.b64encode(source.read_bytes()).decode()} | base64 -d > {remote}")
+        pushes.append(push_snippet(source, remote))
         argv = argv + [flag, remote]
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "

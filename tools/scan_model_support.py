@@ -12,7 +12,6 @@ it needs no pod of its own and no launch parameter.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -22,7 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.scan_validator import validate_support_card  # noqa: E402
 
 PROBE = REPO_ROOT / "tools" / "probe" / "model_support_probe.py"
@@ -30,20 +30,17 @@ CONTRACT = REPO_ROOT / "tasks" / "mat-002-model-scan" / "task.yaml"
 PROXY = "http://agent.baidu.com:8891"
 
 
-class ScanFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class ScanFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, archs: list[str], proxy: str) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat002_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH "
         f"https_proxy={shlex.quote(proxy)} http_proxy={shlex.quote(proxy)} "
         "no_proxy=localhost,127.0.0.1,.baidu-int.com; "
-        f"echo {payload} | base64 -d > /tmp/mat002_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat002_probe.py {' '.join(shlex.quote(a) for a in archs)} 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=900)

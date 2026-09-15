@@ -8,6 +8,7 @@ configured operator prefix.
 
 from __future__ import annotations
 
+import base64
 import os
 import shlex
 import subprocess
@@ -16,6 +17,22 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "clusters" / "p800-cluster.yaml"
+
+
+def push_snippet(data: "bytes | Path | str", remote: str) -> str:
+    """One shell snippet that materializes `data` at `remote` inside the pod.
+
+    The base64 pipe is used instead of `kubectl cp` on purpose: it travels
+    inside the same exec as the script that consumes it, so the push and the
+    run are one atomic operation that never half-happens. Every harness-side
+    pod push must go through here — a hand-rolled copy drifts (timeouts,
+    quoting, error paths) the first time someone changes the transport.
+    """
+    if isinstance(data, Path):
+        data = data.read_bytes()
+    if isinstance(data, str):
+        data = data.encode()
+    return f"echo {base64.b64encode(data).decode()} | base64 -d > {shlex.quote(remote)}"
 
 
 class SafetyViolation(RuntimeError):

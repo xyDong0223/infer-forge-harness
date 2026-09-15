@@ -12,7 +12,6 @@ model runs.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -22,25 +21,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.capability_validator import validate_capability_match  # noqa: E402
 
 PROBE = REPO_ROOT / "tools" / "probe" / "capability_match_probe.py"
 CONTRACT = REPO_ROOT / "tasks" / "mat-003-capability-match" / "task.yaml"
 
 
-class MatchFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class MatchFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, model_path: str) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat003_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > /tmp/mat003_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat003_probe.py {shlex.quote(model_path)} 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=600)

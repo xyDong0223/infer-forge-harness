@@ -19,7 +19,6 @@ operator_lifecycle dispatch MAT-024 uses, so the candidate-integration loop
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -29,7 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from tools.operator_lifecycle import dispatch as dispatch_requests  # noqa: E402
 from validators.shim_validator import validate_shim_handoff  # noqa: E402
 
@@ -37,18 +37,15 @@ PROBE = REPO_ROOT / "tools" / "probe" / "torch_shim_probe.py"
 CONTRACT = REPO_ROOT / "tasks" / "mat-029-shim-handoff" / "task.yaml"
 
 
-class ShimScanFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class ShimScanFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, plugin: str, timeout: int) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat029_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > /tmp/mat029_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat029_probe.py {shlex.quote(plugin)} 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=timeout)

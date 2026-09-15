@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
 from validators.patch_validator import validate_patch_placement  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-007-patch-placement" / "task.yaml"
@@ -161,10 +161,9 @@ class PatchOps:
         When the pod cannot answer, that is a REJECTED outcome, not a skipped
         one — a comparison that never ran licenses nothing.
         """
-        payload = base64.b64encode(POD_VALIDATION_SCRIPT.encode()).decode()
         feed = base64.b64encode(json.dumps(geometry).encode()).decode()
         command = (
-            f"echo {payload} | base64 -d > /tmp/kdp_patch_validate.py && "
+            push_snippet(POD_VALIDATION_SCRIPT, "/tmp/kdp_patch_validate.py") + " && "
             f"echo {feed} | base64 -d | python3 /tmp/kdp_patch_validate.py"
         )
         result = self.adapter.exec(pod, command, timeout=600)

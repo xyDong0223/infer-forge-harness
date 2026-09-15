@@ -17,7 +17,6 @@ sample unless the marker it uses appears in that model's own chat template.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -27,18 +26,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.conformance_validator import validate_conformance  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-009-api-conformance" / "task.yaml"
 PROBE = REPO_ROOT / "tools" / "probe" / "parser_conformance_probe.py"
 
 
-class ConformanceFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class ConformanceFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def profile_for(contract: dict, model_id: str) -> dict:
@@ -55,10 +52,10 @@ def profile_for(contract: dict, model_id: str) -> dict:
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, argv: list[str]) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat009_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > /tmp/mat009_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat009_probe.py {' '.join(shlex.quote(part) for part in argv)} 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=1800)

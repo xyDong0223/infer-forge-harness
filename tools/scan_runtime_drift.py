@@ -17,7 +17,6 @@ weights, no XPU.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import shlex
 import sys
@@ -27,25 +26,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
+from tools.common import ToolFailed  # noqa: E402
 from validators.drift_validator import validate_drift_report  # noqa: E402
 
 PROBE = REPO_ROOT / "tools" / "probe" / "runtime_drift_probe.py"
 CONTRACT = REPO_ROOT / "tasks" / "mat-027-runtime-drift" / "task.yaml"
 
 
-class DriftScanFailed(RuntimeError):
-    def __init__(self, state: str, reason: str) -> None:
-        super().__init__(f"{state}: {reason}")
-        self.state = state
-        self.reason = reason
+class DriftScanFailed(ToolFailed):
+    """Task-specific name for the shared (state, reason) failure."""
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, plugin: str, engine: str, timeout: int) -> dict:
-    payload = base64.b64encode(PROBE.read_bytes()).decode()
+    push = push_snippet(PROBE, '/tmp/mat027_probe.py')
     script = (
         "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-        f"echo {payload} | base64 -d > /tmp/mat027_probe.py && "
+        f"{push} && "
         f"python3 /tmp/mat027_probe.py {shlex.quote(plugin)} {shlex.quote(engine)} 2>/dev/null"
     )
     result = adapter.exec(pod, script, timeout=timeout)

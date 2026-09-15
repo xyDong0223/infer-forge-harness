@@ -7,7 +7,6 @@ to validators.deployment_validator.
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import shlex
@@ -17,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adapters.kunlun_p800 import KunlunP800Adapter, SafetyViolation
+from adapters.kunlun_p800 import KunlunP800Adapter, SafetyViolation, push_snippet
 from runners import evidence
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -556,11 +555,10 @@ class DeploymentProofRunner:
         output: list[str] = []
         failed: list[str] = []
         for script in scripts:
-            payload = base64.b64encode(script.read_bytes()).decode()
             remote = f"/tmp/{script.name}"
             command = (
                 "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-                f"echo {payload} | base64 -d > {remote} && python3 {remote}"
+                f"{push_snippet(script, remote)} && python3 {remote}"
             )
             result = self.adapter.exec(self.pod or "", command, timeout=600)
             output.append(f"$ {script.name} (exit {result.returncode})\n"
@@ -595,13 +593,12 @@ class DeploymentProofRunner:
         EngineCore init after a full load.
         """
         probe = self.repo_root / "tools" / "probe" / "engine_core_drift_precheck.py"
-        payload = base64.b64encode(probe.read_bytes()).decode()
         model_path = self.contract.get("context", {}).get("model", {}).get("path")
         model_config = f"{model_path}/config.json" if model_path else ""
         script = (
             "export VIRTUAL_ENV=/opt/vllm_kunlun PATH=/opt/vllm_kunlun/bin:$PATH; "
-            f"echo {payload} | base64 -d > /tmp/kdp_drift_precheck.py && "
-            "python3 /tmp/kdp_drift_precheck.py"
+            + push_snippet(probe, "/tmp/kdp_drift_precheck.py")
+            + " && python3 /tmp/kdp_drift_precheck.py"
             + (f" --model-config {shlex.quote(model_config)}" if model_config else "")
         )
         result = self.adapter.exec(self.pod or "", script, timeout=900)

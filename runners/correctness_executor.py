@@ -18,7 +18,6 @@ the tensors grades nothing.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import sys
 from pathlib import Path
@@ -30,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
+from adapters.kunlun_p800.adapter import KunlunP800Adapter, push_snippet  # noqa: E402
 from validators.correctness_validator import (  # noqa: E402
     validate_end_to_end,
     validate_kernel_grade,
@@ -64,11 +63,9 @@ class CorrectnessOps:
         Probes print one JSON object on stdout; the last such line wins, the
         same convention the other in-pod tools use.
         """
-        setup = [f"echo {base64.b64encode(probe.read_bytes()).decode()} | base64 -d > /tmp/kdp_probe.py"]
+        setup = [push_snippet(probe, "/tmp/kdp_probe.py")]
         for name, path in files.items():
-            setup.append(
-                f"echo {base64.b64encode(path.read_bytes()).decode()} | base64 -d > /tmp/{name}"
-            )
+            setup.append(push_snippet(path, f"/tmp/{name}"))
         command = " && ".join(setup) + f" && python3 /tmp/kdp_probe.py {args}"
         result = self.adapter.exec(pod, command, timeout=1800)
         text = result.stdout + result.stderr
