@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from runners import evidence  # noqa: E402
+from runners import watch as watch_module  # noqa: E402
 from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
@@ -429,6 +430,24 @@ def reusable_fact(
     return hit
 
 
+def node_watch(args, node: str, artifacts: Path):
+    """The node's heartbeat journal, or None when disabled.
+
+    A long node whose console prints nothing until it finishes (a weight
+    load behind task_runner is exactly that shape) leaves no durable trace
+    that the walk is alive — run glm52-int-w8a8-p800-001's four "any
+    progress?" interruptions had no on-disk answer. The journal beats
+    regardless of console silence.
+    """
+    if not getattr(args, "watch_interval", 0):
+        return None
+    return watch_module.LogWatch(
+        node, artifacts / "node_console.log",
+        artifacts / "watch_journal.jsonl",
+        interval=args.watch_interval,
+    ).start()
+
+
 def emit_summary(summary: dict, json_output: bool) -> None:
     if json_output:
         print(json.dumps(summary, ensure_ascii=False))
@@ -498,10 +517,15 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             # Same crash-first contract as the main walk: a recovery rerun
             # writes the live node_console.log, and a dead child is snapshotted
             # before the next attempt can replace it.
+            watch = watch_module.LogWatch(
+                f"{node}:recovery", target / "node_console.log",
+                target / "watch_journal.jsonl", interval=30.0,
+            ).start()
             result = evidence.run_logged(
                 command, cwd=REPO_ROOT, log_path=target / "node_console.log",
-                crash_tag=f"{node}:recovery",
+                crash_tag=f"{node}:recovery", watch=watch,
             )
+            watch.stop(f"exit {result.returncode}")
             returncode = returncode or result.returncode
         new_state = read_state(artifacts, spec)
         return returncode == 0, new_state
@@ -552,6 +576,11 @@ def main() -> int:
                              "to appear next to the request.")
     parser.add_argument("--decide-timeout", type=float, default=600.0,
                         help="seconds to wait for one decision in agent mode")
+    parser.add_argument("--watch-interval", type=float, default=30.0,
+                        help="heartbeat seconds for the node watch journal; "
+                             "0 disables the watch (a silent long node is "
+                             "expected — the journal is what keeps it "
+                             "observable)")
     args = parser.parse_args()
 
     environment = dict(pair.split("=", 1) for pair in args.env)
@@ -696,10 +725,13 @@ def main() -> int:
                 # edge reruns anything into this directory. Before this, a
                 # crashing node's traceback scrolled past unrecorded (run
                 # glm52-int-w8a8-p800-001, 2026-09-14).
+                watch = node_watch(args, current, target)
                 result = evidence.run_logged(
                     command, cwd=REPO_ROOT, log_path=target / "node_console.log",
-                    crash_tag=current,
+                    crash_tag=current, watch=watch,
                 )
+                if watch is not None:
+                    watch.stop(f"exit {result.returncode}")
                 state = read_state(target, spec)
                 print(f"[state] {current}: {state} (exit {result.returncode})")
                 if result.crash_log:

@@ -90,6 +90,7 @@ def run_logged(
     log_path: Path,
     crash_tag: str | None = None,
     echo: Callable[[str], None] = print,
+    watch=None,
 ) -> LoggedResult:
     """Run a node command with its output teed live to console and file.
 
@@ -101,6 +102,10 @@ def run_logged(
     On a non-zero exit the captured log is immediately copied to a
     non-overwritable crash snapshot — before any failure edge, recovery rerun
     or manual relaunch can replace the live log file.
+
+    ``watch`` (runners.watch.LogWatch) is signalled on every output line; its
+    heartbeat thread keeps journaling even when the console is legitimately
+    quiet, so "still running" is never a silent state.
     """
     command = list(command)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +126,8 @@ def run_logged(
             handle.flush()
             echo(line, end="")
             chunks.append(line)
+            if watch is not None:
+                watch.observe()
     returncode = process.wait()
     crash_log = None
     if returncode != 0 and crash_tag:

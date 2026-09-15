@@ -95,6 +95,11 @@ class DeploymentProofRunner:
         self.pod: str | None = None
         self.records: list[dict[str, Any]] = []
         self.checks: dict[str, Any] = {}
+        # Pod-side startup watch state: last observed server-log size and
+        # how many consecutive polls it has been frozen (see
+        # _watch_server_log).
+        self._watch_last_bytes = -2
+        self._watch_stall_polls = 0
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- evidence ---------------------------------------------------------
@@ -114,6 +119,66 @@ class DeploymentProofRunner:
         "recording" its own.
         """
         return evidence.write_unique(self.artifact_dir / name, content)
+
+    def append(self, name: str, line: str) -> Path:
+        """Append one line to an append-only journal artifact.
+
+        Watches journal beats across a whole startup; replacing would leave
+        only the last beat, which is precisely the evidence gap the watch
+        exists to close.
+        """
+        path = self.artifact_dir / name
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return path
+
+    def _watch_server_log(self, poll_index: int, code: int) -> None:
+        """Journal startup progress from the pod-side server log.
+
+        Health polling answers 503 for ~15 minutes of a 707 GiB load with
+        nothing durable in between — run glm52-int-w8a8-p800-001 had four
+        "any progress?" interruptions and no on-disk answer. Each poll now
+        journals the server log's size and last line, and flags a stall when
+        the log stops growing well before the deadline: a vLLM loader that
+        is loading prints; a frozen log is the early signal that the wait
+        will not end well.
+        """
+        pod = self.pod or ""
+        log = self.server_log_path()
+        try:
+            probe = self.adapter.exec(
+                pod,
+                f"stat -c %s {shlex.quote(log)} 2>/dev/null; "
+                f"tail -n 1 {shlex.quote(log)} 2>/dev/null",
+                timeout=30,
+            )
+        except Exception:  # noqa: BLE001 - watching must never mask polling
+            return
+        lines = (probe.stdout or "").strip().splitlines()
+        size = int(lines[0]) if lines and lines[0].isdigit() else -1
+        last = lines[1][:200].strip() if len(lines) > 1 else ""
+        if size == self._watch_last_bytes:
+            self._watch_stall_polls += 1
+        else:
+            self._watch_stall_polls = 0
+            self._watch_last_bytes = size
+        entry = {
+            "at": now(), "poll": poll_index, "health": code,
+            "log_bytes": size, "last_line": last,
+        }
+        threshold = int(self.contract["execution"].get("watch_stall_polls", 30))
+        if self._watch_stall_polls >= threshold:
+            entry["stall"] = True
+            entry["stall_polls"] = self._watch_stall_polls
+            if not self.checks.get("startup_log_stall"):
+                self.checks["startup_log_stall"] = True
+                self.record(
+                    "watch_server_log", False,
+                    f"server log frozen at {size} bytes for "
+                    f"{self._watch_stall_polls} polls — the load is not "
+                    "progressing",
+                )
+        self.append("startup_watch.jsonl", json.dumps(entry, ensure_ascii=False))
 
     def archive_server_crash(self, tag: str) -> str:
         """Crash-first: freeze the server log the moment death is detected.
@@ -359,9 +424,14 @@ class DeploymentProofRunner:
         deadline = time.time() + int(execution.get("startup_timeout_seconds", 900))
         streak = 0
         last = ""
+        poll_index = 0
         while time.time() < deadline:
             code, body = self.adapter.http_probe(pod, health["path"], port)
             last = f"status={code} body={body[:200]}"
+            # Startup watch: journal the server log's progress every poll,
+            # stall-flag when it stops growing (see _watch_server_log).
+            self._watch_server_log(poll_index, code)
+            poll_index += 1
             streak = streak + 1 if code == int(health["expected_status"]) else 0
             if streak >= need:
                 self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
@@ -395,7 +465,14 @@ class DeploymentProofRunner:
             time.sleep(interval)
         self.write(f"{prefix}health_result.txt" if prefix else "health_result.txt", last)
         self.record("poll_health", False, last)
-        raise ActionFailed("READINESS_TIMEOUT", f"health never stabilised: {last}")
+        stall = (
+            f"; the server log has been frozen at {self._watch_last_bytes} bytes "
+            f"for {self._watch_stall_polls} polls (startup_watch.jsonl) — the "
+            "load is not progressing"
+            if self.checks.get("startup_log_stall")
+            else ""
+        )
+        raise ActionFailed("READINESS_TIMEOUT", f"health never stabilised: {last}{stall}")
 
     def run_chat_smoke(self, prefix: str = "") -> None:
         pod = self.pod or ""
