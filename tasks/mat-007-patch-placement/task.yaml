@@ -10,16 +10,16 @@ spec:
   produces: PlacedPatch
   consumes: [FailureTriage, EnvironmentProof]
   runs_with: |
-    python3 tools/apply_torch_decode_patch.py --pod <pod>
+    python3 tools/patches/apply_torch_decode_patch.py --pod <pod>
     # rerun kdp-001b-service-proof, then to reproduce the original failure:
     #   KDP_DECODE_KERNEL=speculative
-    python3 tools/apply_torch_decode_patch.py --pod <pod> --remove
+    python3 tools/patches/apply_torch_decode_patch.py --pod <pod> --remove
 context:
   target:
     hardware: Kunlunxin-3-P800
 execution:
   mode: execute
-  tool: tools/apply_torch_decode_patch.py
+  tool: tools/patches/apply_torch_decode_patch.py
   patch: tools/torch/paged_decode.py
 checks:
   mechanisms:

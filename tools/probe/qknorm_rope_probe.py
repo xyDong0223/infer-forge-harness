@@ -14,7 +14,7 @@ one (per-head Gemma RMSNorm on q and k, then partial NeoX RoPE), the *paged inse
 *lightning index* one (index_q/index_k read out of the same fused tensor, normed and
 roped, with index_k scattered into the index cache). It is still not a port — the
 arithmetic is torch, not kunlun_ops — but it is verified rather than assumed:
-`tools/probe/m3_qknorm_rope_insert_probe.py` reads every value back out of the caches
+`tools/probe/qknorm_rope_insert_probe.py` reads every value back out of the caches
 and grades it against a float32 reference, with a control that omits RoPE.
 
 What it refuses is a quantized cache (`kv_cache_dtype` other than "auto"), because

@@ -59,7 +59,7 @@ SIDECARS: dict[str, dict[str, str]] = {
     "msa": {"--fallback": "tools/torch/paged_decode.py"},
     # Same reason as msa: the probe must grade the file that would be loaded, not a
     # copy of it that can drift.
-    "fused_qknorm_rope_insert": {"--implementation": "tools/probes/attention/qknorm_rope_probe.py"},
+    "fused_qknorm_rope_insert": {"--implementation": "tools/probe/qknorm_rope_probe.py"},
 }
 
 

@@ -40,7 +40,7 @@ execution:
     msa: tools/probe/sliding_window_decode_probe.py
     moe: tools/probe/moe_layer_probe.py
     block_sparse: tools/probe/block_sparse_attention_probe.py
-    fused_qknorm_rope_insert: tools/probe/m3_qknorm_rope_insert_probe.py
+    fused_qknorm_rope_insert: tools/probe/qknorm_rope_insert_probe.py
     swiglu_oai: tools/probe/swiglu_oai_probe.py
   reference:
     implementation: torch

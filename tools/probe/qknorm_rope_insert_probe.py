@@ -87,7 +87,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--implementation", required=True,
-                        help="path to tools/probes/attention/qknorm_rope_probe.py")
+                        help="path to tools/probe/qknorm_rope_probe.py")
     parser.add_argument("--heads", type=int, default=8)
     parser.add_argument("--kv-heads", type=int, default=2)
     parser.add_argument("--index-heads", type=int, default=2)

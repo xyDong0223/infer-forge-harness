@@ -138,8 +138,8 @@ class FusedInsertContractTest(unittest.TestCase):
         # A copy of the stand-in can drift from the one a launch actually uses, so the
         # probe is handed the real path — the same reason the msa dimension does it.
         self.assertEqual(self.sidecars["fused_qknorm_rope_insert"]["--implementation"],
-                         "tools/probes/attention/qknorm_rope_probe.py")
-        self.assertTrue((ROOT / "tools" / "probes" / "attention" / "qknorm_rope_probe.py").exists())
+                         "tools/probe/qknorm_rope_probe.py")
+        self.assertTrue((ROOT / "tools" / "probe" / "qknorm_rope_probe.py").exists())
 
     def test_it_is_a_sparse_layer_with_a_scattered_slot_mapping(self):
         geometry = self.entry["geometry"]

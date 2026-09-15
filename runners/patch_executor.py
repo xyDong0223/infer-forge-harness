@@ -125,7 +125,7 @@ class PatchOps:
         import subprocess
 
         result = subprocess.run(
-            ["python3", "tools/apply_torch_decode_patch.py", "--pod", pod],
+            ["python3", "tools/patches/apply_torch_decode_patch.py", "--pod", pod],
             cwd=REPO_ROOT, text=True, capture_output=True,
         )
         if result.returncode != 0:
@@ -136,7 +136,7 @@ class PatchOps:
         import subprocess
 
         result = subprocess.run(
-            ["python3", "tools/apply_torch_decode_patch.py", "--pod", pod, "--remove"],
+            ["python3", "tools/patches/apply_torch_decode_patch.py", "--pod", pod, "--remove"],
             cwd=REPO_ROOT, text=True, capture_output=True,
         )
         return (result.stdout + result.stderr).strip()

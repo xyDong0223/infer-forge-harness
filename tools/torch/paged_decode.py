@@ -21,7 +21,7 @@ sliding-window models: `max_window_size` masks every position older than the las
 swa_right=0` on the prefill side. MLA models are not: they use a different cache
 layout and their own kernel family.
 
-Install into a running pod with `tools/apply_torch_decode_patch.py`; select at
+Install into a running pod with `tools/patches/apply_torch_decode_patch.py`; select at
 runtime with `KDP_DECODE_KERNEL=torch|decode_paged|speculative`, which keeps the
 failing vendor path one environment variable away for reproduction.
 
