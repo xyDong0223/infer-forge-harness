@@ -206,22 +206,57 @@ Cluster and deployment resource profiles are kept separately under
 [`config/clusters/`](config/clusters/). Add one profile per target cluster;
 keep kubeconfig contents and credentials outside the repository.
 
+The directories below are grouped by the role they play. The three target
+axes (**Runtime** / **Hardware** / **Capability**, see
+[docs/architecture.md](docs/architecture.md)) cut across the groups: the
+seams live in `adapters/` and `runtimes/`, and everything else is written
+to be axis-agnostic.
+
+### Declarative — what should happen
+
 | Directory | Responsibility |
 | --- | --- |
-| [`config/`](config/) | Harness defaults, cluster resource profiles, and deployment manifests. |
-| [`contracts/`](contracts/) | Stable, machine-readable schemas. |
-| [`workflows/`](workflows/) | Business orchestration and Task Graphs (model adaptation is fully equipped; performance and test-release are stubs pending their capability work). |
-| [`tasks/`](tasks/) | Verifiable task contracts, per-model instances, and manifests. |
-| [`skills/`](skills/) | Domain methods, rules, and human engineering knowledge. |
-| [`engine/`](engine/) | Core: the adaptation-run scheduler, operator contracts, discovery, and recovery loop — platform-neutral. |
-| [`tools/`](tools/) | Deterministic action interfaces, pod-side probes (`probe/`), and replayable runtime patches (`patches/`). |
-| [`runners/`](runners/) | Execution, state-machine, and artifact coordination (graph runner, deployment proof, triage/patch/correctness executors, evidence and watch). |
-| [`adapters/`](adapters/) | Kubernetes and Kunlun P800 platform differences. |
-| [`validators/`](validators/) | Independent acceptance gates. |
-| [`catalog/`](catalog/) | Model, runtime/hardware, tool, and support facts. |
-| [`openwiki/`](openwiki/) | Layered references, including capability-axis experience homes (`openwiki/harness/experiences/`). |
-| [`tests/`](tests/) | Unit, contract, fake-runner, failure-edge, integration, and path-resolution guard tests (`test_common.py`). |
-| [`docs/`](docs/) | Architecture, contribution guidance, and visual documentation assets. |
+| [`workflows/`](workflows/) | Orchestration graphs: topology and failure edges only, never shell commands. `model_adaptation` is fully equipped; `performance_optimization` and `test_release` are stubs until their capability work lands. |
+| [`tasks/`](tasks/) | The authority: one directory per verifiable objective — `task.yaml` defines acceptance gates and terminal states, `instances/` carries per-model parameters, `manifests/` holds pod templates. Contract changes require migration notes. |
+| [`skills/`](skills/) | Engineering method units (preconditions, rules, exit conditions), registered in [`catalog/skill_catalog.yaml`](catalog/skill_catalog.yaml); a new skill enters only after a golden task plus an independent validator pass. |
+| [`contracts/`](contracts/) | Machine-readable schemas: the task contract shape, the status state machine every state file must speak, artifact and deployment manifests. |
+| [`catalog/`](catalog/) | The fact registry: tool commands, the runtime registry, device facts ([`xpu_specs.yaml`](catalog/xpu_specs.yaml)), and the support matrix — every fact graded by the evidence attached to it. |
+| [`config/`](config/) | Cluster profiles (`clusters/`), deployment manifest templates (`manifests/`), and the runtime profile (`profiles/`) — the single source for venv / site-packages / engine module. |
+
+### Execution — what actually happens
+
+| Directory | Responsibility |
+| --- | --- |
+| [`engine/`](engine/) | The core, platform-neutral by construction (guarded by tests): the adaptation-run scheduler and its SQLite event store, operator discovery, and the failure-recovery loop. |
+| [`runners/`](runners/) | Node executors: `graph_runner` walks the task graph (failure edges route to triage with crash evidence attached); `deployment_proof` installs, replays patches, drift-prechecks, and proves readiness; triage/patch/correctness executors; `evidence` (crash-first snapshots) and `watch` (heartbeats — a silent process is never a mystery). |
+| [`tools/`](tools/) | One CLI per task node, each writing its own state file; `probe/` holds scripts pushed into the pod; `patches/` holds the replayable, idempotent repair set — a repair that lives only in a pod dies with the pod. |
+
+### Platform seams — where the target lives
+
+| Directory | Responsibility |
+| --- | --- |
+| [`adapters/`](adapters/) | The **Hardware** axis: kubectl primitives, safety gates (writes limited to owned prefixes), device probes (`xpu_smi`). Reached only through `adapters.get_hardware(name)`. |
+| [`runtimes/`](runtimes/) | The **Runtime** axis: registry plus profile per inference stack (`vllm-kunlun` today; `sglang-kunlun` is declared in the catalog, not yet implemented). Environment strings now; launch, readiness, and in-process capture grow here next. |
+
+### Judgment — what counts as done
+
+| Directory | Responsibility |
+| --- | --- |
+| [`validators/`](validators/) | Independent acceptance gates. A command's exit code 0 is never a PASS; the validator re-runs the checks and owns the verdict. |
+
+### Knowledge — why it works this way
+
+| Directory | Responsibility |
+| --- | --- |
+| [`openwiki/`](openwiki/) | Layered reference material: upstream vLLM contracts (`vllm-core/`), the Kunlun plugin (`vllm-kunlun/`), and this project's own practice (`harness/`) — including capability-axis experience homes (`harness/experiences/`) where lessons are filed by the capability they belong to, not the model that first hit them. Reference, never proof. |
+
+### Support
+
+| Directory | Responsibility |
+| --- | --- |
+| [`tests/`](tests/) | 427 unit tests plus standing guards: scripted-path resolution (every command a workflow or contract names must exist on disk), import invariants (concrete adapters/runtimes stay inside their packages), and failure-edge walks through the real graph runner. |
+| [`docs/`](docs/) | [architecture.md](docs/architecture.md) — the layer contract, the three target axes, and the component ownership map — plus contribution guidance and diagrams. |
+| [`assets/`](assets/) | README and documentation imagery. |
 
 ## Run the checks
 
