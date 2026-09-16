@@ -1,6 +1,15 @@
 # Guides
 
-How-to material for extending the harness:
+## Running the harness
+
+- [Local quickstart](quickstart.zh-CN.md): installation, local E2E, artifact
+  inspection and an optional numerical tool example.
+- [Real model adaptation](../../README.md#运行真实模型适配): prepared cluster,
+  pinned model/runtime and scheduler-backed execution.
+- [Troubleshooting](troubleshooting.zh-CN.md): preserve evidence, identify
+  rejections and choose the appropriate recovery mechanism.
+
+## Extending the harness
 
 - [`add-workflow.zh-CN.md`](add-workflow.zh-CN.md): how to onboard an existing
   engineering process or a new capability, from Workflow/Task decomposition
