@@ -382,7 +382,13 @@ def resolve(
 
 
 def fan_out_items(
-    spec: dict, context: dict, journal: Path, environment: dict, verify_input_skills: bool = False,
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    verify_input_skills: bool = False,
+    *,
+    skill_contract: Path | None = None,
 ) -> list[str]:
     """Ask the node's own tool how wide it is.
 
@@ -398,8 +404,11 @@ def fan_out_items(
         include_optional=False,
         verify_input_skills=verify_input_skills,
     )
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    if skill_contract is not None:
+        env["INFER_FORGE_SKILL_CONTRACT"] = str(skill_contract)
     result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True,
-                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                            env=env)
     if result.returncode != 0:
         raise Unresolved(
             f"the fan-out list command failed: {' '.join(command)}: {result.stderr.strip()[-300:]}"
@@ -423,6 +432,8 @@ def fan_out_plan(
     environment: dict,
     artifacts: Path,
     verify_input_skills: bool = False,
+    *,
+    skill_contract: Path | None = None,
 ) -> list[tuple[Path, list[str]]]:
     """One child command per item, then the fan-in.
 
@@ -431,7 +442,14 @@ def fan_out_plan(
     the node's tool provides, not something the executor computes, so the artifact
     format stays owned by the Task.
     """
-    items = fan_out_items(spec, context, journal, environment, verify_input_skills=verify_input_skills)
+    items = fan_out_items(
+        spec,
+        context,
+        journal,
+        environment,
+        verify_input_skills=verify_input_skills,
+        skill_contract=skill_contract,
+    )
     if not items:
         raise Unresolved(
             "the fan-out list is empty: this model demands none of the dimensions this node "
@@ -481,11 +499,17 @@ def node_passed(artifacts: Path, spec: dict, returncode: int) -> bool:
     )
 
 
+def write_skill_contract(attempt, skill: dict) -> Path:
+    packet = attempt.input / "skill.json"
+    packet.write_text(json.dumps(skill, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return packet
+
+
 def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
                       commands: list[tuple[Path, list[str]]],
-                      skill: dict | None = None):
+                      skill: dict | None = None, attempt=None):
     """Bind a read-only plan to a fresh workspace only when it will execute."""
-    attempt = paths.allocate_attempt(node)
+    attempt = attempt or paths.allocate_attempt(node)
     resolved = [
         (attempt.output / target.relative_to(artifacts),
          [part.replace(str(artifacts), str(attempt.output)).replace(
@@ -496,9 +520,7 @@ def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
         json.dumps([command for _, command in resolved], indent=2), encoding="utf-8",
     )
     if skill is not None:
-        (attempt.input / "skill.json").write_text(
-            json.dumps(skill, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-        )
+        write_skill_contract(attempt, skill)
     return attempt, resolved
 
 
@@ -857,13 +879,21 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         merged = {**context, **{str(key): str(value)
                                 for key, value in decision.params.items()},
                   "artifacts": str(planned), "attempt": "{attempt-id}"}
+        attempt = None
+        skill_contract = None
         try:
+            if "fan_out" in spec and skill is not None:
+                attempt = paths.allocate_attempt(node)
+                skill_contract = write_skill_contract(attempt, skill)
             if "fan_out" in spec:
-                commands = fan_out_plan(spec, merged, args.journal, environment, planned)
+                commands = fan_out_plan(
+                    spec, merged, args.journal, environment, planned,
+                    skill_contract=skill_contract,
+                )
             else:
                 commands = [(planned, resolve(spec, merged, args.journal, environment))]
             attempt, commands = allocate_commands(
-                paths, node, planned, commands, skill=skill,
+                paths, node, planned, commands, skill=skill, attempt=attempt,
             )
             prepare_regression_attempt(
                 bridge, spec, attempt, args.journal, args.subject, environment,
@@ -1229,7 +1259,12 @@ def _run(args, resources: ExitStack) -> int:
                 return finish_scheduled_graph(bridge, args, environment)
             current = next_task if next_task in by_id else None
             continue
+        attempt = None
+        skill_contract = None
         try:
+            if args.execute and "fan_out" in spec and skill is not None:
+                attempt = args.run_paths.allocate_attempt(current)
+                skill_contract = write_skill_contract(attempt, skill)
             if "fan_out" in spec:
                 commands = fan_out_plan(
                     spec,
@@ -1238,6 +1273,7 @@ def _run(args, resources: ExitStack) -> int:
                     environment,
                     artifacts,
                     verify_input_skills=args.from_node is not None,
+                    skill_contract=skill_contract,
                 )
             else:
                 commands = [(
@@ -1265,7 +1301,7 @@ def _run(args, resources: ExitStack) -> int:
         crash_logs: list[str] = []
         if args.execute:
             attempt, commands = allocate_commands(
-                args.run_paths, current, artifacts, commands, skill=skill,
+                args.run_paths, current, artifacts, commands, skill=skill, attempt=attempt,
             )
             artifacts = attempt.output
             context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
