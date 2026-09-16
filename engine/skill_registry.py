@@ -147,6 +147,7 @@ def execution_contract(
     task_type: str,
     *,
     skills_root: Path = DEFAULT_SKILLS_ROOT,
+    catalog_path: Path = DEFAULT_CATALOG,
 ) -> dict[str, Any]:
     """Build the exact method packet an executor or Agent must consume."""
     contract = {
@@ -173,15 +174,37 @@ def execution_contract(
         raise SkillResolutionError(
             f"method package {package_id!r} does not support task_type={task_type!r}"
         )
-    if package.get("catalog") != str(DEFAULT_CATALOG.relative_to(REPO_ROOT)):
+    catalog_value = Path(package["catalog"])
+    package_catalog = (
+        catalog_value.resolve()
+        if catalog_value.is_absolute()
+        else (REPO_ROOT / catalog_value).resolve()
+    )
+    expected_catalog = catalog_path.resolve()
+    if package_catalog != expected_catalog:
         raise SkillResolutionError(
             f"method package {package_id!r} does not reference "
-            f"{DEFAULT_CATALOG.relative_to(REPO_ROOT)}"
+            f"{catalog_path}"
         )
     method_value = package.get("method_document")
     if not isinstance(method_value, str) or not method_value:
         raise SkillResolutionError(f"method package {package_id!r} has no method_document")
-    method_path = (REPO_ROOT / method_value).resolve()
+    method_value_path = Path(method_value)
+    if method_value_path.is_absolute():
+        method_path = method_value_path.resolve()
+    else:
+        candidates = [
+            (REPO_ROOT / method_value_path).resolve(),
+            (skills_root.parent / method_value_path).resolve(),
+            (package["_descriptor_path"].parent / method_value_path).resolve(),
+        ]
+        method_path = next(
+            (
+                candidate for candidate in candidates
+                if candidate.parent == package["_descriptor_path"].resolve().parent
+            ),
+            candidates[0],
+        )
     skills_root_resolved = skills_root.resolve()
     if method_path != skills_root_resolved and skills_root_resolved not in method_path.parents:
         raise SkillResolutionError(
@@ -255,7 +278,9 @@ def validate_method_references(
             continue
         try:
             for task_type in skill.get("task_types", []):
-                execution_contract(skill, task_type, skills_root=skills_root)
+                execution_contract(
+                    skill, task_type, skills_root=skills_root, catalog_path=path,
+                )
         except (OSError, yaml.YAMLError, SkillResolutionError) as error:
             errors.append(f"{skill.get('id')}: {error}")
     for package_id in sorted(set(packages) - referenced):

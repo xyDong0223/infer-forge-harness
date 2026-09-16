@@ -151,6 +151,54 @@ class SkillRegistryTest(unittest.TestCase):
             with self.assertRaisesRegex(SkillResolutionError, "front matter"):
                 execution_contract(selected, "model_scan", skills_root=root)
 
+    def test_alternate_catalog_and_relative_method_document_are_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills_root = root / "skills"
+            package = skills_root / "example"
+            package.mkdir(parents=True)
+            catalog = root / "catalog.yaml"
+            catalog.write_text(
+                "\n".join([
+                    "kind: SkillCatalog",
+                    "entries:",
+                    "  - id: example-route",
+                    "    task_types: [model_scan]",
+                    "    method_package: example",
+                    "    tools: [model_scan]",
+                    "    verification: scan_validator",
+                    "    exit_conditions: [SCAN_READY]",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            (package / "SKILL.md").write_text(
+                "---\nname: example\n---\n# Example\n", encoding="utf-8"
+            )
+            (package / "skill.yaml").write_text(
+                "\n".join([
+                    "kind: Skill",
+                    "id: example",
+                    "task_types: [model_scan]",
+                    f"catalog: {catalog}",
+                    "method_document: skills/example/SKILL.md",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            selected = load_catalog(catalog)[0]
+            contract = execution_contract(
+                selected, "model_scan", skills_root=skills_root,
+                catalog_path=catalog,
+            )
+            self.assertEqual(contract["method"]["content"], (
+                package / "SKILL.md"
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(
+                validate_method_references(catalog, skills_root),
+                [],
+            )
+
     def test_new_correctness_tasks_use_kernel_grade(self):
         for task_type in (
             "platform_kernel_correctness",

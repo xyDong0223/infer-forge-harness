@@ -631,8 +631,6 @@ def reusable_fact(
     skill: dict | None = None,
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
-    if "fan_out" in spec:
-        return None
     kind = spec.get("produces")
     if not kind or not environment:
         return None
@@ -687,6 +685,85 @@ def reusable_fact(
         if environment.get("environment_fingerprint") not in (None, proven):
             return None
     return hit
+
+
+def _fact_index(journal: Path, fact: dict) -> int:
+    """Return the append-order position of an exact Journal fact."""
+    entries = journal_module.load(journal)
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index] == fact:
+            return index
+    return -1
+
+
+def _input_kinds(spec: dict, context: dict) -> tuple[set[str], set[str]]:
+    """Return required and optional fact kinds used to produce this node."""
+    required = {
+        reference.split(":", 2)[1]
+        for reference in (spec.get("needs") or {}).values()
+    }
+    optional = {
+        reference.split(":", 2)[1]
+        for reference in (spec.get("optional") or {}).values()
+    }
+    if "contract_instance" not in context and (
+        "cli/deployment/proof.py" in spec.get("command", [])
+        or "--contract-instance" in spec.get("command", [])
+    ):
+        # A rendered plan supplies the contract when available; environment
+        # proof can instead receive the original contract from run context.
+        optional.add("DeploymentPlan")
+    return required, optional
+
+
+def reusable_inputs_current(
+    spec: dict,
+    fact: dict,
+    subject: str,
+    journal: Path,
+    environment: dict,
+    context: dict,
+    _seen: set[str] | None = None,
+    *,
+    require_order: bool = True,
+) -> bool:
+    """Require consumed facts to be Skill-current and, for reuse, not newer."""
+    produced = spec.get("produces")
+    seen = set(_seen or ())
+    if produced:
+        if produced in seen:
+            return False
+        seen.add(produced)
+    current_index = _fact_index(journal, fact)
+    if current_index < 0:
+        return False
+    required, optional = _input_kinds(spec, context)
+    for kind in sorted(required | optional):
+        raw = input_fact(journal, kind, subject, environment, context=context)
+        verified = input_fact(
+            journal, kind, subject, environment, context=context, verify_skill=True,
+        )
+        if kind in required and verified is None:
+            return False
+        if kind in optional and raw is not None and verified is None:
+            return False
+        if (
+            require_order
+            and verified is not None
+            and _fact_index(journal, verified) >= current_index
+        ):
+            return False
+        producer = next(
+            (candidate for candidate in NODES.values()
+             if candidate.get("produces") == kind),
+            None,
+        )
+        if verified is not None and producer is not None and not reusable_inputs_current(
+            producer, verified, subject, journal, environment, context, seen,
+            require_order=require_order,
+        ):
+            return False
+    return True
 
 
 def fact_environment(kind: str, environment: dict) -> dict:
@@ -983,11 +1060,17 @@ def scheduled_spec(spec: dict, context: dict) -> dict:
     return {**spec, "command": command}
 
 
-def finish_scheduled_graph(bridge, args, environment: dict) -> int:
+def finish_scheduled_graph(bridge, args, environment: dict, context: dict) -> int:
     facts = {}
     for spec in NODES.values():
-        fact = input_fact(args.journal, spec["produces"], args.subject, environment)
-        if fact is not None:
+        fact = input_fact(
+            args.journal, spec["produces"], args.subject, environment,
+            context=context, verify_skill=True,
+        )
+        if fact is not None and reusable_inputs_current(
+            spec, fact, args.subject, args.journal, environment, context,
+            require_order=False,
+        ):
             facts[spec["produces"]] = Path(fact["artifacts"])
     try:
         result = bridge.finalize(facts)
@@ -1221,6 +1304,13 @@ def _run(args, resources: ExitStack) -> int:
             spec, args.subject, args.journal, environment, skill=skill,
         )
         if "fan_out" in spec:
+            # Child methods are selected after fan-out discovery. Until their
+            # complete contract set is bound to the aggregate, execute the node
+            # again rather than skipping it from a base-Skill comparison.
+            prior = None
+        elif prior is not None and not reusable_inputs_current(
+            spec, prior, args.subject, args.journal, environment, context,
+        ):
             prior = None
         if bridge and spec["produces"] in (
             "OperatorTaskDispatch", "OperatorIntegration", "TorchShimRegistry",
@@ -1260,7 +1350,7 @@ def _run(args, resources: ExitStack) -> int:
             if args.until_node and current == args.until_node:
                 return 0
             if bridge and args.execute and next_task == "DELIVERED":
-                return finish_scheduled_graph(bridge, args, environment)
+                return finish_scheduled_graph(bridge, args, environment, context)
             current = next_task if next_task in by_id else None
             continue
         attempt = None
@@ -1520,7 +1610,7 @@ def _run(args, resources: ExitStack) -> int:
         if nxt not in by_id:
             print(f"[edge] {current} --> {nxt}")
             if bridge and args.execute and nxt == "DELIVERED":
-                return finish_scheduled_graph(bridge, args, environment)
+                return finish_scheduled_graph(bridge, args, environment, context)
             break
         if args.execute:
             emit_summary(

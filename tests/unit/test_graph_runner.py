@@ -25,6 +25,7 @@ from runners.graph_runner import (  # noqa: E402
     node_task_type,
     resolve,
     reusable_fact,
+    reusable_inputs_current,
     bind_proven_environment,
     fact_environment,
     record_fact,
@@ -595,7 +596,7 @@ class FactReliabilityTest(unittest.TestCase):
                 )
             )
 
-    def test_resume_does_not_reuse_fan_out_aggregate(self):
+    def test_fan_out_fact_remains_available_as_a_downstream_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             journal = root / "journal.jsonl"
@@ -603,8 +604,84 @@ class FactReliabilityTest(unittest.TestCase):
             (root / spec["state_file"]).write_text('{"state":"EVALUATION_PASS"}')
             skill = {"id": "capability-evaluator", "method": None}
             record_fact(journal, spec, "demo", root, ENVIRONMENT, skill=skill)
-            self.assertIsNone(
+            self.assertIsNotNone(
                 reusable_fact(spec, "demo", journal, ENVIRONMENT, skill=skill)
+            )
+
+    def test_reuse_rejects_a_consumer_older_than_its_latest_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            support = root / "support"
+            match = root / "match"
+            newer_support = root / "newer-support"
+            intake = root / "intake"
+            environment_root = root / "environment"
+            for bundle, status, state in (
+                (intake, "intake_status.json", "INTAKE_READY"),
+                (support, "scan_status.json", "SCAN_READY"),
+                (match, "match_status.json", "MATCH_READY"),
+                (newer_support, "scan_status.json", "SCAN_READY"),
+            ):
+                bundle.mkdir()
+                (bundle / status).write_text(json.dumps({"state": state}))
+            environment_bundle(environment_root)
+            skills = {}
+            for task_type in (
+                "model_intake", "environment_proof", "model_scan", "capability_match",
+            ):
+                skills[task_type] = graph_runner.skill_registry.execution_contract(
+                    graph_runner.skill_registry.resolve_for_context(task_type, {}),
+                    task_type,
+                )
+            record_fact(
+                journal, NODES["model_intake"], "demo", intake, ENVIRONMENT,
+                skill=skills["model_intake"],
+            )
+            record_fact(
+                journal, NODES["environment_proof"], "demo", environment_root,
+                ENVIRONMENT, skill=skills["environment_proof"],
+            )
+            scan_skill = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("model_scan", {}),
+                "model_scan",
+            )
+            match_skill = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("capability_match", {}),
+                "capability_match",
+            )
+            record_fact(
+                journal, NODES["model_scan"], "demo", support, ENVIRONMENT,
+                skill=scan_skill,
+            )
+            match_fact = record_fact(
+                journal, NODES["capability_match"], "demo", match, ENVIRONMENT,
+                skill=match_skill,
+            )
+            context = {
+                "subject": "demo",
+                "_producer_task_types": {
+                    "ModelRequest": "model_intake",
+                    "EnvironmentProof": "environment_proof",
+                    "ModelSupportCard": "model_scan",
+                    "CapabilityMatch": "capability_match",
+                },
+            }
+            self.assertTrue(
+                reusable_inputs_current(
+                    NODES["capability_match"], match_fact, "demo", journal,
+                    ENVIRONMENT, context,
+                )
+            )
+            record_fact(
+                journal, NODES["model_scan"], "demo", newer_support, ENVIRONMENT,
+                skill=scan_skill,
+            )
+            self.assertFalse(
+                reusable_inputs_current(
+                    NODES["capability_match"], match_fact, "demo", journal,
+                    ENVIRONMENT, context,
+                )
             )
 
     def test_from_node_resolution_rejects_inputs_from_a_different_skill_method(self):
