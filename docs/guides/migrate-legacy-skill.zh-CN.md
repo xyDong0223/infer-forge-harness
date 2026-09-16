@@ -230,6 +230,20 @@ catalog: catalog/skill_catalog.yaml
 method_document: skills/example_skill/SKILL.md
 ```
 
+在 Catalog 条目中用 `method_package` 引用包 ID，而不是再次填写文档路径：
+
+```yaml
+- id: example-routing
+  task_types: [example_task]
+  method_package: example-skill
+```
+
+Graph Runner 会在执行前校验所有包引用，并把所选 Catalog 规则和
+`SKILL.md` 正文（含 SHA-256）固化到当前 attempt 的 `input/skill.json`。
+子进程通过 `INFER_FORGE_SKILL_CONTRACT` 获得该路径；恢复 Agent 的
+`DecisionRequest.skill` 也携带同一个执行包。这样 Skill 是可审计的执行输入，
+而不是只存在于 Task Memory 中的名称。
+
 Skill Catalog 是 Graph Runner 当前使用的机器可读入口。一个默认条目至少要有：
 
 ```yaml

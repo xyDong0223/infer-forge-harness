@@ -447,7 +447,8 @@ def node_passed(artifacts: Path, spec: dict, returncode: int) -> bool:
 
 
 def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
-                      commands: list[tuple[Path, list[str]]]):
+                      commands: list[tuple[Path, list[str]]],
+                      skill: dict | None = None):
     """Bind a read-only plan to a fresh workspace only when it will execute."""
     attempt = paths.allocate_attempt(node)
     resolved = [
@@ -459,7 +460,27 @@ def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
     (attempt.input / "commands.json").write_text(
         json.dumps([command for _, command in resolved], indent=2), encoding="utf-8",
     )
+    if skill is not None:
+        (attempt.input / "skill.json").write_text(
+            json.dumps(skill, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
     return attempt, resolved
+
+
+def skill_routing(skill: dict, **extra) -> dict:
+    """Keep Task Memory correlated with the immutable method snapshot."""
+    routing = {
+        "skill": skill["id"],
+        "verification": skill["verification"],
+        "tools": skill["tools"],
+    }
+    method = skill.get("method")
+    if method:
+        routing["method_package"] = method["package_id"]
+        routing["method_document"] = method["document"]
+        routing["method_sha256"] = method["sha256"]
+    routing.update(extra)
+    return routing
 
 
 def command_logs(attempt, target: Path) -> Path:
@@ -517,7 +538,8 @@ SUCCESS_STATES = {
 
 
 def reusable_fact(
-    spec: dict, subject: str, journal: Path, environment: dict
+    spec: dict, subject: str, journal: Path, environment: dict,
+    skill: dict | None = None,
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
     kind = spec.get("produces")
@@ -539,6 +561,14 @@ def reusable_fact(
     ):
         return None
     detail = hit.get("detail") or {}
+    if skill is not None:
+        method = skill.get("method")
+        expected = {
+            "id": skill["id"],
+            "method_sha256": method["sha256"] if method else None,
+        }
+        if detail.get("skill") != expected:
+            return None
     if detail.get("returncode", 0) != 0:
         return None
     if detail.get("status_sha256") and detail["status_sha256"] != file_digest(
@@ -620,9 +650,16 @@ def bind_proven_environment(context: dict, environment: dict, journal: Path) -> 
 
 
 def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
-                environment: dict, returncode: int = 0) -> dict:
+                environment: dict, returncode: int = 0,
+                skill: dict | None = None) -> dict:
     detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
               "returncode": returncode}
+    if skill is not None:
+        method = skill.get("method")
+        detail["skill"] = {
+            "id": skill["id"],
+            "method_sha256": method["sha256"] if method else None,
+        }
     if spec["produces"] == "EnvironmentProof":
         detail["environment_fingerprint"] = proof_fingerprint(artifacts)
     return journal_module.record(
@@ -688,7 +725,7 @@ def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
 
 
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
-                     environment: dict, state: str, bridge=None) -> object:
+                     environment: dict, state: str, skill: dict, bridge=None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -711,6 +748,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         backend=environment.get("hardware", "p800"),
         failure=failure_evidence, attempts_remaining=args.recovery_budget,
         context={k: str(v) for k, v in context.items()},
+        skill=skill,
     )
     brain = brain_from_config(
         {"brain": args.brain, "decide_command": args.decide_command,
@@ -736,7 +774,9 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                 commands = fan_out_plan(spec, merged, args.journal, environment, planned)
             else:
                 commands = [(planned, resolve(spec, merged, args.journal, environment))]
-            attempt, commands = allocate_commands(paths, node, planned, commands)
+            attempt, commands = allocate_commands(
+                paths, node, planned, commands, skill=skill,
+            )
             prepare_regression_attempt(
                 bridge, spec, attempt, args.journal, args.subject, environment,
             )
@@ -757,6 +797,9 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                 result = evidence.run_logged(
                     command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                     crash_tag="recovery", watch=watch,
+                    env_overrides={
+                        "INFER_FORGE_SKILL_CONTRACT": str(attempt.input / "skill.json"),
+                    },
                 )
             except (OSError, ValueError):
                 ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")
@@ -771,14 +814,18 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             identity=attempt.identity, outcome=new_state,
             required=(f"output/{spec['state_file']}",) if passed else (),
         )
-        record_fact(args.journal, spec, args.subject, attempt.output, environment, returncode)
+        record_fact(
+            args.journal, spec, args.subject, attempt.output, environment,
+            returncode, skill=skill,
+        )
         failure_evidence.artifacts.append(str(attempt.output))
         if passed:
             final_artifacts = str(attempt.output)
         return passed, new_state
 
     actions = default_actions(
-        REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir
+        REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir,
+        skill=skill,
     )
     controller = RecoveryController(brain, rerun, actions, budget=args.recovery_budget)
     outcome = controller.recover(request)
@@ -885,6 +932,14 @@ def _run(args, resources: ExitStack) -> int:
                       "message": str(error)}, args.json)
         return 2
     try:
+        method_errors = skill_registry.validate_method_references()
+        if method_errors:
+            emit_summary(
+                {"status": "BLOCKED", "reason_code": "METHOD_DOC_INVALID",
+                 "message": "; ".join(method_errors)},
+                args.json,
+            )
+            return 2
         requested_target = load_target(args.target) if args.target else None
         if requested_target is not None:
             resolve_adapters(requested_target, require_supported=True)
@@ -986,14 +1041,14 @@ def _run(args, resources: ExitStack) -> int:
             break
         task_type = node_task_type(node)
         try:
-            skill = (
-                skill_registry.resolve_for_context(task_type, context)
-                if task_type else None
-            )
-        except skill_registry.SkillResolutionError:
+            skill = skill_registry.resolve_for_context(task_type, context) if task_type else None
+            if skill is not None:
+                skill = skill_registry.execution_contract(skill, task_type)
+        except (OSError, skill_registry.SkillResolutionError) as error:
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
-                 "reason_code": "SKILL_UNRESOLVED", "message": f"task_type={task_type}"},
+                 "reason_code": "SKILL_UNRESOLVED",
+                 "message": f"task_type={task_type}: {error}"},
                 args.json,
             )
             break
@@ -1020,7 +1075,9 @@ def _run(args, resources: ExitStack) -> int:
 
         artifacts = args.artifact_root / "{attempt-output}"
         context.update(artifacts=str(artifacts), attempt="{attempt-id}")
-        prior = reusable_fact(spec, args.subject, args.journal, environment)
+        prior = reusable_fact(
+            spec, args.subject, args.journal, environment, skill=skill,
+        )
         if bridge and spec["produces"] in (
             "OperatorTaskDispatch", "OperatorIntegration", "TorchShimRegistry",
         ):
@@ -1039,8 +1096,7 @@ def _run(args, resources: ExitStack) -> int:
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
                  "success_states": sorted(SUCCESS_STATES)},
-                routing={"mode": "reuse_journal_fact", "skill": skill["id"],
-                         "verification": skill["verification"]},
+                routing=skill_routing(skill, mode="reuse_journal_fact"),
             )
             task_memory.finish_block(
                 memory,
@@ -1083,7 +1139,7 @@ def _run(args, resources: ExitStack) -> int:
         crash_logs: list[str] = []
         if args.execute:
             attempt, commands = allocate_commands(
-                args.run_paths, current, artifacts, commands,
+                args.run_paths, current, artifacts, commands, skill=skill,
             )
             artifacts = attempt.output
             context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
@@ -1096,8 +1152,7 @@ def _run(args, resources: ExitStack) -> int:
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
                                 "success_states": sorted(SUCCESS_STATES)},
-                routing={"skill": skill["id"], "verification": skill["verification"],
-                         "tools": skill["tools"]},
+                routing=skill_routing(skill),
             )
             task_memory.save(loop_state, memory)
         if not args.execute:
@@ -1120,6 +1175,9 @@ def _run(args, resources: ExitStack) -> int:
                     result = evidence.run_logged(
                         command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                         crash_tag="node", watch=watch,
+                        env_overrides={
+                            "INFER_FORGE_SKILL_CONTRACT": str(attempt.input / "skill.json"),
+                        },
                     )
                 except (OSError, ValueError):
                     ArtifactStore(attempt.root).register(
@@ -1141,7 +1199,10 @@ def _run(args, resources: ExitStack) -> int:
                 identity=attempt.identity, outcome=state,
                 required=(f"output/{spec['state_file']}",) if passed else (),
             )
-            record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
+            record_fact(
+                args.journal, spec, args.subject, artifacts, environment,
+                returncode, skill=skill,
+            )
             next_block = node.get("on_success" if passed else "on_failure")
             if bridge and not passed and spec["produces"] in (
                 "OperatorTaskDispatch", "OperatorIntegration",
@@ -1203,20 +1264,24 @@ def _run(args, resources: ExitStack) -> int:
                 if args.auto_recover:
                     outcome = attempt_recovery(
                         args, node=current, spec=spec, context=context,
-                        artifacts=artifacts, environment=environment, state=state, bridge=bridge,
+                        artifacts=artifacts, environment=environment, state=state,
+                        skill=skill, bridge=bridge,
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
                         artifacts = Path(outcome.final_artifacts)
                         context["artifacts"] = str(artifacts)
                         state = outcome.final_state or read_state(artifacts, spec)
-                        record_fact(args.journal, spec, args.subject, artifacts, environment)
+                        record_fact(
+                            args.journal, spec, args.subject, artifacts,
+                            environment, skill=skill,
+                        )
                         task_memory.start_block(
                             memory,
                             block_id=f"{current}:recovered:{len(memory['completed_loop_blocks']) + 1}",
                             sub_target=current,
                             exit_condition={"success_states": sorted(SUCCESS_STATES)},
-                            routing={"mode": "recovery", "skill": skill["id"]},
+                            routing=skill_routing(skill, mode="recovery"),
                         )
                         task_memory.finish_block(
                             memory, state, artifacts=[str(artifacts)],

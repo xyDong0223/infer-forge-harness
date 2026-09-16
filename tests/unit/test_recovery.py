@@ -44,6 +44,7 @@ def make_request() -> DecisionRequest:
         failure=FailureEvidence(node="service_proof", state="DEPLOYMENT_FAILED",
                                 reason="Check 0 == ret failed"),
         context={"gpu_memory_utilization": "0.92", "pod": "kdp-pod-0"},
+        skill={"id": "environment-proof", "method": {"sha256": "abc"}},
     )
 
 
@@ -118,6 +119,8 @@ class RecoveryLoopTest(unittest.TestCase):
         self.assertEqual(second.history[0]["outcome"], "node_still_failing")
         # Context travels so the decider knows what it may vary.
         self.assertEqual(second.context["gpu_memory_utilization"], "0.92")
+        self.assertEqual(second.skill["id"], "environment-proof")
+        self.assertEqual(second.skill["method"]["sha256"], "abc")
 
     def test_an_action_without_an_executor_stops_the_loop(self):
         def rerun(decision):
@@ -184,6 +187,28 @@ def test_action_retries_preserve_previous_output_and_inventory(tmp_path):
     assert first["artifacts"] != second["artifacts"]
     assert report.read_bytes() == original
     assert len(list(tmp_path.rglob("manifest.json"))) == 2
+
+
+def test_action_attempt_receives_the_selected_skill(tmp_path):
+    import json
+
+    observed = {}
+    skill = {"id": "runtime-state-triage", "method": {"sha256": "abc"}}
+
+    def run(command, **kwargs):
+        observed.update(kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    actions = default_actions(
+        ROOT, {"subject": "demo", "pod": "fixture"}, tmp_path / "recovery",
+        skill=skill,
+    )
+    with patch("engine.recovery.subprocess.run", side_effect=run):
+        result = actions["RUN_TRIAGE"](Decision("RUN_TRIAGE", "capture"))
+    skill_path = Path(observed["INFER_FORGE_SKILL_CONTRACT"])
+    assert skill_path.parent.name == "input"
+    assert json.loads(skill_path.read_text(encoding="utf-8")) == skill
+    assert Path(result["artifacts"]).parent / "input" == skill_path.parent
 
 
 if __name__ == "__main__":

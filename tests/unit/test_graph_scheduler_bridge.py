@@ -562,7 +562,15 @@ def test_recovery_captures_each_regression_attempt_before_execution(bridge, monk
     )
     outcome = graph_runner.attempt_recovery(
         args, node="regression", spec=spec, context={"subject": "m"},
-        artifacts=failed, environment=environment, state="READINESS_TIMEOUT", bridge=bridge,
+        artifacts=failed, environment=environment, state="READINESS_TIMEOUT",
+        skill={
+            "id": "fixture",
+            "task_type": "service_proof",
+            "tools": [],
+            "verification": "fixture-validator",
+            "method": None,
+        },
+        bridge=bridge,
     )
     assert outcome.status == "RECOVERED"
     assert len(observed) == 1

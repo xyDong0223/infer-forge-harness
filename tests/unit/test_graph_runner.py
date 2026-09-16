@@ -48,7 +48,7 @@ def graph_fixture(tmp_path, monkeypatch, outcomes):
     calls = []
 
     def run(command, *, log_path, **kwargs):
-        calls.append(command)
+        calls.append({"command": command, "kwargs": kwargs})
         out = Path(command[command.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         payload = outcomes.pop(0) if outcomes else {"state": "INTAKE_READY"}
@@ -82,6 +82,23 @@ def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_pat
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
     assert len(list(root.glob("tasks/intake/attempts/*"))) == 2
+
+
+def test_graph_snapshots_selected_skill_in_attempt_and_task_memory(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert _graph_runner_cli.main() == 0
+    root = tmp_path / "run"
+    packet_path = next(root.glob("tasks/intake/attempts/*/input/skill.json"))
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["id"] == "fixture"
+    assert packet["task_type"] == "model_intake"
+    memory = json.loads((root / "task_memory.json").read_text(encoding="utf-8"))
+    assert memory["completed_loop_blocks"][0]["routing"]["skill"] == "fixture"
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["env_overrides"]["INFER_FORGE_SKILL_CONTRACT"] == str(
+        packet_path
+    )
 
 
 def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
@@ -138,6 +155,7 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     root = tmp_path / "run"
     reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
     assert len(calls) == len(reports) == 3
+    assert len(list(root.glob("tasks/intake/attempts/*/input/skill.json"))) == 3
     assert json.loads(reports[0].read_text())["reason"] == "readiness timeout"
     assert json.loads(reports[1].read_text())["state"] == "FAILED"
     hit = reusable_fact(NODES["model_intake"], "demo", root / "journal.jsonl",
@@ -468,6 +486,33 @@ class FactReliabilityTest(unittest.TestCase):
             record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT)
             status.write_text('{"state":"SCAN_READY","revision":"new"}')
             self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_resume_rejects_evidence_from_a_different_skill_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            old = {
+                "id": "model-scanner",
+                "method": {"sha256": "old"},
+            }
+            new = {
+                "id": "model-scanner",
+                "method": {"sha256": "new"},
+            }
+            record_fact(
+                journal, NODES["model_scan"], "demo", root, ENVIRONMENT, skill=old
+            )
+            self.assertIsNotNone(
+                reusable_fact(
+                    NODES["model_scan"], "demo", journal, ENVIRONMENT, skill=old
+                )
+            )
+            self.assertIsNone(
+                reusable_fact(
+                    NODES["model_scan"], "demo", journal, ENVIRONMENT, skill=new
+                )
+            )
 
     def test_failed_command_cannot_reuse_a_leftover_success_status(self):
         with tempfile.TemporaryDirectory() as tmp:

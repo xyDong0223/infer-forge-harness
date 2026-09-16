@@ -143,6 +143,23 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     memory = json.loads((scenario.run_root / "task_memory.json").read_text())
     assert memory["next_loop_block"]["sub_target"] == "mat-026-operator-candidate-integration"
     assert memory["completed_loop_blocks"][-1]["state"] == "WAITING_FOR_OPERATORS"
+    scan_skill_path = next(
+        scenario.run_root.glob("tasks/mat-002-model-scan/attempts/*/input/skill.json")
+    )
+    scan_skill = json.loads(scan_skill_path.read_text(encoding="utf-8"))
+    assert scan_skill["id"] == "model-scanner"
+    assert scan_skill["method"]["package_id"] == "model-scanner"
+    assert scan_skill["method"]["content"].startswith("---\nname: model-scanner\n")
+    scan_fact = next(fact for fact in scenario.facts() if fact["kind"] == "ModelSupportCard")
+    assert scan_fact["detail"]["skill"] == {
+        "id": "model-scanner",
+        "method_sha256": scan_skill["method"]["sha256"],
+    }
+    scan_block = next(
+        block for block in memory["completed_loop_blocks"]
+        if block["sub_target"] == "mat-002-model-scan"
+    )
+    assert scan_block["routing"]["method_sha256"] == scan_skill["method"]["sha256"]
     original_service = next(
         fact["artifacts"] for fact in scenario.facts() if fact["kind"] == "DeploymentProof"
     )

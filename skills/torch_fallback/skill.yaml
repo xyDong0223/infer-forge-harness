@@ -1,6 +1,6 @@
 api_version: infer.kunlun/v1alpha1
 kind: Skill
 id: torch-fallback
-task_types: [patch_placement]
+task_types: [failure_triage, patch_placement, deployment_plan]
 catalog: catalog/skill_catalog.yaml
 method_document: skills/torch_fallback/SKILL.md
