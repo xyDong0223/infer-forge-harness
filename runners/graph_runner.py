@@ -321,21 +321,34 @@ def node_task_type(node: dict) -> str | None:
     return contract["metadata"]["task_type"]
 
 
-def resolve(spec: dict, context: dict, journal: Path, environment: dict,
-            command: list[str] | None = None, include_optional: bool = True) -> list[str]:
+def resolve(
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    command: list[str] | None = None,
+    include_optional: bool = True,
+    verify_input_skills: bool = False,
+) -> list[str]:
     if spec.get("needs") and not environment:
         raise Unresolved("a nonempty environment is required to reuse Journal inputs; "
                          "provide --target/--env and a current environment proof")
     if "contract_instance" not in context:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
-        plan = input_fact(journal, "DeploymentPlan", context["subject"], environment)
+        plan = input_fact(
+            journal, "DeploymentPlan", context["subject"], environment, context=context,
+            verify_skill=verify_input_skills,
+        )
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
     command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
-        hit = input_fact(journal, kind, context["subject"], environment)
+        hit = input_fact(
+            journal, kind, context["subject"], environment, context=context,
+            verify_skill=verify_input_skills,
+        )
         if not hit:
             raise Unresolved(
                 f"{kind} for {context['subject']} is not in the Journal for this environment; "
@@ -345,7 +358,10 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
     if include_optional:
         for flag, reference in (spec.get("optional") or {}).items():
             _, kind, filename = reference.split(":", 2)
-            hit = input_fact(journal, kind, context["subject"], environment)
+            hit = input_fact(
+                journal, kind, context["subject"], environment, context=context,
+                verify_skill=verify_input_skills,
+            )
             if hit:
                 command += [flag, str(Path(hit["artifacts"]) / filename)]
     if spec.get("produces") == "TorchShimRegistry" and context.get("shim_registry"):
@@ -365,14 +381,23 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
     return command
 
 
-def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -> list[str]:
+def fan_out_items(
+    spec: dict, context: dict, journal: Path, environment: dict, verify_input_skills: bool = False,
+) -> list[str]:
     """Ask the node's own tool how wide it is.
 
     Run even under --plan. The list command reads a recorded artifact and touches
     nothing, and a plan that cannot say how many children will run is not a plan.
     """
-    command = resolve(spec, context, journal, environment,
-                      command=spec["fan_out"]["list"], include_optional=False)
+    command = resolve(
+        spec,
+        context,
+        journal,
+        environment,
+        command=spec["fan_out"]["list"],
+        include_optional=False,
+        verify_input_skills=verify_input_skills,
+    )
     result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True,
                             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     if result.returncode != 0:
@@ -391,8 +416,14 @@ def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -
     raise Unresolved(f"the fan-out list command printed no JSON array: {' '.join(command)}")
 
 
-def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
-                 artifacts: Path) -> list[tuple[Path, list[str]]]:
+def fan_out_plan(
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    artifacts: Path,
+    verify_input_skills: bool = False,
+) -> list[tuple[Path, list[str]]]:
     """One child command per item, then the fan-in.
 
     Each child writes into its own subdirectory so the aggregate can point at the
@@ -400,7 +431,7 @@ def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
     the node's tool provides, not something the executor computes, so the artifact
     format stays owned by the Task.
     """
-    items = fan_out_items(spec, context, journal, environment)
+    items = fan_out_items(spec, context, journal, environment, verify_input_skills=verify_input_skills)
     if not items:
         raise Unresolved(
             "the fan-out list is empty: this model demands none of the dimensions this node "
@@ -413,7 +444,11 @@ def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
         child = artifacts / str(item)
         children.append(child)
         child_context = {**context, variable: item, "artifacts": str(child)}
-        plan.append((child, resolve(spec, child_context, journal, environment)))
+        plan.append((
+            child, resolve(
+                spec, child_context, journal, environment, verify_input_skills=verify_input_skills
+            ),
+        ))
     aggregate = [part.format(**{**context, "artifacts": str(artifacts)})
                  for part in spec["fan_out"]["aggregate"]]
     for child in children:
@@ -607,11 +642,27 @@ def fact_environment(kind: str, environment: dict) -> dict:
     return environment
 
 
-def input_fact(journal: Path, kind: str, subject: str, environment: dict) -> dict | None:
-    spec = next((spec for spec in NODES.values() if spec.get("produces") == kind), None)
-    if spec is None:
+def input_fact(
+    journal: Path,
+    kind: str,
+    subject: str,
+    environment: dict,
+    *,
+    context: dict | None = None,
+    verify_skill: bool = False,
+) -> dict | None:
+    producer = next(((name, spec) for name, spec in NODES.items() if spec.get("produces") == kind), None)
+    if producer is None:
         return None
-    return reusable_fact(spec, subject, journal, environment)
+    _, spec = producer
+    skill = None
+    if verify_skill:
+        try:
+            selected = skill_registry.resolve_for_context(producer[0], context or {})
+            skill = skill_registry.execution_contract(selected, producer[0])
+        except (OSError, skill_registry.SkillResolutionError):
+            return None
+    return reusable_fact(spec, subject, journal, environment, skill=skill)
 
 
 def file_digest(path: Path) -> str | None:
@@ -1121,9 +1172,25 @@ def _run(args, resources: ExitStack) -> int:
             continue
         try:
             if "fan_out" in spec:
-                commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
+                commands = fan_out_plan(
+                    spec,
+                    context,
+                    args.journal,
+                    environment,
+                    artifacts,
+                    verify_input_skills=args.from_node is not None,
+                )
             else:
-                commands = [(artifacts, resolve(spec, context, args.journal, environment))]
+                commands = [(
+                    artifacts,
+                    resolve(
+                        spec,
+                        context,
+                        args.journal,
+                        environment,
+                        verify_input_skills=args.from_node is not None,
+                    ),
+                )]
         except WritePolicyError:
             raise
         except (Unresolved, KeyError, ValueError, OSError) as error:

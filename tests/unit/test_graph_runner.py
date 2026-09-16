@@ -514,6 +514,38 @@ class FactReliabilityTest(unittest.TestCase):
                 )
             )
 
+    def test_from_node_resolution_rejects_inputs_from_a_different_skill_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            (root / "model_support.json").write_text("{}")
+            selected = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("model_scan", {"subject": "demo"}),
+                "model_scan",
+            )
+            stale = {
+                "id": selected["id"],
+                "method": {"sha256": "stale-method"},
+            }
+            record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT, skill=stale)
+            spec = {
+                "command": ["probe"],
+                "needs": {"--support-card": "fact:ModelSupportCard:model_support.json"},
+            }
+            self.assertEqual(
+                resolve(spec, {"subject": "demo"}, journal, ENVIRONMENT),
+                ["probe", "--support-card", str(root / "model_support.json")],
+            )
+            with self.assertRaises(Unresolved):
+                resolve(
+                    spec,
+                    {"subject": "demo"},
+                    journal,
+                    ENVIRONMENT,
+                    verify_input_skills=True,
+                )
+
     def test_failed_command_cannot_reuse_a_leftover_success_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
