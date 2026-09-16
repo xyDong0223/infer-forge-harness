@@ -101,11 +101,7 @@ def patch(
     *,
     transaction: PatchTransaction | None = None,
 ) -> bool | None:
-    try:
-        text = transaction.read(path) if transaction else path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        print(f"FAIL {path}: target file not found")
-        return None
+    text = transaction.read(path) if transaction else path.read_text(encoding="utf-8")
     changed = False
     for old, new in replacements:
         if new in text:

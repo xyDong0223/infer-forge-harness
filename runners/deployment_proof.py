@@ -590,11 +590,11 @@ class DeploymentProofRunner:
         failed: list[str] = []
         for script in scripts:
             remote = f"/tmp/{script.name}"
-            command = (
-                f"{self.runtime.env_prefix()}; "
-                f"{push_snippet(script, remote)} && python3 {remote}"
-            )
             try:
+                command = (
+                    f"{self.runtime.env_prefix()}; "
+                    f"{push_snippet(script, remote)} && python3 {remote}"
+                )
                 result = self.adapter.exec(self.pod or "", command, timeout=600)
             except (subprocess.TimeoutExpired, OSError) as error:
                 failed.append(script.name)

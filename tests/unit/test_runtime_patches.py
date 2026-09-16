@@ -177,6 +177,12 @@ class PatchScriptSemanticsTest(unittest.TestCase):
         self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
         self.assertEqual(second.read_text(encoding="utf-8"), "unexpected\n")
 
+    def test_missing_target_is_an_execution_failure_not_an_anchor_mismatch(self):
+        missing = Path(tempfile.mkdtemp()) / "missing.py"
+
+        with self.assertRaises(FileNotFoundError):
+            self.module.patch(missing, [("old", "new")])
+
     def test_transaction_rolls_back_a_mid_commit_failure(self):
         root = Path(tempfile.mkdtemp())
         first = root / "first.py"
@@ -219,6 +225,25 @@ class PatchScriptSemanticsTest(unittest.TestCase):
 
             self.assertEqual(result, self.module.NOT_APPLICABLE)
             self.assertFalse(site.exists())
+
+    def test_local_patch_packaging_failure_is_recorded(self):
+        runner = make_runner(_RecordingAdapter([]))
+
+        with mock.patch(
+            "runners.deployment_proof.push_snippet",
+            side_effect=OSError("patch file unreadable"),
+        ):
+            with self.assertRaises(ActionFailed) as ctx:
+                runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OSError: patch file unreadable", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
 
 
 if __name__ == "__main__":
