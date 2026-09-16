@@ -311,6 +311,22 @@ def test_fanout_children_have_unique_outputs_and_logs(tmp_path):
     assert len({graph_runner.command_logs(attempt, target) for target, _ in commands}) == 3
 
 
+def test_fanout_skill_contract_path_falls_back_for_non_child_target(tmp_path):
+    attempt = SimpleNamespace(input=tmp_path / "input")
+    attempt.input.mkdir(parents=True, exist_ok=True)
+    path = graph_runner.command_skill_contract_path(
+        attempt,
+        tmp_path / "outside" / "quantization",
+        tmp_path / "output",
+        {"fan_out": {"var": "dimension"}},
+        "capability_evaluation",
+        {"subject": "demo"},
+        {"id": "base"},
+        {},
+    )
+    assert path == str(attempt.input / "skill.json")
+
+
 def environment_bundle(bundle: Path) -> None:
     bundle.mkdir(parents=True, exist_ok=True)
     names = [

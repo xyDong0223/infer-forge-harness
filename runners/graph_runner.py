@@ -509,7 +509,10 @@ def command_skill_contract_path(
     packet = attempt.input / "skill.json"
     if base_skill is None or "fan_out" not in spec or task_type is None:
         return str(packet)
-    relative = target.relative_to(output_root)
+    try:
+        relative = target.relative_to(output_root)
+    except ValueError:
+        return str(packet)
     if relative == Path("."):
         return str(packet)
     variable = spec["fan_out"].get("var")
