@@ -17,6 +17,18 @@ Infer-Forge 不实现推理引擎，也不重新实现已经存在的模型网�
 > 从[迁移已有 Skill](#迁移已有-skill)开始，完整步骤见
 > [旧 Skill 迁移指南](docs/guides/migrate-legacy-skill.zh-CN.md)。
 
+## 先选一条使用路径
+
+Harness 提供编排和验收基础设施；真实集群、模型权重和实现算子的外部 worker 由使用者接入。
+
+| 你的目标 | 从这里开始 |
+| --- | --- |
+| 第一次使用，先在本地跑通 | [快速上手](docs/guides/quickstart.zh-CN.md)：安装、完整演练、产物导览 |
+| 已有 P800 和模型，准备真实执行 | [配置接入](config/README.md) → [真实模型适配](#运行真实模型适配) |
+| 接自己的 Agent / worker | [CLI 总览](cli/README.md) → [worker 证据协议](docs/migration/worker-results.md) |
+| 扩展流程或迁移已有工具 | [新增 Workflow](docs/guides/add-workflow.zh-CN.md)、[迁移已有 Skill](#迁移已有-skill) |
+| 命令阻塞或结果被拒绝 | [排障与执行边界](docs/guides/troubleshooting.zh-CN.md) |
+
 ## 目录
 
 - [迁移已有 Skill](#迁移已有-skill)
@@ -160,32 +172,18 @@ flowchart TB
 
 ## 快速开始：本地完整演练
 
-这是第一次使用时推荐的入口。它会执行原始生产工作流，并跨多个真实 Python 进程验证 CLI、Graph、Scheduler、租约、Validator、恢复和最终交付；不会访问网络、集群或真实 XPU。
-
-### 1. 安装
-
-```bash
-git clone https://github.com/xyDong0223/infer-forge-harness.git
-cd infer-forge-harness
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[test]'
-```
-
-项目要求 Python 3.10+。本地 E2E 不需要安装 Torch；只有部分 CPU 数值参考测试需要额外安装 Torch。
-
-### 2. 运行模型适配场景
+这是第一次使用时推荐的入口。项目要求 Python 3.10+；先按[快速上手](docs/guides/quickstart.zh-CN.md#1-安装)安装并激活虚拟环境，再从仓库根目录运行：
 
 ```bash
 E2E_ROOT="$(mktemp -d)"
 
-PYTHONDONTWRITEBYTECODE=1 python -m pytest -q \
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider \
   -m local_e2e tests/e2e \
   --basetemp "$E2E_ROOT/pytest" \
   --junitxml "$E2E_ROOT/model-adaptation-e2e.xml"
 ```
+
+`--basetemp` 可能被 pytest 清空，必须使用新的外部目录，不能指向已有 run。演练不需要 Torch、模型权重或集群，也不会访问网络或真实 XPU。
 
 该场景会验证：
 
@@ -198,7 +196,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m pytest -q \
 
 最终状态是 **`SIMULATION_PASS`**，只证明编排和持久化链路正确，不证明真实设备数值、真实模型精度或性能。
 
-完整场景契约和可选硬件层级见 [`tests/e2e/README.md`](tests/e2e/README.md)。
+跑完以后按[产物导览](docs/guides/quickstart.zh-CN.md#3-找到并读懂产物)查看日志、状态和交付证据。完整场景契约和可选硬件层级见 [`tests/e2e/README.md`](tests/e2e/README.md)。
 
 ## 运行真实模型适配
 
@@ -217,7 +215,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m pytest -q \
 - [`glm52-int-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/glm52-int-w8a8-p800.yaml)
 - [`minimax-m25-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/minimax-m25-w8a8-p800.yaml)
 
-示例是参数模板，不包含模型权重、凭据或私有地址。
+示例不包含模型权重或凭据，但保留了原开发环境的镜像、资源名称和路径；接入其他环境时必须逐项核对和替换，见[配置接入说明](config/README.md)。
 
 ### 1. 创建或恢复 run
 
@@ -337,7 +335,7 @@ python cli/adaptation.py --state "$STATE" fail \
   --error "concise original failure"
 ```
 
-失败会创建持久化 diagnosis 任务，不应直接修改 SQLite 状态或静默重试。任务结果协议见 [`docs/migration/worker-results.md`](docs/migration/worker-results.md)。
+失败会创建持久化 diagnosis 任务，不应直接修改 SQLite 状态或静默重试。诊断完成后，由 Main Agent 显式调用 `apply-diagnosis` 消费 `RETRY` 或 `BLOCKED` 结论；实现修复和重新发现类动作仍需外部处理。命令顺序见 [CLI 总览](cli/README.md#诊断后的恢复)，证据要求见 [worker 协议](docs/migration/worker-results.md)。
 
 ### 查看状态并继续
 
@@ -430,6 +428,9 @@ openwiki/      上游、插件和项目工程经验参考
 
 | 文档 | 内容 |
 | --- | --- |
+| [快速上手](docs/guides/quickstart.zh-CN.md) | 安装、本地演练、产物导览与可选数值工具体验 |
+| [CLI 总览](cli/README.md)、[配置接入](config/README.md) | 选择执行入口、接入 worker 和自己的运行环境 |
+| [排障与执行边界](docs/guides/troubleshooting.zh-CN.md) | 常见拒绝、恢复机制和参考路径的支持范围 |
 | [`docs/architecture/implementation-layers.zh-CN.md`](docs/architecture/implementation-layers.zh-CN.md) | 抽象层级、每层意义、Graph/Scheduler 衔接和边界 |
 | [`docs/architecture/source-layout.zh-CN.md`](docs/architecture/source-layout.zh-CN.md) | 当前源码目录责任和依赖方向 |
 | [`docs/guides/add-workflow.zh-CN.md`](docs/guides/add-workflow.zh-CN.md) | 把已有流程或性能、上下文等新能力接入 Harness 的完整步骤 |
@@ -462,7 +463,7 @@ python cli/maintenance/check_repo_references.py
 python -m pytest -q -m local_e2e tests/e2e
 ```
 
-部分 CPU 数值测试会 import Torch；只有执行这些测试时才需要安装对应版本。真实设备测试默认跳过，不能在没有 namespace、镜像 digest、模型 revision、硬件身份和清理策略时连接共享集群。
+部分 CPU 数值测试会 import Torch；只有执行这些测试时才需要安装对应版本，具体选择见[测试指南](tests/README.md)。真实设备测试默认跳过，不能在没有 namespace、镜像 digest、模型 revision、硬件身份和清理策略时连接共享集群。
 
 ---
 

@@ -1,10 +1,17 @@
 # Documentation
 
+- [Local quickstart](guides/quickstart.zh-CN.md): installation, the complete local
+  scenario, artifact inspection and an optional tensor comparison example.
+- [CLI guide](../cli/README.md) and [configuration](../config/README.md):
+  command selection, worker handoff and connecting your own environment.
+- [Troubleshooting](guides/troubleshooting.zh-CN.md): common rejections,
+  diagnosis recovery and CPU reference boundaries.
 - [`architecture/source-layout.zh-CN.md`](architecture/source-layout.zh-CN.md):
   current source ownership, command/implementation separation, and migration rules.
 - [`architecture/implementation-layers.zh-CN.md`](architecture/implementation-layers.zh-CN.md):
   current technical implementation guide in Chinese, explaining each abstraction
-  layer, target resolution, execution flow, and implementation boundaries. Start here.
+  layer, target resolution, execution flow, and implementation boundaries. Start
+  here for architecture; use the quickstart above for a first run.
 - [`architecture.md`](architecture.md): the earlier layer contract, target
   axes, and component ownership map, including historical migration notes.
 - [`architecture/`](architecture/): the platform-neutral core model, the
