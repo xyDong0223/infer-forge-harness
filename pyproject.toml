@@ -39,6 +39,11 @@ runtimes = ["scripts/*.sh"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "local_e2e: required capability scenarios with simulated external boundaries",
+    "device_smoke: opt-in prepared-device smoke with real environment evidence",
+    "real_model: opt-in real-model service and accuracy regression",
+]
 
 [tool.ruff]
 line-length = 100

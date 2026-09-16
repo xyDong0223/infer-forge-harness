@@ -89,6 +89,7 @@ def execute(
     inventory = ArtifactStore(attempt.root)
 
     def finish(status: dict[str, Any], code: int) -> int:
+        status["evidence_mode"] = contract.get("metadata", {}).get("evidence_mode", "real")
         status["artifact_root"] = str(target_dir)
         status["manifest_path"] = str(attempt.root / "manifest.json")
         status["workspace_identity"] = attempt.identity

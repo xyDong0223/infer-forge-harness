@@ -131,10 +131,14 @@ entries:
     outputs: [tensor_diff.json]
   - id: operator_task_dispatch
     command: python3 cli/operators/operator_lifecycle.py dispatch
-    purpose: create durable asynchronous requests for xpu-op-gen
+    purpose: dispatch asynchronous operator work, optionally into a persistent adaptation run
     side_effect: write_artifact
     retryable: true
     outputs: [dispatch_status.json, requests/]
+    scheduler_mode:
+      flags: [--scheduler-state, --run-id]
+      side_effect: write_scheduler_state
+      requires: [bound_environment, measured_operator_contracts]
   - id: baseline_freeze
     command: python3 cli/operators/operator_lifecycle.py freeze-baseline
     purpose: freeze a passing serving and accuracy baseline
@@ -143,7 +147,10 @@ entries:
     outputs: [baseline_manifest.json, baseline_status.json]
   - id: operator_candidate_integration
     command: python3 cli/operators/operator_lifecycle.py integrate
-    purpose: gate one operator candidate against the frozen baseline
+    purpose: gate a file candidate or revalidate all persisted operator stages against the baseline
     side_effect: write_artifact
     retryable: false
     outputs: [integration_status.json]
+    scheduler_mode:
+      flags: [--scheduler-state, --run-id]
+      waiting_is_success: false

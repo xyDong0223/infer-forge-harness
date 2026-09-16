@@ -54,6 +54,7 @@ acceptance:
     - entries
     - unmapped_signals
   require_dispatch_for_unwaived: true
+  scheduler_mode_requires_persisted_operator_tasks: true
   evidence_required: true
 artifacts:
   directory: ${ARTIFACT_DIR}

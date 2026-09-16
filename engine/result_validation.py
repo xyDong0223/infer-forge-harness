@@ -55,10 +55,11 @@ def validate_result(
         mode == "simulation" and run.metadata.get("environment_required")
     ):
         errors.append("simulation evidence cannot satisfy an environment-backed run")
-    if mode == "real" and not identity["environment_fingerprint"]:
-        errors.append("real results require a bound environment fingerprint")
-    if mode == "real" and task.stage != "diagnosis" and run.status != "ENVIRONMENT_READY":
-        errors.append("real results require a currently ready environment")
+    environment_required = mode == "real" or run.metadata.get("graph_environment_required")
+    if environment_required and not identity["environment_fingerprint"]:
+        errors.append("environment-backed results require a bound environment fingerprint")
+    if environment_required and task.stage != "diagnosis" and run.status != "ENVIRONMENT_READY":
+        errors.append("environment-backed results require a currently ready environment")
     identity["evidence_mode"] = mode
     for key, value in identity.items():
         if key not in result or result[key] != value:

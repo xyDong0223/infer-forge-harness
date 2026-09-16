@@ -261,6 +261,17 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 python cli/maintenance/check_repo_references.py
 ```
 
+The required [model-adaptation capability scenario](tests/e2e/README.md) exercises
+the production Graph and persistent scheduler across process boundaries, including
+evidence rejection and restart. It needs only `.[test]`, not Torch or cluster access:
+
+```bash
+python -m pytest -q -m local_e2e tests/e2e
+```
+
+Its final receipt is explicitly `SIMULATION_PASS`, never real-device readiness.
+The local-scenarios CI job preserves logs, database state and evidence manifests.
+
 The P800 integration suite is opt-in. It must never run against a shared cluster without explicit environment configuration, including the namespace, image digest, model revision, hardware, and cleanup policy.
 
 ## Reference material

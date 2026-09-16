@@ -2,15 +2,81 @@
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+import sqlite3
 from typing import Any
+
+
+def _scheduled_dispatch(report: dict[str, Any]) -> list[str]:
+    from engine.scheduler import EventStore
+
+    errors = []
+    try:
+        store = EventStore(report["scheduler_state"], readonly=True)
+        try:
+            run = store.run(report["run_id"])
+            if run is None:
+                return ["dispatch references an unknown adaptation run"]
+            for key, expected in {
+                "subject": run.model_id,
+                "evidence_mode": run.metadata.get("evidence_mode", "real"),
+                "environment_fingerprint": run.environment.get("environment_proof", {}).get("fingerprint"),
+                "artifact_root": run.metadata.get("artifact_root"),
+            }.items():
+                if report.get(key) != expected:
+                    errors.append(f"dispatch {key} does not match the persisted run")
+            if not run.metadata.get("graph_environment_required"):
+                errors.append("dispatch requires an activated graph scheduler binding")
+            if report["state"] != "DISPATCH_BLOCKED" and run.status != "ENVIRONMENT_READY":
+                errors.append("dispatch requires a currently ready environment")
+            task_ids, keys = report.get("task_ids"), report.get("operator_keys")
+            if (not isinstance(task_ids, list) or not isinstance(keys, list)
+                    or not all(isinstance(value, str) for value in [*task_ids, *keys])):
+                return [*errors, "dispatch requires task_ids and operator_keys lists"]
+            tasks = [task for task in store.tasks(run.run_id) if task.task_id in task_ids]
+            if sorted(task.task_id for task in tasks) != sorted(task_ids):
+                errors.append("dispatch task ids do not identify tasks owned by this run")
+            if sorted({task.operator_key for task in tasks}) != sorted(keys):
+                errors.append("dispatch operator keys do not match persisted tasks")
+            if any(task.stage != "torch" for task in tasks):
+                errors.append("dispatch must identify the operator's initial torch task")
+            if report.get("requests") != task_ids or report.get("request_count") != len(task_ids):
+                errors.append("dispatch requests must match persistent task ids")
+            if report["state"] == "DISPATCH_SKIPPED" and task_ids:
+                errors.append("DISPATCH_SKIPPED cannot contain dispatched tasks")
+            sources = report.get("reports")
+            if not isinstance(sources, list) or (not sources and report["state"] != "DISPATCH_BLOCKED"):
+                errors.append("dispatch requires hashed source report references")
+            else:
+                for source in sources:
+                    path = Path(source["path"])
+                    if (path.is_symlink() or not path.is_file()
+                            or hashlib.sha256(path.read_bytes()).hexdigest() != source.get("sha256")):
+                        errors.append("dispatch source report evidence is missing or changed")
+        finally:
+            store.close()
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError) as exc:
+        errors.append(f"cannot validate scheduled dispatch: {exc}")
+    return errors
 
 
 def validate_dispatch(report: dict[str, Any]) -> list[str]:
     errors = []
-    if report.get("state") not in {"DISPATCHED", "DISPATCH_SKIPPED"}:
+    scheduled = "scheduler_state" in report or "run_id" in report or report.get("state") == "DISPATCH_BLOCKED"
+    allowed = {"DISPATCHED", "DISPATCH_SKIPPED"}
+    if scheduled:
+        allowed.add("DISPATCH_BLOCKED")
+    if report.get("state") not in allowed:
         errors.append("dispatch state is invalid")
     if report.get("state") == "DISPATCHED" and not report.get("requests"):
         errors.append("DISPATCHED requires request ids")
+    if scheduled:
+        errors.extend(_scheduled_dispatch(report))
+        if report.get("state") == "DISPATCH_BLOCKED" and not report.get("errors"):
+            errors.append("DISPATCH_BLOCKED must explain unresolved evidence")
+        if report.get("state") != "DISPATCH_BLOCKED" and report.get("errors"):
+            errors.append("successful dispatch cannot contain unresolved errors")
     return errors
 
 
@@ -38,6 +104,41 @@ READY_GATES = (
 
 def validate_integration(report: dict[str, Any]) -> list[str]:
     state = report.get("state")
+    if state in {"OPERATORS_READY", "WAITING_FOR_OPERATORS", "OPERATORS_BLOCKED"}:
+        from engine.graph_bridge import GraphSchedulerBridge
+
+        errors: list[str] = []
+        try:
+            bridge = GraphSchedulerBridge(
+                Path(report["scheduler_state"]), report["run_id"], report["subject"],
+                Path(report["artifact_root"]), {}, execute=False,
+            )
+            try:
+                gate = bridge.delivery_status()
+                try:
+                    baseline = bridge.validate_baseline(Path(report["baseline_path"]))
+                    if report.get("baseline_id") != baseline["baseline_id"]:
+                        errors.append("integration baseline id does not match frozen evidence")
+                except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError) as exc:
+                    gate["state"] = "OPERATORS_BLOCKED"
+                    gate["errors"].append(str(exc))
+                    if state != "OPERATORS_BLOCKED":
+                        errors.append(f"integration baseline evidence rejected: {exc}")
+                for key in ("state", "run_id", "evidence_mode", "environment_fingerprint",
+                            "task_ids", "operator_keys", "task_results", "snapshot_token"):
+                    if report.get(key) != gate.get(key):
+                        errors.append(f"integration {key} does not match the live scheduler gate")
+                if state == "OPERATORS_BLOCKED" and not report.get("errors"):
+                    errors.append("OPERATORS_BLOCKED must explain failed gates")
+                if state == "OPERATORS_READY" and report.get("errors"):
+                    errors.append("OPERATORS_READY cannot contain failed gates")
+            finally:
+                bridge.close()
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError) as exc:
+            errors.append(f"cannot validate scheduled integration: {exc}")
+        return errors
+    if "scheduler_state" in report or "run_id" in report:
+        return ["scheduled integration cannot use legacy candidate states"]
     if state not in {"WAITING_FOR_CANDIDATE", "READY_FOR_INTEGRATION", "CANDIDATE_REJECTED"}:
         return ["integration state is invalid"]
     errors: list[str] = []

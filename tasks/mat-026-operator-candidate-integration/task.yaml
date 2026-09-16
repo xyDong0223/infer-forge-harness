@@ -12,6 +12,9 @@ spec:
   runs_with: |
     python3 cli/operators/operator_lifecycle.py integrate --baseline <baseline_manifest.json> \
       --candidate <candidate_manifest.json> --subject <model> --out <artifacts>
+  runs_with_scheduler: |
+    python3 cli/operators/operator_lifecycle.py integrate --baseline <baseline_manifest.json> \
+      --scheduler-state <state.sqlite> --run-id <run-id> --subject <model> --out <artifacts>
 context:
   target:
     hardware: Kunlunxin-3-P800
@@ -29,6 +32,11 @@ acceptance:
   one_candidate_at_a_time: true
   rollback_on_failure: true
   candidate_must_not_self_certify: true
+  scheduler_mode:
+    revalidate_persisted_worker_evidence: true
+    require_all_operator_stages: [torch, xpu, integration]
+    waiting_is_not_functional_readiness: true
+    final_service_regression_must_follow_operator_completion: true
 checks:
   package_swap:
     # The GLM-5.2 candidate integration failed four times before these were
@@ -56,4 +64,7 @@ exit_states:
   waiting: WAITING_FOR_CANDIDATE
   ready: READY_FOR_INTEGRATION
   rejected: CANDIDATE_REJECTED
+  scheduled_waiting: WAITING_FOR_OPERATORS
+  scheduled_ready: OPERATORS_READY
+  scheduled_blocked: OPERATORS_BLOCKED
 validator: validators/operator_lifecycle_validator.py:validate_integration

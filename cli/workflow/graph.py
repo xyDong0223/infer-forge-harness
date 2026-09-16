@@ -38,6 +38,16 @@ def _main() -> int:
     parser.add_argument("--artifact-root", type=Path,
                         help="external run root override; otherwise --run-id is required")
     parser.add_argument("--run-id", help="explicit durable run identity")
+    parser.add_argument(
+        "--scheduler-state", type=Path,
+        help="connect an existing adaptation run to the persistent operator scheduler",
+    )
+    parser.add_argument(
+        "--operator-report", type=Path,
+        help="measured operator contracts supplementing static gaps (requires --scheduler-state)",
+    )
+    parser.add_argument("--shim-registry", type=Path,
+                        help="declared shim contracts consumed by the runtime shim handoff")
     parser.add_argument("--journal", type=Path)
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                         help="environment fingerprint; facts are only reused within it")

@@ -1,0 +1,60 @@
+schema_version: 1
+capability: model_adaptation
+workflow: workflows/model_adaptation.yaml
+entrypoint: cli/workflow/graph.py
+tiers:
+  local:
+    required: true
+    evidence_mode: simulation
+    test: tests/e2e/test_model_adaptation.py
+    cases:
+      - test_model_adaptation_delivers_after_validated_workers
+      - test_missing_worker_evidence_blocks_delivery
+      - test_pre_operator_service_cannot_certify_delivery
+      - test_fresh_service_cannot_reuse_pre_operator_accuracy
+      - test_resume_preserves_attempts_and_rejects_old_lease
+      - test_environment_tampering_blocks_resume
+      - test_incomplete_operator_report_is_blocked
+      - test_simulation_proof_cannot_unlock_real_run
+    real_components:
+      - cli
+      - workflow
+      - operations
+      - validators
+      - scheduler
+      - journal
+      - task_memory
+      - artifact_store
+    simulated_boundaries:
+      - cluster_adapter
+      - remote_runtime_observations
+      - source_revision_resolution
+      - external_operator_agents
+      - external_capacity_planner
+    proves: orchestration_and_persistence
+    does_not_prove:
+      - real_device_correctness
+      - real_model_accuracy
+      - throughput_or_latency
+  device_smoke:
+    required: false
+    evidence_mode: real
+    test: tests/e2e/test_model_adaptation_hardware.py
+    marker: device_smoke
+    authorization: INFER_FORGE_RUN_DEVICE_SMOKE
+    configuration: INFER_FORGE_HARDWARE_SCENARIO
+    requires: [prepared_pod, pinned_contract, existing_real_run, explicit_authorization]
+  real_model:
+    required: false
+    evidence_mode: real
+    test: tests/e2e/test_model_adaptation_hardware.py
+    marker: real_model
+    authorization: INFER_FORGE_RUN_REAL_MODEL
+    configuration: INFER_FORGE_HARDWARE_SCENARIO
+    requires:
+      - prepared_pod
+      - pinned_contract
+      - existing_real_run
+      - completed_operator_stages
+      - upstream_graph_facts
+      - explicit_authorization

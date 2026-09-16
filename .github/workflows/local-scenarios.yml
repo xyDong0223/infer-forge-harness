@@ -1,0 +1,41 @@
+name: Local capability scenarios
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  model-adaptation:
+    name: Local model adaptation (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[test]'
+      - name: Run required local scenarios
+        run: |
+          python -m pytest -q -m local_e2e tests/e2e \
+            --basetemp "$RUNNER_TEMP/model-adaptation-e2e" \
+            --junitxml "$RUNNER_TEMP/model-adaptation-e2e.xml"
+      - name: Preserve process logs, state and simulation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-adaptation-simulation-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/model-adaptation-e2e
+            ${{ runner.temp }}/model-adaptation-e2e.xml
+          if-no-files-found: error
+          retention-days: 7

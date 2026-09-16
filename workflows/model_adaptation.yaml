@@ -2,6 +2,7 @@ api_version: infer.kunlun/v1alpha1
 kind: Workflow
 metadata:
   name: model_adaptation
+  regression_scenario: tests/e2e/scenarios/model_adaptation.yaml
 spec:
   description: Evidence-driven model adaptation for vLLM-Kunlun.
   entry_task: mat-001-model-intake

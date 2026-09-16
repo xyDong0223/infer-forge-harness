@@ -108,6 +108,17 @@ catalogs, contracts, workflows, tests and documentation whenever an entry moves.
 Run `python3 cli/maintenance/check_repo_references.py` to check references and
 dependency direction. See [source layout](docs/architecture/source-layout.zh-CN.md).
 
+### Capability regression scenarios
+
+Every newly supported capability must have a mandatory local E2E scenario using
+its production CLI/workflow, real scheduler and validators, and persisted
+evidence. Replace only external cluster/runtime/Agent dependencies. Cover
+completion, rejection and restart; never prepopulate success reports or modify
+scheduler state to make a scenario pass. Model adaptation is the first template
+under `tests/e2e/`. Real-device smoke and real-model regression are optional,
+explicitly authorized tiers. Local `SIMULATION_PASS` is not hardware readiness.
+See [scenario protocol](tests/e2e/README.md).
+
 ### Runtime write ownership
 
 Repository files are versioned source, not a run workspace. Managed entry points

@@ -30,6 +30,7 @@ def main() -> int:
     dispatch_parser.add_argument("--out", type=Path, required=True)
     dispatch_parser.add_argument("--subject", required=True)
     dispatch_parser.add_argument("--baseline-id")
+    dispatch_parser.add_argument("--operator-report", type=Path)
 
     baseline_parser = sub.add_parser("freeze-baseline")
     baseline_parser.add_argument("--service", type=Path, required=True)
@@ -43,7 +44,15 @@ def main() -> int:
     integration_parser.add_argument("--candidate", type=Path)
     integration_parser.add_argument("--out", type=Path, required=True)
     integration_parser.add_argument("--subject", required=True)
+    for scheduled_parser in (dispatch_parser, integration_parser):
+        scheduled_parser.add_argument("--scheduler-state", type=Path)
+        scheduled_parser.add_argument("--run-id")
     args = parser.parse_args()
+    if args.action in {"dispatch", "integrate"}:
+        if bool(args.scheduler_state) != bool(args.run_id):
+            parser.error("--scheduler-state and --run-id must be supplied together")
+        if getattr(args, "operator_report", None) and not args.scheduler_state:
+            parser.error("--operator-report requires --scheduler-state")
     return execute(args)
 
 

@@ -29,9 +29,17 @@ Use a focused PR title such as `[Contract]`, `[Workflow]`, `[Task]`, `[Skill]`, 
 
 ## Local checks
 
+Every newly supported capability must include an executable local E2E scenario
+linked from its production workflow. Use the real CLI, workflow, scheduler,
+validators and persistent artifacts; double only external cluster/runtime/Agent
+boundaries. Cover successful delivery, rejection and process restart. Real-device
+smoke and real-model regression are separate opt-in tiers, not prerequisites for
+the local scenario. See [capability scenarios](tests/e2e/README.md).
+
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
 python cli/maintenance/check_repo_references.py
+python -m pytest -q -m local_e2e tests/e2e
 ```
 
 P800 integration tests are opt-in and must identify the namespace, image digest, model revision, hardware, and cleanup policy before execution.

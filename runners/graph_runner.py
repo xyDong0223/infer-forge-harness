@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 
 from core.paths import REPO_ROOT
@@ -27,7 +28,7 @@ from engine.state import journal as journal_module
 from engine import skill_registry
 from engine.state import task_memory
 from core.facade import resolve_adapters  # noqa: E402
-from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external  # noqa: E402
+from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external, safe_component  # noqa: E402
 from core.target import (  # noqa: E402
     bind_subject, canonical_hardware, contract_target, load_target, require_supported,
     target_environment,
@@ -80,7 +81,8 @@ NODES: dict[str, dict] = {
     "torch_shim_handoff": {
         "produces": "TorchShimRegistry",
         "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/discovery/scan_torch_shims.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/scan_torch_shims.py",
+                    "--subject", "{subject}", "--out", "{artifacts}"],
         "state_file": "shim_status.json",
     },
     "capability_match": {
@@ -346,6 +348,8 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
             hit = input_fact(journal, kind, context["subject"], environment)
             if hit:
                 command += [flag, str(Path(hit["artifacts"]) / filename)]
+    if spec.get("produces") == "TorchShimRegistry" and context.get("shim_registry"):
+        command += ["--registry", context["shim_registry"]]
     requested = (bind_subject(load_target(context["target_file"]), context["subject"])
                  if context.get("target_file") else None)
     if "cli/deployment/proof.py" in command:
@@ -353,6 +357,8 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
         require_supported(contract_target(load_yaml(Path(path)), requested))
         if requested is not None:
             command += ["--target", context["target_file"], "--subject", context["subject"]]
+        if context.get("pod") and "--attach-pod" not in command:
+            command += ["--attach-pod", context["pod"]]
     elif "--contract-instance" in command:
         path = command[command.index("--contract-instance") + 1]
         require_supported(contract_target(load_yaml(Path(path)), requested))
@@ -501,6 +507,12 @@ SUCCESS_STATES = {
     "BASELINE_FROZEN",
     "WAITING_FOR_CANDIDATE",
     "READY_FOR_INTEGRATION",
+    "DRIFT_CLEAR",
+    "DRIFT_FOUND",
+    "BRINGUP_PASS",
+    "HANDOFF_CLEAR",
+    "MATRIX_READY",
+    "OPERATORS_READY",
 }
 
 
@@ -658,8 +670,25 @@ def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
     return f"node ended in state {state}"
 
 
+def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
+                               subject: str, environment: dict) -> None:
+    if bridge is None or spec.get("produces") not in ("DeploymentProof", "AccuracyDifferential"):
+        return
+    snapshot = bridge.delivery_status()
+    if spec["produces"] == "AccuracyDifferential":
+        service = input_fact(journal, "DeploymentProof", subject, environment)
+        if service is None:
+            raise ValueError("accuracy regression requires a validated service proof")
+        status = Path(service["artifacts"]).resolve() / "status.json"
+        digest = file_digest(status)
+        if digest is None:
+            raise ValueError("accuracy regression cannot read its service proof")
+        snapshot["service_proof"] = {"path": str(status), "sha256": digest}
+    ArtifactStore(attempt.input).write_json("scheduler_snapshot.json", snapshot)
+
+
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
-                     environment: dict, state: str) -> object:
+                     environment: dict, state: str, bridge=None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -694,7 +723,8 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     def rerun(decision) -> tuple[bool, str]:
         nonlocal final_artifacts
         protected = {"artifacts", "attempt", "subject", "target_file", "contract_instance",
-                     "_environment_pod", "environment_text", "run_id", "journal", "loop_state"}
+                     "_environment_pod", "environment_text", "run_id", "journal", "loop_state",
+                     "scheduler_state", "operator_report", "shim_registry", "evidence_mode"}
         if any(key not in context or key in protected for key in decision.params):
             return False, "BLOCKED: retry cannot override managed paths or undeclared context"
         planned = paths.root / "{attempt-output}"
@@ -707,6 +737,9 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             else:
                 commands = [(planned, resolve(spec, merged, args.journal, environment))]
             attempt, commands = allocate_commands(paths, node, planned, commands)
+            prepare_regression_attempt(
+                bridge, spec, attempt, args.journal, args.subject, environment,
+            )
         except WritePolicyError:
             raise
         except (Unresolved, KeyError, ValueError, OSError) as error:
@@ -762,9 +795,68 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     return outcome
 
 
+def scheduled_spec(spec: dict, context: dict) -> dict:
+    """Route the existing operator nodes through the selected durable run."""
+    if not context.get("scheduler_state") or spec["produces"] not in (
+        "OperatorTaskDispatch", "OperatorIntegration",
+    ):
+        return spec
+    command = [*spec["command"], "--scheduler-state", "{scheduler_state}",
+               "--run-id", "{run_id}"]
+    if spec["produces"] == "OperatorTaskDispatch" and context.get("operator_report"):
+        command += ["--operator-report", "{operator_report}"]
+    return {**spec, "command": command}
+
+
+def finish_scheduled_graph(bridge, args, environment: dict) -> int:
+    facts = {}
+    for spec in NODES.values():
+        fact = input_fact(args.journal, spec["produces"], args.subject, environment)
+        if fact is not None:
+            facts[spec["produces"]] = Path(fact["artifacts"])
+    try:
+        result = bridge.finalize(facts)
+    except (ValueError, OSError) as error:
+        emit_summary({"status": "BLOCKED", "reason_code": "DELIVERY_GATE",
+                      "message": str(error), "run_id": args.run_id}, args.json)
+        return 2
+    memory = task_memory.load(args.loop_state, args.workflow.stem, args.subject)
+    task_memory.start_block(
+        memory, block_id=f"delivery:{len(memory['completed_loop_blocks']) + 1}",
+        sub_target="model-adaptation-delivery",
+        exit_condition={"delivery_state": result["state"]},
+        routing={"mode": "scheduler_delivery", "evidence_mode": bridge.evidence_mode},
+    )
+    task_memory.finish_block(
+        memory, "DELIVERED", artifacts=[result["receipt_path"], result["manifest_path"]],
+    )
+    task_memory.save(args.loop_state, memory)
+    emit_summary({"status": result["state"], "reason_code": "DELIVERY_RECORDED",
+                  **result}, args.json)
+    return 0
+
+
 def run(args) -> int:
+    with ExitStack() as resources:
+        return _run(args, resources)
+
+
+def _run(args, resources: ExitStack) -> int:
 
     try:
+        scheduler_state = getattr(args, "scheduler_state", None)
+        operator_report = getattr(args, "operator_report", None)
+        shim_registry = getattr(args, "shim_registry", None)
+        if scheduler_state and not args.run_id:
+            raise ValueError("--scheduler-state requires --run-id")
+        if operator_report and not scheduler_state:
+            raise ValueError("--operator-report requires --scheduler-state")
+        if scheduler_state:
+            scheduler_state = ensure_external(scheduler_state)
+            if args.artifact_root is None:
+                args.artifact_root = (
+                    scheduler_state.parent / "runs" / safe_component(args.run_id)
+                )
         if args.artifact_root is None and not args.run_id:
             raise WritePolicyError("provide --run-id or an external --artifact-root")
         args.run_paths = (RunPaths(args.artifact_root, args.run_id) if args.artifact_root
@@ -783,7 +875,8 @@ def run(args) -> int:
         environment = dict(pair.split("=", 1) for pair in args.env)
         context = dict(pair.split("=", 1) for pair in args.set)
         if any(key in context for key in ("artifacts", "attempt", "run_id", "journal",
-                                          "loop_state", "subject")):
+                                          "loop_state", "subject", "scheduler_state",
+                                          "operator_report", "shim_registry", "evidence_mode")):
             raise WritePolicyError("--set cannot override managed identity or write paths")
         if args.recovery_budget < 1:
             raise ValueError("recovery budget must be at least 1")
@@ -816,12 +909,46 @@ def run(args) -> int:
         return 2
     context.update(subject=args.subject, attempt="{attempt-id}",
                    environment_text=",".join(f"{k}={v}" for k, v in sorted(environment.items())))
+    if shim_registry:
+        context["shim_registry"] = str(shim_registry.resolve())
+    bridge = None
+    if scheduler_state:
+        from engine.graph_bridge import GraphSchedulerBridge
+
+        bridge = GraphSchedulerBridge(
+            scheduler_state, args.run_id, args.subject, args.artifact_root,
+            environment, execute=args.execute,
+        )
+        resources.callback(bridge.close)
+        if environment.get("evidence_mode") not in (None, bridge.evidence_mode):
+            raise ValueError("--env evidence_mode conflicts with the adaptation run")
+        environment["evidence_mode"] = bridge.evidence_mode
+        context.update(scheduler_state=str(scheduler_state), run_id=args.run_id)
+        if operator_report:
+            context["operator_report"] = str(operator_report.resolve())
+        bound = bridge.run.environment.get("environment_proof")
+        if bound is not None:
+            if context.get("pod") not in (None, bound["pod"]):
+                raise ValueError("--set pod conflicts with the scheduler environment")
+            context["pod"] = bound["pod"]
+            context["_environment_pod"] = bound["pod"]
+            if args.execute:
+                bridge.bind_environment(Path(bound["artifact_root"]))
+                if input_fact(args.journal, "EnvironmentProof", args.subject, environment) is None:
+                    record_fact(
+                        args.journal, NODES["environment_proof"], args.subject,
+                        Path(bound["artifact_root"]), environment,
+                    )
     try:
         bind_proven_environment(context, environment, args.journal)
     except Unresolved as error:
         emit_summary({"status": "BLOCKED", "reason_code": "ENVIRONMENT_MISMATCH",
                       "message": str(error)}, args.json)
         return 2
+    if bridge and args.execute:
+        proof = input_fact(args.journal, "EnvironmentProof", args.subject, environment)
+        if proof is not None:
+            bridge.bind_environment(Path(proof["artifacts"]))
     context["environment_text"] = ",".join(f"{k}={v}" for k, v in sorted(environment.items()))
     loop_state = args.loop_state
     memory = task_memory.load(loop_state, args.workflow.stem, args.subject)
@@ -889,10 +1016,21 @@ def run(args) -> int:
                 args.json,
             )
             break
+        spec = scheduled_spec(spec, context)
 
         artifacts = args.artifact_root / "{attempt-output}"
         context.update(artifacts=str(artifacts), attempt="{attempt-id}")
         prior = reusable_fact(spec, args.subject, args.journal, environment)
+        if bridge and spec["produces"] in (
+            "OperatorTaskDispatch", "OperatorIntegration", "TorchShimRegistry",
+        ):
+            # These nodes depend on live DB state, not only immutable file facts.
+            prior = None
+        if bridge and spec["produces"] in (
+            "DeploymentProof", "AccuracyDifferential", "SupportMatrixEntry",
+        ) and bridge.delivery_status()["state"] == "OPERATORS_READY":
+            # The pre-candidate baseline cannot certify the final combined model.
+            prior = None
         if args.resume and prior:
             next_task = node.get("on_success")
             task_memory.start_block(
@@ -920,7 +1058,9 @@ def run(args) -> int:
                 args.json,
             )
             if args.until_node and current == args.until_node:
-                break
+                return 0
+            if bridge and args.execute and next_task == "DELIVERED":
+                return finish_scheduled_graph(bridge, args, environment)
             current = next_task if next_task in by_id else None
             continue
         try:
@@ -947,6 +1087,9 @@ def run(args) -> int:
             )
             artifacts = attempt.output
             context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
+            prepare_regression_attempt(
+                bridge, spec, attempt, args.journal, args.subject, environment,
+            )
             task_memory.start_block(
                 memory,
                 block_id=f"{current}:{len(memory['completed_loop_blocks']) + 1}",
@@ -999,13 +1142,56 @@ def run(args) -> int:
                 required=(f"output/{spec['state_file']}",) if passed else (),
             )
             record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
+            next_block = node.get("on_success" if passed else "on_failure")
+            if bridge and not passed and spec["produces"] in (
+                "OperatorTaskDispatch", "OperatorIntegration",
+            ):
+                next_block = current
             task_memory.finish_block(
                 memory,
                 state,
                 artifacts=[str(artifacts)],
-                next_block={"sub_target": node.get("on_success" if passed else "on_failure")},
+                next_block={"sub_target": next_block},
             )
             task_memory.save(loop_state, memory)
+            if bridge and spec["produces"] == "TorchShimRegistry" and (
+                artifacts / "torch_shim_registry.json"
+            ).is_file():
+                dispatch = bridge.dispatch_shims(artifacts)
+                dispatch_blocked = dispatch["state"] not in ("DISPATCHED", "DISPATCH_SKIPPED")
+                task_memory.start_block(
+                    memory,
+                    block_id=f"{current}:scheduler:{len(memory['completed_loop_blocks']) + 1}",
+                    sub_target=current,
+                    exit_condition={"success_states": ["DISPATCHED", "DISPATCH_SKIPPED"]},
+                    routing={"mode": "scheduler_shim_dispatch"},
+                )
+                task_memory.finish_block(
+                    memory, dispatch["state"], artifacts=[str(artifacts)],
+                    next_block={"sub_target": current if dispatch_blocked
+                                else node.get("on_success")},
+                )
+                task_memory.save(loop_state, memory)
+                if dispatch_blocked:
+                    emit_summary({
+                        "status": "BLOCKED", "node": current, "next_task": current,
+                        "reason_code": "SHIM_DISPATCH_BLOCKED", "run_id": args.run_id,
+                        "artifacts": [str(artifacts)], "dispatch": dispatch,
+                    }, args.json)
+                    return 2
+            if bridge and spec["produces"] in ("OperatorTaskDispatch", "OperatorIntegration"):
+                if not passed:
+                    waiting = state == "WAITING_FOR_OPERATORS"
+                    emit_summary({
+                        "status": "WAITING" if waiting else "BLOCKED",
+                        "node": current, "next_task": current,
+                        "reason_code": state, "run_id": args.run_id,
+                        "artifacts": [str(artifacts)],
+                    }, args.json)
+                    return 3 if waiting else 2
+            if bridge and spec["produces"] == "EnvironmentProof" and not passed:
+                bridge.bind_environment(artifacts)
+                return 2
             # Exit code 0 is not success either: the node's own state file
             # is the contract, and a state outside SUCCESS_STATES riding the
             # success edge would skip triage for a failure that already
@@ -1017,7 +1203,7 @@ def run(args) -> int:
                 if args.auto_recover:
                     outcome = attempt_recovery(
                         args, node=current, spec=spec, context=context,
-                        artifacts=artifacts, environment=environment, state=state,
+                        artifacts=artifacts, environment=environment, state=state, bridge=bridge,
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
@@ -1067,6 +1253,8 @@ def run(args) -> int:
                     current = failure if failure in by_id else None
                     continue
             if spec["produces"] == "EnvironmentProof":
+                if bridge:
+                    bridge.bind_environment(artifacts)
                 # A new proof replaces any prior runtime scope, never copies its
                 # fingerprint onto facts produced in this different environment.
                 environment.pop("environment_fingerprint", None)
@@ -1082,10 +1270,12 @@ def run(args) -> int:
                 )
 
         if args.until_node and current == args.until_node:
-            break
+            return 0
         nxt = node.get("on_success")
         if nxt not in by_id:
             print(f"[edge] {current} --> {nxt}")
+            if bridge and args.execute and nxt == "DELIVERED":
+                return finish_scheduled_graph(bridge, args, environment)
             break
         if args.execute:
             emit_summary(
@@ -1096,4 +1286,4 @@ def run(args) -> int:
                 args.json,
             )
         current = nxt
-    return 0
+    return 2 if bridge and args.execute else 0

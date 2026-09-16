@@ -39,16 +39,22 @@ def atomic_transition(method):
 class EventStore:
     """SQLite-backed store for runs, operators, tasks and append-only events."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, readonly: bool = False):
         self.path = ":memory:" if str(path) == ":memory:" else str(ensure_external(path))
-        if self.path != ":memory:":
+        if readonly and (self.path == ":memory:" or not Path(self.path).is_file()):
+            raise ValueError("read-only scheduler requires an existing state database")
+        if self.path != ":memory:" and not readonly:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False)
+        self.db = sqlite3.connect(
+            Path(self.path).as_uri() + "?mode=ro" if readonly else self.path,
+            uri=readonly, check_same_thread=False,
+        )
         self.db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._transaction_depth = 0
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self._init_schema()
+        if not readonly:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self._init_schema()
 
     @contextmanager
     def transaction(self):
@@ -258,6 +264,11 @@ class TaskScheduler:
         run = self.store.run(run_id)
         if run is None:
             raise KeyError(f"unknown run: {run_id}")
+        mode = proof.get("evidence_mode", "real")
+        if mode not in {"real", "simulation"}:
+            raise ValueError("environment proof evidence_mode must be real or simulation")
+        if run.metadata.get("evidence_mode", "real") == "real" and mode != "real":
+            raise ValueError("simulation environment proof cannot satisfy a real run")
         checks = proof.get("checks") or {}
         if not isinstance(checks, dict):
             raise ValueError("environment proof checks must be an object")
@@ -316,6 +327,9 @@ class TaskScheduler:
             if not content:
                 raise ValueError(f"environment evidence is empty: {path}")
             evidence_hashes[name] = hashlib.sha256(content).hexdigest()
+        status_path = root / "status.json"
+        if status_path.is_file():
+            evidence_hashes["status.json"] = hashlib.sha256(status_path.read_bytes()).hexdigest()
         fingerprint = evidence_hashes["environment_fingerprint.txt"]
         previous = run.environment.get("environment_proof", {}).get("fingerprint")
         if previous and previous != fingerprint and self.store.tasks(run_id):
@@ -329,6 +343,7 @@ class TaskScheduler:
                 "fingerprint": fingerprint,
                 "artifact_root": str(root),
                 "evidence_sha256": evidence_hashes,
+                "evidence_mode": mode,
             },
         }
         run.status = "ENVIRONMENT_READY"
@@ -352,6 +367,24 @@ class TaskScheduler:
         return run
 
     @atomic_transition
+    def record_graph_transition(
+        self, run_id: str, key: str, payload: dict[str, Any],
+    ) -> AdaptationRun:
+        """Persist graph handoffs without changing the environment status meaning."""
+        if key not in {"graph_environment_required", "graph_environment",
+                       "graph_discovery", "graph_shim_discovery", "graph_delivery"}:
+            raise ValueError(f"unsupported graph transition: {key}")
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        value = True if key == "graph_environment_required" else dict(payload)
+        if run.metadata.get(key) != value:
+            run.metadata[key] = value
+            self.store.update_run(run)
+            self._emit(run_id, key, dict(payload))
+        return run
+
+    @atomic_transition
     def discover_operator(self, run_id: str, spec: OperatorSpec) -> OperatorTask:
         run = self.store.run(run_id)
         if run is None:
@@ -359,6 +392,7 @@ class TaskScheduler:
         environment_required = (
             run.metadata.get("evidence_mode", "real") != "simulation"
             or run.metadata.get("environment_required")
+            or run.metadata.get("graph_environment_required")
         )
         if environment_required and run.status != "ENVIRONMENT_READY":
             raise ValueError(
@@ -446,7 +480,9 @@ class TaskScheduler:
         if stage == _DIAGNOSIS_STAGE:
             return True
         run = self.store.run(run_id)
-        if run.metadata.get("evidence_mode", "real") != "simulation" or run.metadata.get("environment_required"):
+        if (run.metadata.get("evidence_mode", "real") != "simulation"
+                or run.metadata.get("environment_required")
+                or run.metadata.get("graph_environment_required")):
             if run.status != "ENVIRONMENT_READY":
                 return False
             spec = self.store.operator(run_id, key)

@@ -220,7 +220,12 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         root = args.status.parent if args.status else proof.get("artifact_root")
         if root is None and args.artifact_dir is not None:
             root = REPO_ROOT / args.artifact_dir
-        run = scheduler.bind_environment(args.run_id, proof, artifact_root=root)
+        try:
+            run = scheduler.bind_environment(args.run_id, proof, artifact_root=root)
+        except ValueError as error:
+            run = scheduler.record_environment_failure(args.run_id, proof, str(error))
+            return {"command": "environment", "run": run.to_dict(),
+                    "proof": proof, "error": str(error)}
         return {"command": "environment", "run": run.to_dict(), "proof": proof}
 
     if args.command == "discover":

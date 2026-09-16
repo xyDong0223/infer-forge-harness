@@ -86,11 +86,23 @@ Workflow 描述任务节点、入口、依赖和成功／失败后的流向，�
 
 `TaskScheduler` 使用事务领取任务，记录 worker、租约和 attempt；过期租约可在后续领取时回收。正常阶段链是 `torch -> xpu -> integration`。某个算子失败会产生诊断任务，而不是要求其他算子停止。
 
+模型适配现在通过 `GraphSchedulerBridge` 显式衔接两套机制：Graph 使用
+`--scheduler-state` 和 `--run-id` 接入已有 run，将环境证明绑定到 scheduler，
+把完整的算子契约转成持久化任务，并在集成节点重新检查数据库和证据。
+等待 worker 时返回 `WAITING_FOR_OPERATORS`，不会把文件请求或候选等待状态当成已完成。
+worker 完成后还会重新执行模型服务与精度回归，不能用替换算子之前冻结的基线证明最终模型。
+不传 `--scheduler-state` 时保留原来的图执行方式，但不会生成这条新链路的功能交付凭据。
+
+第一套[能力场景模板](../../tests/e2e/README.md)使用真实 CLI、原工作流图、
+scheduler、验证器和持久化产物，只替换外部集群／运行时观察和 Agent 实现。
+本地场景覆盖成功、证据拒绝与进程恢复，结果明确标记为 `SIMULATION_PASS`；
+真实设备 Smoke 与真实模型回归是另外两个显式授权的可选层级。
+
 决策通过 `Brain.decide(DecisionRequest) -> Decision` 抽象。`AgentBrain` 通过请求／响应文件对接外部决策者，`RuleBrain` 提供规则决策；`RecoveryController` 在预算内组织决策、动作和重跑。**决策者提出下一步，不直接替代任务结果或验证器。**
 
 **意义：** 将“流程控制”“工程判断”和“实际执行”分离。Agent 可以更换，任务仍能保留身份、原始失败和恢复记录。
 
-**边界：** `engine/` 指编排引擎，不是 Target 中的 `engine: vllm`。当前 Scheduler 的结果门禁主要拒绝显式失败字段，不会替代完整的证据审查；不能把数据库中的 `succeeded` 单独当成功能验收证明。
+**边界：** `engine/` 指编排引擎，不是 Target 中的 `engine: vllm`。Scheduler 检查任务／attempt 身份、环境、证据模式、文件哈希和独立验证报告；这些检查证明记录的完整性与一致性，不等于对 Agent 身份做认证，也不替代实际设备数值验证。数据库中的单个 `succeeded` 仍不是完整模型的功能验收证明。
 
 ### L4：任务执行层 —— 决定“怎样把一个契约变成可观察的动作”
 
