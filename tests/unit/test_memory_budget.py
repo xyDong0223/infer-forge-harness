@@ -16,15 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from adapters.kunlun_p800.adapter import KunlunP800Adapter  # noqa: E402
-from tools.memory_budget import (  # noqa: E402
-    BudgetError,
-    detect_active_ranks,
-    load_device_spec,
-    reconcile,
-    reconcile_deployment,
-    renumber_cards,
-    resolve_analyzer,
-)
+from operations.deployment.memory_budget import BudgetError, detect_active_ranks, load_device_spec, reconcile, reconcile_deployment, renumber_cards, resolve_analyzer
 from validators.memory_validator import validate_memory_budget  # noqa: E402
 
 XPU_SMI_SAMPLE = (

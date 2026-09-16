@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.operator_lifecycle import dispatch, freeze_baseline, integration_decision  # noqa: E402
+from operations.operators.operator_lifecycle import dispatch, freeze_baseline, integration_decision
 
 
 class OperatorLifecycleTest(unittest.TestCase):

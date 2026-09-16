@@ -88,6 +88,26 @@ model/service path, not only an isolated unit test.
 
 ## Mandatory execution protocol
 
+### Source ownership
+
+Put host-side argument parsing and command entry points under `cli/`. Implement
+task behavior under the matching `operations/` domain: `intake`, `discovery`,
+`deployment`, `validation`, or `operators`. The CLI delegates execution; it does
+not duplicate task logic or acceptance rules.
+
+`engine/` owns scheduling and recovery; `engine/state/` owns Journal and Task
+Memory. `runners/` owns executable workflow/task sequences, without command-line
+parsers. Shared contracts, errors, versioned-resource paths and runtime storage
+belong under `core/`; import repository resource roots from `core.paths`.
+Libraries must not import `cli` or parse `sys.argv`.
+
+`tools/` is reserved for `probe/`, replayable `patches/`, and portable `torch/`
+references. Do not add host task commands or coordination state modules there.
+The old host script paths are removed, not compatibility aliases. Update
+catalogs, contracts, workflows, tests and documentation whenever an entry moves.
+Run `python3 cli/maintenance/check_repo_references.py` to check references and
+dependency direction. See [source layout](docs/architecture/source-layout.zh-CN.md).
+
 ### Runtime write ownership
 
 Repository files are versioned source, not a run workspace. Managed entry points
@@ -111,7 +131,7 @@ arbitrary external directory. The scheduler records `result.json` and
 correctness or authorize promotion. Preserve previous attempts for diagnosis.
 
 Graph/deployment/performance runners allocate managed attempts automatically.
-Ordinary standalone `tools/* --out` commands retain their exact explicit output
+Ordinary standalone task commands under `cli/` retain their exact explicit `--out`
 directory, but require it to be external and fresh. Read the returned
 `artifact_root` or task workspace instead of predicting output paths.
 
@@ -128,7 +148,7 @@ second run because a previous command was interrupted; resume the existing
 `run_id`.
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   create-run \
   --run-id <run-id> \
@@ -150,7 +170,7 @@ devices. All later investigation and child tasks must use the Pod and code
 context recorded by this handoff; a new throwaway Pod is not equivalent.
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
@@ -162,7 +182,7 @@ To re-prove an environment whose Pod already exists, pass `--attach-pod`
 new FedDeployment, and a reproof must not mint a second one.
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
@@ -174,7 +194,7 @@ If the deployment proof was already executed by a separate workflow step, its
 validated `status.json` may be imported instead:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
@@ -236,7 +256,7 @@ outputs, shape/rank, dtype, layout, semantics, call site, and failure context.
 Convert the report through the orchestration entry point:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   discover \
   --run-id <run-id> \
@@ -255,7 +275,7 @@ and create a diagnosis or blocked task rather than guessing.
 Workers claim only the stage they are qualified to execute:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   claim --worker <worker-id> --stage torch --limit 1
 ```
@@ -265,7 +285,7 @@ artifact root, run the independent checks required for that stage, and submit a
 JSON result:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   complete \
   --task-id <task-id> \
@@ -278,7 +298,7 @@ Completion requires the current unexpired claim token. A reused worker name
 does not authorize an older attempt. Renew long-running work before expiry:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   renew-lease --task-id <task-id> --worker <worker-id> \
   --lease-token <token-from-claim> --lease-seconds 300
@@ -301,7 +321,7 @@ failed implementation. Report the failure so the scheduler creates a durable
 diagnosis task:
 
 ```bash
-python3 tools/run_adaptation.py \
+python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   fail \
   --task-id <task-id> \

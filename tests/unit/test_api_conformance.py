@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from tools.check_api_conformance import ConformanceFailed, probe_argv, profile_for  # noqa: E402
+from operations.validation.check_api_conformance import ConformanceFailed, probe_argv, profile_for
 from validators.conformance_validator import validate_conformance  # noqa: E402
 
 CONTRACT = yaml.safe_load(

@@ -12,25 +12,20 @@ graph that cannot be inspected before it touches a cluster is not safe to trust.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from core.paths import REPO_ROOT
 
 from runners import evidence  # noqa: E402
 from runners import watch as watch_module  # noqa: E402
-from tools import journal as journal_module  # noqa: E402
-from tools import skill_registry  # noqa: E402
-from tools import task_memory  # noqa: E402
+from engine.state import journal as journal_module
+from engine import skill_registry
+from engine.state import task_memory
 from core.facade import resolve_adapters  # noqa: E402
 from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external  # noqa: E402
 from core.target import (  # noqa: E402
@@ -48,7 +43,7 @@ NODES: dict[str, dict] = {
     "model_intake": {
         "produces": "ModelRequest",
         "command": [
-            "python3", "tools/model_intake.py",
+            "python3", "cli/intake/model_intake.py",
             "--model-id", "{subject}", "--model-path", "{model_path}",
             "--attempt-id", "{attempt}", "--out", "{artifacts}",
         ],
@@ -57,7 +52,7 @@ NODES: dict[str, dict] = {
     "environment_proof": {
         "produces": "EnvironmentProof",
         "command": [
-            "python3", "runners/task_runner.py", "{contract_instance}",
+            "python3", "cli/deployment/proof.py", "{contract_instance}",
             "--execute", "--phase", "environment", "--artifact-dir", "{artifacts}",
         ],
         "state_file": "status.json",
@@ -66,26 +61,26 @@ NODES: dict[str, dict] = {
         "produces": "ModelSupportCard",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
                   "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "tools/scan_model_support.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/scan_model_support.py", "--out", "{artifacts}"],
         "state_file": "scan_status.json",
     },
     "runtime_drift_scan": {
         "produces": "RuntimeDriftReport",
         "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "tools/scan_runtime_drift.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/scan_runtime_drift.py", "--out", "{artifacts}"],
         "state_file": "drift_status.json",
     },
     "toy_bringup": {
         "produces": "ToyBringupReport",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
                   "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "tools/toy_bringup.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/deployment/toy_bringup.py", "--out", "{artifacts}"],
         "state_file": "bringup_status.json",
     },
     "torch_shim_handoff": {
         "produces": "TorchShimRegistry",
         "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "tools/scan_torch_shims.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/scan_torch_shims.py", "--out", "{artifacts}"],
         "state_file": "shim_status.json",
     },
     "capability_match": {
@@ -93,21 +88,21 @@ NODES: dict[str, dict] = {
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
                   "--support-card": "fact:ModelSupportCard:model_support.json",
                   "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "tools/match_capabilities.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/match_capabilities.py", "--out", "{artifacts}"],
         "state_file": "match_status.json",
     },
     "gap_classification": {
         "produces": "GapClassification",
         "needs": {"--support-card": "fact:ModelSupportCard:model_support.json",
                   "--capability-match": "fact:CapabilityMatch:capability_match.json"},
-        "command": ["python3", "tools/classify_gaps.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/discovery/classify_gaps.py", "--out", "{artifacts}"],
         "state_file": "classification_status.json",
     },
     "operator_task_dispatch": {
         "produces": "OperatorTaskDispatch",
         "needs": {"--gaps": "fact:GapClassification:gap_classification.json"},
         "command": [
-            "python3", "tools/operator_lifecycle.py", "dispatch",
+            "python3", "cli/operators/operator_lifecycle.py", "dispatch",
             "--subject", "{subject}", "--out", "{artifacts}",
         ],
         "state_file": "dispatch_status.json",
@@ -120,7 +115,7 @@ NODES: dict[str, dict] = {
         # enforce_eager=False, and the support matrix then records a condition the
         # deployment did not actually run under.
         "optional": {"--placed-patch": "fact:PlacedPatch:placement_report.json"},
-        "command": ["python3", "tools/plan_deployment.py", "--out", "{artifacts}"],
+        "command": ["python3", "cli/deployment/plan_deployment.py", "--out", "{artifacts}"],
         "state_file": "plan_status.json",
     },
     "service_proof": {
@@ -128,7 +123,7 @@ NODES: dict[str, dict] = {
         # The plan renders the instance contract, and the pod comes from the
         # environment proof; both are passed in via --set rather than guessed.
         "command": [
-            "python3", "runners/task_runner.py", "{contract_instance}",
+            "python3", "cli/deployment/proof.py", "{contract_instance}",
             "--execute", "--phase", "service", "--attach-pod", "{pod}",
             "--artifact-dir", "{artifacts}",
         ],
@@ -138,7 +133,7 @@ NODES: dict[str, dict] = {
         "produces": "MemoryBudget",
         "needs": {},
         "command": [
-            "python3", "tools/memory_budget.py", "--pod", "{pod}",
+            "python3", "cli/deployment/memory_budget.py", "--pod", "{pod}",
             "--server-log", "{server_log}", "--out", "{artifacts}",
         ],
         "state_file": "budget_status.json",
@@ -147,7 +142,7 @@ NODES: dict[str, dict] = {
         "produces": "AccuracyDifferential",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
         "command": [
-            "python3", "tools/accuracy_differential.py", "--pod", "{pod}",
+            "python3", "cli/validation/accuracy_differential.py", "--pod", "{pod}",
             "--served-model-name", "{served_model_name}", "--port", "{port}",
             "--out", "{artifacts}",
         ],
@@ -160,7 +155,7 @@ NODES: dict[str, dict] = {
             "--accuracy": "fact:AccuracyDifferential:accuracy_differential.json",
         },
         "command": [
-            "python3", "tools/operator_lifecycle.py", "freeze-baseline",
+            "python3", "cli/operators/operator_lifecycle.py", "freeze-baseline",
             "--subject", "{subject}", "--out", "{artifacts}",
         ],
         "state_file": "baseline_status.json",
@@ -169,7 +164,7 @@ NODES: dict[str, dict] = {
         "produces": "OperatorIntegration",
         "needs": {"--baseline": "fact:ServingBaseline:baseline_manifest.json"},
         "command": [
-            "python3", "tools/operator_lifecycle.py", "integrate",
+            "python3", "cli/operators/operator_lifecycle.py", "integrate",
             "--subject", "{subject}", "--out", "{artifacts}",
         ],
         "state_file": "integration_status.json",
@@ -183,7 +178,7 @@ NODES: dict[str, dict] = {
             "--plan": "fact:DeploymentPlan:deployment_plan.json",
         },
         "command": [
-            "python3", "tools/update_support_matrix.py", "--subject", "{subject}",
+            "python3", "cli/validation/update_support_matrix.py", "--subject", "{subject}",
             "--out", "{artifacts}",
         ],
         "state_file": "matrix_status.json",
@@ -192,7 +187,7 @@ NODES: dict[str, dict] = {
         "produces": "VendorHandoff",
         "needs": {"--triage": "fact:FailureTriage:triage_report.json"},
         "command": [
-            "python3", "tools/vendor_handoff.py",
+            "python3", "cli/operators/vendor_handoff.py",
             "--environment", "{environment_text}", "--out", "{artifacts}",
         ],
         "state_file": "handoff_status.json",
@@ -205,7 +200,7 @@ NODES: dict[str, dict] = {
         "produces": "FailureTriage",
         "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
         "command": [
-            "python3", "runners/triage_executor.py",
+            "python3", "cli/operators/triage.py",
             "--pod", "{pod}", "--contract-instance", "{contract_instance}",
             "--out", "{artifacts}",
         ],
@@ -217,20 +212,20 @@ NODES: dict[str, dict] = {
         "produces": "PlacedPatch",
         "needs": {"--triage": "fact:FailureTriage:triage_report.json"},
         "command": [
-            "python3", "runners/patch_executor.py",
+            "python3", "cli/operators/place_patch.py",
             "--pod", "{pod}", "--contract-instance", "{contract_instance}",
             "--out", "{artifacts}",
         ],
         "state_file": "status.json",
     },
-    # The three correctness gates, sequenced by runners/correctness_executor.py.
+    # The three correctness gates, sequenced by cli/validation/correctness.py.
     # Each exercises the real path against an independent reference with a
     # discriminating control; a control that cannot fail makes the grade
     # AMBIGUOUS, never a pass.
     "platform_kernel_correctness": {
         "produces": "PlatformKernelCorrectness",
         "command": [
-            "python3", "runners/correctness_executor.py", "kernel",
+            "python3", "cli/validation/correctness.py", "kernel",
             "--pod", "{pod}", "--out", "{artifacts}",
         ],
         "state_file": "kernel_status.json",
@@ -239,7 +234,7 @@ NODES: dict[str, dict] = {
         "produces": "EndToEndAccuracy",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
         "command": [
-            "python3", "runners/correctness_executor.py", "end-to-end",
+            "python3", "cli/validation/correctness.py", "end-to-end",
             "--pod", "{pod}", "--served-model-name", "{served_model_name}",
             "--port", "{port}", "--out", "{artifacts}",
         ],
@@ -248,7 +243,7 @@ NODES: dict[str, dict] = {
     "long_context_sparse_correctness": {
         "produces": "LongContextSparseCorrectness",
         "command": [
-            "python3", "runners/correctness_executor.py", "long-context",
+            "python3", "cli/validation/correctness.py", "long-context",
             "--pod", "{pod}", "--out", "{artifacts}",
         ],
         "state_file": "long_context_status.json",
@@ -262,12 +257,12 @@ NODES: dict[str, dict] = {
         "needs": {"--capability-match": "fact:CapabilityMatch:capability_match.json"},
         "fan_out": {
             "var": "dimension",
-            "list": ["python3", "tools/evaluate_capability.py", "--list-dimensions"],
-            "aggregate": ["python3", "tools/evaluate_capability.py", "--aggregate",
+            "list": ["python3", "cli/discovery/evaluate_capability.py", "--list-dimensions"],
+            "aggregate": ["python3", "cli/discovery/evaluate_capability.py", "--aggregate",
                           "--out", "{artifacts}"],
         },
         "command": [
-            "python3", "tools/evaluate_capability.py", "--dimension", "{dimension}",
+            "python3", "cli/discovery/evaluate_capability.py", "--dimension", "{dimension}",
             "--subject", "{subject}", "--pod", "{pod}", "--model-path", "{weights}",
             "--out", "{artifacts}",
         ],
@@ -280,7 +275,7 @@ NODES: dict[str, dict] = {
         "produces": "ApiConformance",
         "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
         "command": [
-            "python3", "tools/check_api_conformance.py", "--subject", "{subject}",
+            "python3", "cli/validation/check_api_conformance.py", "--subject", "{subject}",
             "--pod", "{pod}", "--out", "{artifacts}",
         ],
         "state_file": "conformance_status.json",
@@ -353,8 +348,8 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
                 command += [flag, str(Path(hit["artifacts"]) / filename)]
     requested = (bind_subject(load_target(context["target_file"]), context["subject"])
                  if context.get("target_file") else None)
-    if "runners/task_runner.py" in command:
-        path = command[command.index("runners/task_runner.py") + 1]
+    if "cli/deployment/proof.py" in command:
+        path = command[command.index("cli/deployment/proof.py") + 1]
         require_supported(contract_target(load_yaml(Path(path)), requested))
         if requested is not None:
             command += ["--target", context["target_file"], "--subject", context["subject"]]
@@ -767,53 +762,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     return outcome
 
 
-def _main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--workflow", type=Path, default=REPO_ROOT / "workflows" / "model_adaptation.yaml")
-    parser.add_argument("--subject", required=True, help="e.g. Qwen3-8B")
-    parser.add_argument(
-        "--target",
-        type=Path,
-        help="platform target YAML; applies the compatibility gate before planning",
-    )
-    parser.add_argument("--artifact-root", type=Path,
-                        help="external run root override; otherwise --run-id is required")
-    parser.add_argument("--run-id", help="explicit durable run identity")
-    parser.add_argument("--journal", type=Path)
-    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
-                        help="environment fingerprint; facts are only reused within it")
-    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                        help="node context, e.g. model_path=/mnt/cluster/... or pod=...")
-    parser.add_argument("--from-node", help="start here instead of the entry task")
-    parser.add_argument("--until-node", help="stop after this node")
-    parser.add_argument("--execute", action="store_true", help="actually run; default is --plan")
-    parser.add_argument("--resume", action="store_true",
-                        help="reuse successful Journal facts and skip completed nodes")
-    parser.add_argument("--loop-state", type=Path,
-                        help="Task Memory JSON path; defaults under artifact-root")
-    parser.add_argument("--json", action="store_true",
-                        help="emit one machine-readable summary per terminal decision")
-    parser.add_argument("--auto-recover", action="store_true",
-                        help="on a failed node, consult the brain before following the "
-                             "failure edge: decide -> act -> rerun, bounded by --recovery-budget")
-    parser.add_argument("--recovery-budget", type=int, default=3,
-                        help="repair attempts per failed node before the failure edge applies")
-    parser.add_argument("--brain", choices=("rule", "agent"), default="agent",
-                        help="decision source: 'agent' delegates to an external decider "
-                             "(LLM) through decision_request/decision files; 'rule' is the "
-                             "deterministic safety net")
-    parser.add_argument("--decide-command", default=None,
-                        help="decider command for --brain agent; receives the request and "
-                             "response paths. Without it the runner waits for decision.json "
-                             "to appear next to the request.")
-    parser.add_argument("--decide-timeout", type=float, default=600.0,
-                        help="seconds to wait for one decision in agent mode")
-    parser.add_argument("--watch-interval", type=float, default=30.0,
-                        help="heartbeat seconds for the node watch journal; "
-                             "0 disables the watch (a silent long node is "
-                             "expected — the journal is what keeps it "
-                             "observable)")
-    args = parser.parse_args()
+def run(args) -> int:
 
     try:
         if args.artifact_root is None and not args.run_id:
@@ -1148,20 +1097,3 @@ def _main() -> int:
             )
         current = nxt
     return 0
-
-
-def main() -> int:
-    try:
-        return _main()
-    except WritePolicyError as error:
-        emit_summary({"status": "BLOCKED", "reason_code": "WRITE_POLICY",
-                      "message": str(error)}, "--json" in sys.argv)
-        return 2
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-        emit_summary({"status": "BLOCKED", "reason_code": "INVALID_INPUT",
-                      "message": str(error)}, "--json" in sys.argv)
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

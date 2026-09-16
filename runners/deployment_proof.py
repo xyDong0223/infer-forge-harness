@@ -708,7 +708,7 @@ class DeploymentProofRunner:
         self.write("task_contract.yaml", yaml.safe_dump(self.contract, sort_keys=False, allow_unicode=True))
         self.write(
             "reproduce_command.txt",
-            "KUBECONFIG={kubeconfig} python3 runners/task_runner.py {contract} --execute\n".format(
+            "KUBECONFIG={kubeconfig} python3 cli/deployment/proof.py {contract} --execute\n".format(
                 kubeconfig=self.adapter.config.kubeconfig,
                 contract=self.contract["metadata"]["name"],
             ),

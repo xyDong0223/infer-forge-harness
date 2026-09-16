@@ -12,18 +12,33 @@ import pytest
 import yaml
 
 from core import storage
-from tools.common import run_managed_tool
-from tools.plan_deployment import render_instance
+from cli.common import run_managed_tool
+from operations.deployment.plan_deployment import render_instance
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DIRECTORY_TOOLS = [
-    "accuracy_differential", "check_api_conformance", "classify_gaps",
-    "evaluate_capability", "match_capabilities", "memory_budget", "model_intake",
-    "operator_lifecycle", "plan_deployment", "scan_model_support",
-    "scan_runtime_drift", "scan_torch_shims", "toy_bringup",
-    "update_support_matrix", "vendor_handoff",
-]
+DIRECTORY_TOOLS = {
+    "accuracy_differential": "cli/validation/accuracy_differential.py",
+    "check_api_conformance": "cli/validation/check_api_conformance.py",
+    "classify_gaps": "cli/discovery/classify_gaps.py",
+    "evaluate_capability": "cli/discovery/evaluate_capability.py",
+    "match_capabilities": "cli/discovery/match_capabilities.py",
+    "memory_budget": "cli/deployment/memory_budget.py",
+    "model_intake": "cli/intake/model_intake.py",
+    "operator_lifecycle": "cli/operators/operator_lifecycle.py",
+    "plan_deployment": "cli/deployment/plan_deployment.py",
+    "scan_model_support": "cli/discovery/scan_model_support.py",
+    "scan_runtime_drift": "cli/discovery/scan_runtime_drift.py",
+    "scan_torch_shims": "cli/discovery/scan_torch_shims.py",
+    "toy_bringup": "cli/deployment/toy_bringup.py",
+    "update_support_matrix": "cli/validation/update_support_matrix.py",
+    "vendor_handoff": "cli/operators/vendor_handoff.py",
+}
+EXECUTOR_COMMANDS = {
+    "triage_executor": "cli/operators/triage.py",
+    "patch_executor": "cli/operators/place_patch.py",
+    "correctness_executor": "cli/validation/correctness.py",
+}
 
 
 @pytest.fixture
@@ -244,7 +259,7 @@ def test_list_dimensions_with_out_does_not_claim_output(runtime, monkeypatch):
         "--out", str(out),
     ])
     with pytest.raises(SystemExit) as caught:
-        runpy.run_path(str(REPO_ROOT / "tools" / "evaluate_capability.py"), run_name="__main__")
+        runpy.run_path(str(REPO_ROOT / "cli" / "discovery" / "evaluate_capability.py"), run_name="__main__")
     assert caught.value.code == 0
     assert not out.exists()
 
@@ -252,7 +267,7 @@ def test_list_dimensions_with_out_does_not_claim_output(runtime, monkeypatch):
 @pytest.mark.parametrize("tool", DIRECTORY_TOOLS)
 def test_entrypoint_rejects_source_output_before_parsing_task_arguments(tool):
     result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "tools" / f"{tool}.py"),
+        [sys.executable, str(REPO_ROOT / DIRECTORY_TOOLS[tool]),
          f"--out={REPO_ROOT / 'forbidden-runtime-output'}"],
         capture_output=True, text=True, check=False,
     )
@@ -261,10 +276,10 @@ def test_entrypoint_rejects_source_output_before_parsing_task_arguments(tool):
     assert not (REPO_ROOT / "forbidden-runtime-output").exists()
 
 
-@pytest.mark.parametrize("runner", ["triage_executor", "patch_executor", "correctness_executor"])
+@pytest.mark.parametrize("runner", EXECUTOR_COMMANDS)
 def test_executor_entrypoints_reject_source_output_before_cluster_access(runner):
     result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "runners" / f"{runner}.py"),
+        [sys.executable, str(REPO_ROOT / EXECUTOR_COMMANDS[runner]),
          f"--out={REPO_ROOT / 'forbidden-runtime-output'}"],
         capture_output=True, text=True, check=False,
     )

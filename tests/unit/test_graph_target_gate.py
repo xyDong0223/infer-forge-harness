@@ -11,9 +11,11 @@ import pytest
 import yaml
 
 from runners import graph_runner, task_runner
+import cli.deployment.proof as _task_runner_cli
+import cli.workflow.graph as _graph_runner_cli
 from core.target import load_target, target_environment
 from core.target import bind_subject
-from tools.journal import record
+from engine.state.journal import record
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +31,7 @@ class GraphTargetGateTests(unittest.TestCase):
         return subprocess.run(
             [
                 sys.executable,
-                "runners/graph_runner.py",
+                "cli/workflow/graph.py",
                 "--subject", "demo",
                 "--target", str(ROOT / target),
                 "--artifact-root", str(self.artifact_root),
@@ -97,7 +99,7 @@ def test_graph_contract_mismatch_blocks_before_any_node(tmp_path, monkeypatch, e
     monkeypatch.setattr(sys, "argv", argv)
     with patch.object(graph_runner.evidence, "run_logged") as run, \
             patch.object(graph_runner, "load_workflow") as workflow:
-        assert graph_runner.main() == 2
+        assert _graph_runner_cli.main() == 2
     run.assert_not_called()
     workflow.assert_not_called()
     assert not (tmp_path / "artifacts").exists()
@@ -117,7 +119,7 @@ def test_unknown_or_planned_graph_target_never_resolves_resources(
     monkeypatch.setattr(sys, "argv", argv + (["--execute"] if execute else []))
     with patch("core.facade.get_hardware") as hardware_loader, \
             patch.object(graph_runner.evidence, "run_logged") as run:
-        assert graph_runner.main() == 2
+        assert _graph_runner_cli.main() == 2
     hardware_loader.assert_not_called()
     run.assert_not_called()
 
@@ -143,7 +145,7 @@ def test_task_runner_checks_target_before_cluster_or_placeholder_work(tmp_path, 
     monkeypatch.setattr(sys, "argv", ["task", str(contract), "--target", str(target)]
                         + (["--execute"] if execute else []))
     with patch("adapters.ClusterConfig.load") as cluster:
-        assert task_runner.main() == 2
+        assert _task_runner_cli.main() == 2
     cluster.assert_not_called()
 
 
@@ -162,7 +164,7 @@ def test_legacy_task_runner_still_blocks_planned_runtime(tmp_path, monkeypatch, 
     contract = write_contract(tmp_path / "contract.yaml", engine="sglang", plugin="sglang-kunlun")
     monkeypatch.setattr(sys, "argv", ["task", str(contract)] + (["--execute"] if execute else []))
     with patch("adapters.ClusterConfig.load") as cluster:
-        assert task_runner.main() == 2
+        assert _task_runner_cli.main() == 2
     cluster.assert_not_called()
 
 
@@ -213,7 +215,7 @@ def test_graph_different_target_revision_cannot_resume_old_fact(tmp_path, monkey
         "--artifact-root", str(tmp_path / "artifacts"), "--resume",
         "--until-node", "mat-001-model-intake", "--set", "model_path=fixture-model",
     ])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     output = capsys.readouterr().out
     assert "[plan]" in output
     assert "REUSED" not in output

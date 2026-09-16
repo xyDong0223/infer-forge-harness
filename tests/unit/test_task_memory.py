@@ -7,14 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.task_memory import (  # noqa: E402
-    finish_block,
-    load,
-    record_observed_issue,
-    record_claim,
-    save,
-    start_block,
-)
+from engine.state.task_memory import finish_block, load, record_observed_issue, record_claim, save, start_block
 
 
 class TaskMemoryTest(unittest.TestCase):

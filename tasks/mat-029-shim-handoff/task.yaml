@@ -14,7 +14,7 @@ spec:
   # fix edge in the graph.
   consumes: [EnvironmentProof, OperatorTaskDispatch]
   runs_with: |
-    python3 tools/scan_torch_shims.py \
+    python3 cli/discovery/scan_torch_shims.py \
       --env-status <artifacts>/kdp-001a/status.json \
       --registry <artifacts>/shim_registry.json \
       --out <artifacts>/mat-029
@@ -25,7 +25,7 @@ execution:
   mode: execute
   scope: installed_runtime
   probe: tools/probe/torch_shim_probe.py
-  tool: tools/scan_torch_shims.py
+  tool: cli/discovery/scan_torch_shims.py
 actions:
   - resolve_pod_from_environment_proof
   - scan_installed_plugin_for_shim_signals
@@ -44,7 +44,7 @@ checks:
     explanation: registry entry (dispatched or waived with reason)
   dispatch:
     immediate: true
-    mechanism: tools/operator_lifecycle.py dispatch (same requests MAT-026 integrates)
+    mechanism: cli/operators/operator_lifecycle.py dispatch (same requests MAT-026 integrates)
     non_blocking: true
 acceptance:
   required_fields:

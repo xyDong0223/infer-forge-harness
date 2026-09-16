@@ -19,7 +19,7 @@ import sys
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.vendor_handoff import build_package, render_package  # noqa: E402
+from operations.operators.vendor_handoff import build_package, render_package
 from validators.handoff_validator import validate_handoff_package  # noqa: E402
 
 CONTRACT = yaml.safe_load(

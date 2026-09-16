@@ -11,7 +11,7 @@ from engine.contracts import OperatorTask
 from tests.scheduler_helpers import stage_result
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "tools" / "run_adaptation.py"
+SCRIPT = ROOT / "cli" / "adaptation.py"
 
 
 def _run(state: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -218,13 +218,13 @@ def test_cli_requires_token_and_renews_current_lease(tmp_path: Path) -> None:
 
 def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from tools.run_adaptation import _parser, _run as run_command
+    from cli.adaptation import _parser, _run as run_command
 
     expected = tmp_path / "artifacts" / "relative-proof" / "tasks" / "proof" / "attempts" / "000001" / "output"
     proof = {"state": "ENVIRONMENT_READY", "artifact_root": str(expected)}
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        "tools.run_adaptation.subprocess.run",
+        "cli.adaptation.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=0, stdout=json.dumps(proof), stderr="",
         ),

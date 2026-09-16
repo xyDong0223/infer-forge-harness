@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.scan_model_support import ScanFailed, main as scan_main, render_card  # noqa: E402
+from operations.discovery.scan_model_support import ScanFailed, render_card
+from cli.discovery.scan_model_support import main as scan_main
 from validators.scan_validator import validate_support_card  # noqa: E402
 
 CONTRACT_PATH = ROOT / "tasks" / "mat-002-model-scan" / "task.yaml"

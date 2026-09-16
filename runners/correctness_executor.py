@@ -17,20 +17,15 @@ the tensors grades nothing.
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from core.paths import REPO_ROOT
 
 import yaml  # noqa: E402
 
 from adapters import get_hardware, push_snippet  # noqa: E402
-from tools.common import run_managed_tool  # noqa: E402
 
 KunlunP800Adapter = get_hardware()
 from validators.correctness_validator import (  # noqa: E402
@@ -45,7 +40,7 @@ LONG_CONTEXT_CONTRACT = REPO_ROOT / "tasks" / "mat-023-long-context-sparse-corre
 WINDOW_PROBE = REPO_ROOT / "tools" / "probe" / "sliding_window_decode_probe.py"
 SPARSE_PROBE = REPO_ROOT / "tools" / "probe" / "block_sparse_attention_probe.py"
 FALLBACK = REPO_ROOT / "tools" / "torch" / "paged_decode.py"
-TENSOR_DIFF = REPO_ROOT / "tools" / "tensor_diff.py"
+TENSOR_DIFF = REPO_ROOT / "cli" / "validation" / "tensor_diff.py"
 
 # The reference provenance every mode asserts. "independently written" is a
 # claim about the probe sources: the CPU references are computed from the paged
@@ -215,7 +210,7 @@ def run_end_to_end(pod: str, ops: CorrectnessOps, out: Path, model_request: Path
         return status
     differential = out / "differential"
     result = ops.run_tool([
-        "python3", "tools/accuracy_differential.py",
+        "python3", "cli/validation/accuracy_differential.py",
         "--pod", pod, "--model-request", str(model_request),
         "--served-model-name", served_model_name, "--port", str(port),
         "--out", str(differential),
@@ -327,19 +322,7 @@ def run_long_context(pod: str, ops: CorrectnessOps, out: Path, context_len: int,
                    "LONG_CONTEXT_PASS", "LONG_CONTEXT_FAIL", "LONG_CONTEXT_AMBIGUOUS")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("kernel", "end-to-end", "long-context"))
-    parser.add_argument("--pod", required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--model-request", type=Path, default=None)
-    parser.add_argument("--served-model-name", default="")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--context-len", type=int, default=4096)
-    parser.add_argument("--block-size", type=int, default=64)
-    parser.add_argument("--topk", type=int, default=8)
-    parser.add_argument("--max-relative-l2", type=float, default=0.02)
-    args = parser.parse_args()
+def run(args) -> int:
 
     ops = CorrectnessOps(KunlunP800Adapter())
     if args.mode == "kernel":
@@ -353,7 +336,3 @@ def main() -> int:
     print(json.dumps(status, ensure_ascii=False, indent=2))
     passing = {"KERNEL_PASS", "ACCURACY_PASS", "LONG_CONTEXT_PASS"}
     return 0 if status.get("state") in passing else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(run_managed_tool(main, task_id="correctness-executor"))

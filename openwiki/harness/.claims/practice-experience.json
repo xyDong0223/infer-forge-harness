@@ -15,7 +15,7 @@
       "evidence": [
         "repo://tasks/mat-025-baseline-freeze/task.yaml",
         "repo://tasks/mat-026-operator-candidate-integration/task.yaml",
-        "repo://tools/operator_lifecycle.py"
+        "repo://operations/operators/operator_lifecycle.py"
       ],
       "confidence": "high"
     },
@@ -37,7 +37,7 @@
       "evidence": [
         "repo://tasks/mat-021-platform-kernel-correctness/task.yaml",
         "repo://validators/correctness_validator.py",
-        "repo://tools/tensor_diff.py"
+        "repo://operations/validation/tensor_diff.py"
       ],
       "confidence": "high"
     },
@@ -59,7 +59,7 @@
       "evidence": [
         "repo://tasks/mat-024-operator-task-dispatch/task.yaml",
         "repo://tasks/mat-026-operator-candidate-integration/task.yaml",
-        "repo://tools/operator_lifecycle.py"
+        "repo://operations/operators/operator_lifecycle.py"
       ],
       "confidence": "high"
     },
@@ -70,7 +70,7 @@
       "evidence": [
         "repo://tasks/mat-008-capability-evaluation/task.yaml",
         "repo://tasks/mat-023-long-context-sparse-correctness/task.yaml",
-        "repo://tools/tensor_diff.py"
+        "repo://operations/validation/tensor_diff.py"
       ],
       "confidence": "high"
     }

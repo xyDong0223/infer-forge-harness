@@ -13,7 +13,7 @@ spec:
   # right, and a wrong attention kernel produces fluent text — which is exactly the
   # risk after replacing a decode kernel with a torch fallback.
   runs_with: |
-    python3 tools/accuracy_differential.py \
+    python3 cli/validation/accuracy_differential.py \
       --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
       --served-model-name <name> --port <port> --out <artifacts>/mat-013
 context:
@@ -21,7 +21,7 @@ context:
     hardware: Kunlunxin-3-P800
 execution:
   mode: execute
-  tool: tools/accuracy_differential.py
+  tool: cli/validation/accuracy_differential.py
   probe: tools/probe/cpu_reference_logits_probe.py
   reference:
     # transformers on CPU, on the same weights: slow, and independent of the

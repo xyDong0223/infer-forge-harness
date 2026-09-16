@@ -15,8 +15,8 @@ if str(ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from runners.graph_runner import NODES, Unresolved, fan_out_plan  # noqa: E402
-from tools.evaluate_capability import PROBES, aggregate, dimensions_for, probe_argv  # noqa: E402
-from tools.journal import record  # noqa: E402
+from operations.discovery.evaluate_capability import PROBES, aggregate, dimensions_for, probe_argv
+from engine.state.journal import record
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
 
 CONTRACT = yaml.safe_load(
@@ -129,7 +129,7 @@ class FusedInsertContractTest(unittest.TestCase):
     """The write side of block_sparse: what its contract entry has to carry."""
 
     def setUp(self) -> None:
-        from tools.evaluate_capability import SIDECARS
+        from operations.discovery.evaluate_capability import SIDECARS
 
         self.entry = CONTRACT["checks"]["dimensions"]["fused_qknorm_rope_insert"]
         self.sidecars = SIDECARS

@@ -110,7 +110,7 @@ class TestNoConcreteAdapterImports(unittest.TestCase):
 
     def test_no_module_outside_adapters_imports_the_concrete_adapter(self) -> None:
         offenders = []
-        for directory in ("runners", "tools", "engine", "validators"):
+        for directory in ("runners", "tools", "engine", "validators", "operations", "cli", "core"):
             for path in (REPO_ROOT / directory).rglob("*.py"):
                 if "__pycache__" in str(path):
                     continue
@@ -121,7 +121,7 @@ class TestNoConcreteAdapterImports(unittest.TestCase):
 
     def test_no_module_outside_runtimes_imports_the_concrete_runtime(self) -> None:
         offenders = []
-        for directory in ("runners", "tools", "engine", "validators", "adapters"):
+        for directory in ("runners", "tools", "engine", "validators", "adapters", "operations", "cli", "core"):
             for path in (REPO_ROOT / directory).rglob("*.py"):
                 if "__pycache__" in str(path):
                     continue

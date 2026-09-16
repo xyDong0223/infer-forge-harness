@@ -7,6 +7,8 @@
 > 本文仍保留上述提交的架构快照；最新执行要求参见
 > [Worker 结果迁移说明](../migration/worker-results.md)及
 > [性能分析指南](../guides/performance-analysis.md)。
+> 本文中的源码链接已适配后续目录迁移；当前命令入口、实现目录和依赖约束
+> 见[源码归类说明](source-layout.zh-CN.md)。
 
 ## 1. 核心设计：固定工程流程，隔离平台差异
 
@@ -73,7 +75,7 @@ Workflow 描述任务节点、入口、依赖和成功／失败后的流向，�
 
 ### L3：编排与决策层 —— 决定“谁来做、何时做、失败后怎么办”
 
-**代码位置：** [engine/scheduler.py](../../engine/scheduler.py)、[engine/brain.py](../../engine/brain.py)、[engine/recovery.py](../../engine/recovery.py)、[runners/graph_runner.py](../../runners/graph_runner.py)。
+**代码位置：** [engine/scheduler.py](../../engine/scheduler.py)、[engine/brain.py](../../engine/brain.py)、[engine/recovery.py](../../engine/recovery.py)、[Graph Runner 实现](../../runners/graph_runner.py)；命令入口为 [cli/workflow/graph.py](../../cli/workflow/graph.py)。
 
 当前有两个协作但尚未合并为单一执行器的机制：
 
@@ -92,7 +94,7 @@ Workflow 描述任务节点、入口、依赖和成功／失败后的流向，�
 
 ### L4：任务执行层 —— 决定“怎样把一个契约变成可观察的动作”
 
-**代码位置：** [runners/task_runner.py](../../runners/task_runner.py)、[runners/deployment_proof.py](../../runners/deployment_proof.py)、[runners/](../../runners/)、[tools/](../../tools/)。
+**代码位置：** [Task Runner 实现](../../runners/task_runner.py)、[runners/deployment_proof.py](../../runners/deployment_proof.py)、[operations/](../../operations/)、[tools/](../../tools/)；命令入口位于 [cli/](../../cli/)。
 
 Runner 协调一次任务的执行步骤、运行上下文、产物收集及校验。Tool 承担具体动作，例如模型信息采集、漂移扫描、数值比较或补丁应用。
 
@@ -137,7 +139,7 @@ Runner 协调一次任务的执行步骤、运行上下文、产物收集及校�
 
 ### L7：证据与验收层 —— 决定“哪些结论有资格被宣称”
 
-**代码位置：** [validators/](../../validators/)、[runners/evidence.py](../../runners/evidence.py)、[tools/journal.py](../../tools/journal.py)、[tools/task_memory.py](../../tools/task_memory.py)。
+**代码位置：** [validators/](../../validators/)、[runners/evidence.py](../../runners/evidence.py)、[engine/state/journal.py](../../engine/state/journal.py)、[engine/state/task_memory.py](../../engine/state/task_memory.py)。
 
 这是横切层，而不是执行结束后才追加的总结：
 
@@ -259,7 +261,7 @@ sequenceDiagram
     T-->>G: 状态、验证结果和退出码
 ```
 
-在算子调度入口 [tools/run_adaptation.py](../../tools/run_adaptation.py) 中，Main Agent 创建或恢复同一个 `AdaptationRun`，执行／导入环境证明后通过 `bind_environment` 绑定。该入口创建的 run 默认要求环境门禁，未绑定时不能发现算子。
+在算子调度入口 [cli/adaptation.py](../../cli/adaptation.py) 中，Main Agent 创建或恢复同一个 `AdaptationRun`，执行／导入环境证明后通过 `bind_environment` 绑定。该入口创建的 run 默认要求环境门禁，未绑定时不能发现算子。
 
 绑定检查包括 Pod、runtime、代码、设备、基础模型 prefill／decode，以及 `environment_fingerprint.txt`、`runtime_import.txt`、`code_readiness.json`、`device_readiness.json` 和基础服务相关产物。后续才进入缺口发现、`OperatorSpec` 和 Worker 阶段。
 
@@ -311,8 +313,8 @@ sequenceDiagram
 | --- | --- |
 | 平台目标和公共数据结构 | [core/contracts.py](../../core/contracts.py)、[core/target.py](../../core/target.py) |
 | 目标如何选到实现 | [core/facade.py](../../core/facade.py)、[adapters/__init__.py](../../adapters/__init__.py)、[runtimes/registry.py](../../runtimes/registry.py) |
-| 多阶段任务和断点恢复 | [engine/scheduler.py](../../engine/scheduler.py)、[runners/graph_runner.py](../../runners/graph_runner.py) |
-| 部署的真实执行链路 | [runners/task_runner.py](../../runners/task_runner.py)、[runners/deployment_proof.py](../../runners/deployment_proof.py) |
+| 多阶段任务和断点恢复 | [engine/scheduler.py](../../engine/scheduler.py)、[Graph Runner](../../runners/graph_runner.py) |
+| 部署的真实执行链路 | [Task Runner](../../runners/task_runner.py)、[runners/deployment_proof.py](../../runners/deployment_proof.py) |
 | 平台专属行为 | [adapters/kunlun_p800/adapter.py](../../adapters/kunlun_p800/adapter.py)、[runtimes/vllm_kunlun.py](../../runtimes/vllm_kunlun.py) |
 | 验收条件 | [validators/deployment_validator.py](../../validators/deployment_validator.py)、[validators/operator_lifecycle_validator.py](../../validators/operator_lifecycle_validator.py)、[tasks/](../../tasks/) |
 | 性能扩展接口 | [runners/performance_runner.py](../../runners/performance_runner.py)、[core/performance.py](../../core/performance.py) |

@@ -22,8 +22,8 @@ sources:
 - repo://tasks/mat-024-operator-task-dispatch/task.yaml
 - repo://tasks/mat-025-baseline-freeze/task.yaml
 - repo://tasks/mat-026-operator-candidate-integration/task.yaml
-- repo://tools/tensor_diff.py
-- repo://tools/operator_lifecycle.py
+- repo://operations/validation/tensor_diff.py
+- repo://operations/operators/operator_lifecycle.py
 - repo://validators/correctness_validator.py
 claims: .claims/practice-experience.json
 ---

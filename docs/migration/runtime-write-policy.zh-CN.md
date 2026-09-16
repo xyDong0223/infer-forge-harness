@@ -1,7 +1,9 @@
 # 运行期写入整理
 
-本次调整不搬迁 `tools/`、`engine/` 等源码目录，而是先明确运行过程中
+运行期写入整理先明确运行过程中
 “谁拥有目录、什么可以写进去、重试是否覆盖、产物如何找到”。
+后续源码目录也已归类，宿主机命令统一位于 `cli/`；
+参见[源码归类与依赖边界](../architecture/source-layout.zh-CN.md)。
 
 ## 三类内容的边界
 
@@ -27,7 +29,7 @@
 
 ```bash
 export INFER_FORGE_STATE_ROOT="$HOME/.local/state/infer-forge"
-python3 tools/run_adaptation.py create-run \
+python3 cli/adaptation.py create-run \
   --run-id example-001 --model <model-id> --backend <backend> \
   --model-revision <revision> --plugin-revision <revision>
 ```
@@ -94,7 +96,7 @@ run 目录。Journal 和 Task Memory 默认属于当前 run。每个实际执行
 读取返回状态中的实际 `artifact_root`，不要再假设结果直接落在
 `--artifact-dir` 指定目录下。性能执行也为每次 invocation 分配独立目录。
 
-**普通 `tools/* --out`**：为兼容直接脚本调用，显式的外部 `--out` 仍然是
+**普通任务 CLI 的 `--out`**：为兼容直接脚本调用，显式的外部 `--out` 仍然是
 实际输出目录，但独立调用必须使用不存在或为空的目录；重复使用已有产物的
 目录会报错。Graph 管理的输出必须位于当前 attempt 的 `output/` 内。
 只读查询或列表模式不需要凭空分配输出目录。

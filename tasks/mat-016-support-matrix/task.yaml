@@ -15,7 +15,7 @@ spec:
   # must carry what it is true of. Writing without --apply prints the row and
   # validates it; the catalog only changes when asked.
   runs_with: |
-    python3 tools/update_support_matrix.py --subject Qwen3-8B \
+    python3 cli/validation/update_support_matrix.py --subject Qwen3-8B \
       --deployment-status <artifacts>/kdp-001b/status.json \
       --accuracy <artifacts>/mat-013/accuracy_differential.json \
       --budget-status <artifacts>/mem-001/budget_status.json \

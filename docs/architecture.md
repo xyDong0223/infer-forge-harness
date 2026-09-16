@@ -46,7 +46,7 @@ instance, hardware-ish values are read from the cluster config (through a
 field confusingly named `--backend`), and the runtime still leaks through a
 serve command assembled inside `runners/task_runner.py` plus two
 stack-specific paths kept on purpose (`tools/patches/` repair content and
-`tools/install_vllm_kunlun.sh`). Phase 1 landed the static half: the venv /
+`runtimes/scripts/install_vllm_kunlun.sh`). Phase 1 landed the static half: the venv /
 site-packages / engine-module strings now come from
 `config/profiles/p800-vllm-kunlun.yaml` through `runtimes/` (registry +
 `default_runtime()`), and all 17 direct `KunlunP800Adapter` imports go
@@ -66,7 +66,7 @@ phase-2 worklist):
 | --- | --- | --- |
 | `engine/` (scheduler, contracts, discovery, recovery, brain, fake_agents) | Core | verified zero platform leakage (no vllm/kunlun/p800/kubectl references) |
 | `runners/graph_runner.py` | Core | one leak: reads `environment.get("hardware", "p800")` into a field named `backend` |
-| `runners/evidence.py`, `runners/watch.py`, `tools/journal.py`, `tools/task_memory.py` | Core | crash-first snapshots, heartbeats, fingerprint-scoped facts |
+| `runners/evidence.py`, `runners/watch.py`, `engine/state/journal.py`, `engine/state/task_memory.py` | Core | crash-first snapshots, heartbeats, fingerprint-scoped facts |
 | `runners/task_runner.py` | Core + Runtime + Hardware (via factory) | renders contracts; still assembles the `python -m vllm.entrypoints.openai.api_server` serve command itself (phase 2) |
 | `runners/deployment_proof.py` | Core + Runtime + Hardware (via factory) | install/replay/precheck/readiness; the largest mixed site (876 lines) |
 | `runners/{triage,patch,correctness}_executor.py` | Core + Hardware (via factory) | behaviour-neutral; reach the adapter through `get_hardware()` |
@@ -103,7 +103,7 @@ passed. The proof owns one prepared Pod and records four facts: the Pod is
 Ready, the installed stack imports, the pinned vLLM-Kunlun code worktree is
 present, and the target XPU devices are visible. Model scans, toy bring-up,
 shim discovery, and operator tasks reuse that Pod and its fingerprint. A run
-created through `tools/run_adaptation.py` remains `WAITING_FOR_ENVIRONMENT`
+created through `cli/adaptation.py` remains `WAITING_FOR_ENVIRONMENT`
 until this proof is bound; discovery is rejected before that transition.
 
 ## First vertical slice

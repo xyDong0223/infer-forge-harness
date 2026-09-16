@@ -14,9 +14,9 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from tools.classify_gaps import classify  # noqa: E402
-from tools.journal import fingerprint, latest, query, record  # noqa: E402
-from tools.plan_deployment import plan  # noqa: E402
+from operations.discovery.classify_gaps import classify
+from engine.state.journal import fingerprint, latest, query, record
+from operations.deployment.plan_deployment import plan
 from validators.gap_validator import validate_gap_classification  # noqa: E402
 from validators.plan_validator import validate_deployment_plan  # noqa: E402
 

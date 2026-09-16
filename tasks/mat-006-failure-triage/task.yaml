@@ -19,9 +19,9 @@ spec:
     - kunlun_ops_vendor
     - torch_xmlir_vendor
   runs_with: |
-    python3 tools/instrument_kernel_trace.py --pod <pod> --call speculative_attention
+    python3 cli/operators/instrument_kernel_trace.py --pod <pod> --call speculative_attention
     # rerun the service proof, then read the captured arguments
-    python3 tools/instrument_kernel_trace.py --pod <pod> --restore
+    python3 cli/operators/instrument_kernel_trace.py --pod <pod> --restore
 context:
   input_artifacts:
     - service proof status.json and server_log.txt
@@ -33,7 +33,7 @@ execution:
   tools:
     # Records the real arguments of a failing vendor call; a symptom without
     # arguments cannot be reproduced by anyone else.
-    - tools/instrument_kernel_trace.py
+    - cli/operators/instrument_kernel_trace.py
     # Replays those arguments outside the server and sweeps around them, which is
     # what turns a symptom into a boundary. The geometry comes from the trace, so
     # the sweep is not tied to any one model, and --kernel selects whichever

@@ -83,7 +83,7 @@ class VllmKunlunRuntime:
         return "install_vllm_kunlun.sh"
 
     def installer_path(self, repo_root: Path) -> Path:
-        return repo_root / "tools" / self.installer_name()
+        return repo_root / "runtimes" / "scripts" / self.installer_name()
 
     def import_check_command(self) -> str:
         return 'python3 -c "import torch, vllm, vllm_kunlun"'

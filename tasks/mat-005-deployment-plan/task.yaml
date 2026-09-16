@@ -14,7 +14,7 @@ spec:
   consumes_optional: [PlacedPatch]
   offline: true
   runs_with: |
-    python3 tools/plan_deployment.py \
+    python3 cli/deployment/plan_deployment.py \
       --model-request <artifacts>/mat-001/model_request.yaml \
       --classification <artifacts>/mat-004/gap_classification.json \
       --placed-patch <artifacts>/mat-007/placement_report.json \

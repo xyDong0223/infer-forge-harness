@@ -1,4 +1,4 @@
-"""Tests for the shared tool-CLI plumbing in tools/common.py."""
+"""Tests for the shared tool-CLI plumbing in cli/common.py."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.common import ToolFailed  # noqa: E402
+from core.errors import ToolFailed
 
 
 class TestToolFailed(unittest.TestCase):
@@ -24,7 +24,7 @@ class TestToolFailed(unittest.TestCase):
     def test_task_subclasses_inherit_the_contract(self) -> None:
         # The per-task names exist so tests and triage can catch one failure
         # kind; they must not re-implement the (state, reason) body.
-        from tools.model_intake import IntakeFailed
+        from operations.intake.model_intake import IntakeFailed
 
         error = IntakeFailed("REJECTED", "model path missing")
         self.assertIsInstance(error, ToolFailed)

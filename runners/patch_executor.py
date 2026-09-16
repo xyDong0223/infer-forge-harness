@@ -11,22 +11,17 @@ fails — a patch that only makes the server start is a rewrite, not a patch.
 
 from __future__ import annotations
 
-import argparse
 import base64
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from core.paths import REPO_ROOT
 
 import yaml  # noqa: E402
 
 from adapters import get_hardware, push_snippet  # noqa: E402
 from runners.evidence import task_status  # noqa: E402
-from tools.common import run_managed_tool  # noqa: E402
 from runtimes import default_runtime  # noqa: E402
 
 KunlunP800Adapter = get_hardware()
@@ -148,7 +143,7 @@ class PatchOps:
 
     def rerun_service(self, pod: str, contract_instance: Path, out: Path) -> dict[str, Any]:
         command = [
-            "python3", "runners/task_runner.py", str(contract_instance),
+            "python3", "cli/deployment/proof.py", str(contract_instance),
             "--execute", "--phase", "service", "--attach-pod", pod,
             "--artifact-dir", str(out),
         ]
@@ -310,14 +305,7 @@ class PatchExecutor:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pod", required=True)
-    parser.add_argument("--contract-instance", type=Path, default=None)
-    parser.add_argument("--triage", type=Path, default=None,
-                        help="triage report with the captured failure geometry")
-    parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
+def run(args) -> int:
 
     executor = PatchExecutor(args.pod, args.contract_instance,
                              PatchOps(KunlunP800Adapter()), args.out,
@@ -325,7 +313,3 @@ def main() -> int:
     status = executor.run()
     print(json.dumps(status, ensure_ascii=False, indent=2))
     return 0 if status.get("state") == "PATCH_PLACED" else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

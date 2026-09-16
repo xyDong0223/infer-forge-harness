@@ -13,6 +13,7 @@ import yaml
 
 from core.storage import ArtifactStore, RunPaths, WritePolicyError
 from runners import task_runner
+import cli.deployment.proof as _task_runner_cli
 from runners.deployment_proof import DeploymentProofRunner, ActionFailed, manifest_values, render_manifest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -239,7 +240,7 @@ def test_task_executor_failure_is_registered(tmp_path, capsys):
 def test_plan_cannot_write_source(tmp_path, monkeypatch, capsys):
     output = REPO / "rejected-plan.json"
     monkeypatch.setattr("sys.argv", ["task", str(CONTRACT), "--output", str(output)])
-    assert task_runner.main() == 2
+    assert _task_runner_cli.main() == 2
     assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
     assert not output.exists()
 
@@ -247,11 +248,11 @@ def test_plan_cannot_write_source(tmp_path, monkeypatch, capsys):
 def test_plan_external_output_is_atomic_and_not_overwritten(tmp_path, monkeypatch, capsys):
     output = tmp_path / "plans" / "plan.json"
     monkeypatch.setattr("sys.argv", ["task", str(CONTRACT), "--output", str(output)])
-    assert task_runner.main() == 0
+    assert _task_runner_cli.main() == 0
     plan = json.loads(capsys.readouterr().out)
     assert json.loads(output.read_text()) == plan
     before = output.read_bytes()
-    assert task_runner.main() == 2
+    assert _task_runner_cli.main() == 2
     assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
     assert output.read_bytes() == before
     assert not list(output.parent.glob("*.pending"))

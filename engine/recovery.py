@@ -162,26 +162,26 @@ def default_actions(repo_root: Path, context: dict[str, str],
                 "stderr_tail": result.stderr.strip()[-500:]}
 
     def run_triage(decision: Decision) -> dict[str, Any]:
-        command = ["python3", "runners/triage_executor.py"]
+        command = ["python3", "cli/operators/triage.py"]
         pod = context.get("pod")
         if pod:
             command += ["--pod", pod]
         return _run(command, "triage")
 
     def place_patch(decision: Decision) -> dict[str, Any]:
-        command = ["python3", "runners/patch_executor.py"]
+        command = ["python3", "cli/operators/place_patch.py"]
         pod = context.get("pod")
         if pod:
             command += ["--pod", pod]
         return _run(command, "patch")
 
     def dispatch_operator_task(decision: Decision) -> dict[str, Any]:
-        command = ["python3", "tools/operator_lifecycle.py", "dispatch",
+        command = ["python3", "cli/operators/operator_lifecycle.py", "dispatch",
                    "--subject", context.get("subject", "")]
         return _run(command, "operator_dispatch")
 
     def rediscover(decision: Decision) -> dict[str, Any]:
-        command = ["python3", "tools/scan_model_support.py"]
+        command = ["python3", "cli/discovery/scan_model_support.py"]
         return _run(command, "rediscover")
 
     return {

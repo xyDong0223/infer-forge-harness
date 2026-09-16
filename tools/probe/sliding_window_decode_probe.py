@@ -130,7 +130,7 @@ def main() -> int:
     parser.add_argument("--cosine-floor", type=float, default=0.9999)
     parser.add_argument("--max-relative-l2", type=float, default=0.01)
     parser.add_argument("--dump", help="directory for candidate/reference/control tensor JSONs "
-                                       "consumed by tools/tensor_diff.py (mat-021)")
+                                       "consumed by cli/validation/tensor_diff.py (mat-021)")
     args = parser.parse_args()
 
     import vllm_kunlun  # noqa: F401 - installs the torch_xmlir mapping and custom ops
@@ -231,7 +231,7 @@ def main() -> int:
     }
 
     if args.dump:
-        # mat-021 grades these with tools/tensor_diff.py: the platform kernel's
+        # mat-021 grades these with cli/validation/tensor_diff.py: the platform kernel's
         # output, the independent CPU reference, and an actually-computed
         # unwindowed output as the negative control — a kernel that ignored the
         # window would land on the control and fail the gate, which is what

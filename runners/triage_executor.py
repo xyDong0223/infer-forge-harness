@@ -15,22 +15,17 @@ independent triage validator has the final word before TRIAGE_READY is written.
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from core.paths import REPO_ROOT
 
 import yaml  # noqa: E402
 
 from adapters import get_hardware, push_snippet  # noqa: E402
 from runners.evidence import task_status  # noqa: E402
-from tools.common import run_managed_tool  # noqa: E402
 
 KunlunP800Adapter = get_hardware()
 from validators.triage_validator import validate_triage  # noqa: E402
@@ -51,7 +46,7 @@ class PodOps:
         import subprocess
 
         result = subprocess.run(
-            ["python3", "tools/instrument_kernel_trace.py", "--pod", pod, "--call", call],
+            ["python3", "cli/operators/instrument_kernel_trace.py", "--pod", pod, "--call", call],
             cwd=REPO_ROOT, text=True, capture_output=True,
         )
         return (result.stdout + result.stderr).strip() or "INSTRUMENT_EXIT_%d" % result.returncode
@@ -60,7 +55,7 @@ class PodOps:
         import subprocess
 
         result = subprocess.run(
-            ["python3", "tools/instrument_kernel_trace.py", "--pod", pod, "--restore"],
+            ["python3", "cli/operators/instrument_kernel_trace.py", "--pod", pod, "--restore"],
             cwd=REPO_ROOT, text=True, capture_output=True,
         )
         return (result.stdout + result.stderr).strip()
@@ -72,7 +67,7 @@ class PodOps:
         # 2026-09-14: the log was truncated 40 s after the crash). The rerun
         # gets its own timestamped log path instead, recorded in its status.
         command = [
-            "python3", "runners/task_runner.py", str(contract_instance),
+            "python3", "cli/deployment/proof.py", str(contract_instance),
             "--execute", "--phase", "service", "--attach-pod", pod,
             "--artifact-dir", str(out),
             "--server-log", self.rerun_server_log(contract_instance),
@@ -214,19 +209,7 @@ class TriageExecutor:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pod", default=None,
-                        help="the pod to triage in; defaults to the environment proof's pod")
-    parser.add_argument("--contract-instance", type=Path, default=None)
-    # Accepted (and used as the pod source when --pod is absent) because the
-    # graph's failure_triage node resolves its EnvironmentProof input as this
-    # flag; refusing it made the node unrunnable from the graph.
-    parser.add_argument("--env-status", type=Path, default=None,
-                        help="environment proof status.json; supplies --pod when omitted")
-    parser.add_argument("--call", default="speculative_attention")
-    parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
+def run(args) -> int:
 
     pod = args.pod
     if not pod and args.env_status and args.env_status.exists():
@@ -239,7 +222,3 @@ def main() -> int:
     status = executor.run()
     print(json.dumps(status, ensure_ascii=False, indent=2))
     return 0 if status.get("state") == "TRIAGE_READY" else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

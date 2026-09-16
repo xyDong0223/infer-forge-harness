@@ -28,12 +28,12 @@ spec:
       routes_by_layer: true
       validator_entry: validate_handoff_package
   runs_with: |
-    python3 tools/vendor_handoff.py \
+    python3 cli/operators/vendor_handoff.py \
       --triage <artifacts>/mat-006/triage_report.json \
       --environment <fingerprint from the environment proof> \
       --out <artifacts>/mat-020
 
-    python3 tools/vendor_handoff.py \
+    python3 cli/operators/vendor_handoff.py \
       --findings tasks/mat-020-vendor-handoff/<subject>-findings.yaml \
       --out <artifacts>/mat-020
 context:

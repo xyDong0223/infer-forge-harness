@@ -6,13 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.skill_registry import (  # noqa: E402
-    SkillResolutionError,
-    index_by_task_type,
-    resolve,
-    resolve_for_context,
-    validate_tool_references,
-)
+from engine.skill_registry import SkillResolutionError, index_by_task_type, resolve, resolve_for_context, validate_tool_references
 
 
 class SkillRegistryTest(unittest.TestCase):

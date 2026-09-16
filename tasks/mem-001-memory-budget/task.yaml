@@ -15,7 +15,7 @@ spec:
   consumes: [DeploymentProof]
   runs_with: |
     export AI_INFRA_SKILLS_DIR=/path/to/AI-Infra-Auto-Driven-SKILLS
-    python3 tools/memory_budget.py \
+    python3 cli/deployment/memory_budget.py \
       --pod <pod from the service proof> \
       --server-log <execution.server_log from the deployment contract> \
       --out <artifacts>/mem-001
@@ -29,7 +29,7 @@ context:
 execution:
   mode: execute
   scope: running_deployment
-  tool: tools/memory_budget.py
+  tool: cli/deployment/memory_budget.py
   # Read-only against the cluster: xpu_smi and cat on a log. Restarting a server
   # to obtain a cleaner log would invalidate the snapshot meant to explain it.
   read_only: true

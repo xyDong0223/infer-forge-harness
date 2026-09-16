@@ -15,7 +15,7 @@ from core.storage import (
     safe_component,
 )
 from engine.scheduler import EventStore
-from tools import journal, task_memory
+from engine.state import journal, task_memory
 
 
 def test_runtime_roots_are_external_and_resolved(tmp_path):

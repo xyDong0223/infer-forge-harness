@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.probe.torch_shim_probe import scan_file  # noqa: E402
-from tools.scan_torch_shims import match_signals_to_entries  # noqa: E402
+from operations.discovery.scan_torch_shims import match_signals_to_entries
 from validators.shim_validator import validate_shim_handoff  # noqa: E402
 
 GLM52_SHIM_MODULE = '''

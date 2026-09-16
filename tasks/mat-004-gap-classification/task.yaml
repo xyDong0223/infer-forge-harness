@@ -13,7 +13,7 @@ spec:
   # alone — no pod, no cluster.
   offline: true
   runs_with: |
-    python3 tools/classify_gaps.py \
+    python3 cli/discovery/classify_gaps.py \
       --support-card <artifacts>/mat-002/model_support.json \
       --capability-match <artifacts>/mat-003/capability_match.json \
       --out <artifacts>/mat-004

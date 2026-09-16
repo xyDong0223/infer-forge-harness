@@ -1,5 +1,7 @@
 # Documentation
 
+- [`architecture/source-layout.zh-CN.md`](architecture/source-layout.zh-CN.md):
+  current source ownership, command/implementation separation, and migration rules.
 - [`architecture/implementation-layers.zh-CN.md`](architecture/implementation-layers.zh-CN.md):
   current technical implementation guide in Chinese, explaining each abstraction
   layer, target resolution, execution flow, and implementation boundaries. Start here.

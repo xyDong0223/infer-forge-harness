@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from runners import graph_runner  # noqa: E402
+import cli.workflow.graph as _graph_runner_cli
 
 TRIAGE_NODE = {
     "id": "mat-006-failure-triage",
@@ -69,7 +70,7 @@ def stub_command(script: Path, state: str, exit_code: int, message: str,
 
 
 class WalkHarness(unittest.TestCase):
-    """Run graph_runner.main() against a synthetic workflow with stub nodes."""
+    """Run _graph_runner_cli.main() against a synthetic workflow with stub nodes."""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
@@ -132,7 +133,7 @@ class WalkHarness(unittest.TestCase):
         captured = io.StringIO()
         with redirect_stdout(captured):
             sys.argv[:] = argv
-            graph_runner.main()
+            _graph_runner_cli.main()
         summaries = []
         for line in captured.getvalue().splitlines():
             line = line.strip()

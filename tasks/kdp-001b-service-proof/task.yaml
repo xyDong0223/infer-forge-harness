@@ -14,7 +14,7 @@ spec:
   # invalidate the environment proof it is supposed to build on.
   consumes: [EnvironmentProof, DeploymentPlan]
   runs_with: |
-    python3 runners/task_runner.py \
+    python3 cli/deployment/proof.py \
       tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase service \
       --attach-pod <pod from the environment proof's status.json>
   instances_shared_with: kdp-001a-environment-proof

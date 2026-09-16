@@ -39,7 +39,7 @@ python -m pip install pyyaml
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 python -m unittest discover -s tests -p 'test_*.py' -v
-python -m compileall runners validators tools
+python cli/maintenance/check_repo_references.py
 ```
 
 The full unit suite uses **PyYAML** to load contracts and **PyTorch** for CPU reference arithmetic. A real P800 run additionally requires an authorized Kubernetes context, a reachable cluster, the model volume and revision, and a vLLM-Kunlun image. Those environment-specific prerequisites are intentionally not created by this repository.
@@ -107,7 +107,7 @@ The graph runner keeps the Task Graph for cross-task routing and stores the curr
 Each task is a bounded evidence loop. The Runner selects the contract and method, the Tool or Adapter performs the authorized action, the Validator applies an independent acceptance gate, and the Journal receives a reusable fact only after that gate passes.
 
 ```bash
-python3 runners/graph_runner.py \
+python3 cli/workflow/graph.py \
   --subject GLM5.2-Int-W8A8 \
   --artifact-root /path/to/artifacts \
   --journal /path/to/journal.jsonl \
@@ -138,7 +138,7 @@ happens next. `--auto-recover` replaces the "stop and wait for a person" step
 with a bounded decide/act/rerun loop:
 
 ```bash
-python3 runners/graph_runner.py \
+python3 cli/workflow/graph.py \
   --subject GLM5.2-Int-W8A8 --artifact-root /path/to/artifacts \
   --execute --auto-recover --brain agent
 ```
@@ -155,14 +155,14 @@ node's own validator can declare the failure gone. Every failed node gets
 re-asked once and then degrades to `BLOCKED`, never to a guessed action.
 `--brain rule` swaps in a deterministic classifier for environments without a
 decider. The triage and placement steps the loop can invoke are sequenced
-executors (`runners/triage_executor.py`, `runners/patch_executor.py`), not
+executors (`cli/operators/triage.py`, `cli/operators/place_patch.py`), not
 prompts: mat-006's instrument/capture/isolate/restore sequence and mat-007's
 apply/validate/compare/reject sequence run as written, and the independent
 validators still decide their verdicts.
 
 The three correctness gates are sequenced the same way
-(`runners/correctness_executor.py`): mat-021 grades a platform kernel against
-an independent CPU reference through `tools/tensor_diff.py`, mat-022 packages
+(`cli/validation/correctness.py`): mat-021 grades a platform kernel against
+an independent CPU reference through `cli/validation/tensor_diff.py`, mat-022 packages
 the integrated-serving-path differential into case-level evidence, and mat-023
 exercises sparse selection beyond `block_size * topk` with a shifted-block
 control. In all three, a control that cannot fail makes the verdict AMBIGUOUS,
@@ -178,7 +178,7 @@ The GLM-5.2 candidate integration recorded what the four failed swaps before a g
 The lifecycle tool can also be driven directly:
 
 ```bash
-python3 tools/operator_lifecycle.py integrate \
+python3 cli/operators/operator_lifecycle.py integrate \
   --baseline /path/to/baseline_manifest.json \
   --candidate /path/to/candidate_manifest.json \
   --subject GLM5.2-Int-W8A8 \
@@ -214,9 +214,16 @@ to be axis-agnostic.
 
 | Directory | Responsibility |
 | --- | --- |
-| [`engine/`](engine/) | The core, platform-neutral by construction (guarded by tests): the adaptation-run scheduler and its SQLite event store, operator discovery, and the failure-recovery loop. |
+| [`cli/`](cli/) | Host command entry points, argument parsing, and managed-output guards. Commands delegate to task implementations or runners. |
+| [`operations/`](operations/) | Task implementations grouped by intake, discovery, deployment, validation, and operators; no command-line parsing. |
+| [`core/`](core/) | Shared contracts, target resolution, task errors, versioned resource paths, and external runtime storage. |
+| [`engine/`](engine/) | The adaptation-run scheduler, SQLite event store, operator discovery, recovery, and Skill registry; `state/` owns Journal and Task Memory. |
 | [`runners/`](runners/) | Node executors: `graph_runner` walks the task graph (failure edges route to triage with crash evidence attached); `deployment_proof` installs, replays patches, drift-prechecks, and proves readiness; triage/patch/correctness executors; `evidence` (crash-first snapshots) and `watch` (heartbeats — a silent process is never a mystery). |
-| [`tools/`](tools/) | One CLI per task node, each writing its own state file; `probe/` holds scripts pushed into the pod; `patches/` holds the replayable, idempotent repair set — a repair that lives only in a pod dies with the pod. |
+| [`tools/`](tools/) | Portable `probe/` scripts, replayable `patches/`, and `torch/` references. Host commands and task implementations no longer live here. |
+
+The [source ownership guide](docs/architecture/source-layout.zh-CN.md) defines
+where new code belongs. Removed host entry points have no compatibility wrappers;
+use the canonical `cli/` paths recorded in task contracts and the tool catalog.
 
 ### Platform seams — where the target lives
 
@@ -251,7 +258,7 @@ Run the documented local validation commands before proposing a change:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
-python -m compileall runners validators tools
+python cli/maintenance/check_repo_references.py
 ```
 
 The P800 integration suite is opt-in. It must never run against a shared cluster without explicit environment configuration, including the namespace, image digest, model revision, hardware, and cleanup policy.

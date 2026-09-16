@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.tensor_diff import compare, grade, main  # noqa: E402
+from operations.validation.tensor_diff import compare, grade
+from cli.validation.tensor_diff import main
 from core.storage import WritePolicyError
 import pytest
 

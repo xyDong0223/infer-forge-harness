@@ -9,7 +9,7 @@ spec:
   question: does the served model agree with an independent reference
   produces: AccuracySmokeReport
   consumes: [EnvironmentProof, ModelRequest]
-  runs_with: python3 tools/accuracy_differential.py --pod <pod> --model <model>
+  runs_with: python3 cli/validation/accuracy_differential.py --pod <pod> --model <model>
 actions:
   - attach_environment_pod
   - run_reference

@@ -13,7 +13,7 @@ spec:
   produces: ApiConformance
   consumes: [ModelRequest, EnvironmentProof]
   runs_with: |
-    python3 tools/check_api_conformance.py --subject <model-id> \
+    python3 cli/validation/check_api_conformance.py --subject <model-id> \
       --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
       --out <artifacts>/mat-009
 context:
@@ -25,7 +25,7 @@ context:
   requires_running_server: false
 execution:
   mode: execute
-  tool: tools/check_api_conformance.py
+  tool: cli/validation/check_api_conformance.py
   probe: tools/probe/parser_conformance_probe.py
 actions:
   - enumerate_registered_parsers

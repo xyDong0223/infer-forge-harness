@@ -12,7 +12,7 @@ spec:
   # creates nothing and needs no launch parameter.
   consumes: [ModelRequest, EnvironmentProof]
   runs_with: |
-    python3 tools/scan_model_support.py \
+    python3 cli/discovery/scan_model_support.py \
       --model-request <artifacts>/mat-001/model_request.yaml \
       --env-status <artifacts>/kdp-001a/status.json \
       --out <artifacts>/mat-002
@@ -30,7 +30,7 @@ execution:
   # can disagree about what is registered.
   scope: installed_runtime
   probe: tools/probe/model_support_probe.py
-  tool: tools/scan_model_support.py
+  tool: cli/discovery/scan_model_support.py
   # The pod reaches GitHub through the same proxy the operator host uses, so the
   # upstream lookups run where the registry evidence is gathered.
   upstream_lookup:

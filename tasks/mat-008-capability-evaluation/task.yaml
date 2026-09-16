@@ -15,13 +15,13 @@ spec:
   # it to a reference that does not share the accelerator.
   parameterized_by: dimension
   fan_out: |
-    python3 tools/evaluate_capability.py --list-dimensions \
+    python3 cli/discovery/evaluate_capability.py --list-dimensions \
       --capability-match <artifacts>/mat-003/capability_match.json
   runs_with: |
-    python3 tools/evaluate_capability.py --dimension <dimension> --subject <subject> \
+    python3 cli/discovery/evaluate_capability.py --dimension <dimension> --subject <subject> \
       --pod <pod> --model-path <weights> --out <artifacts>/mat-008/<dimension>
   fan_in: |
-    python3 tools/evaluate_capability.py --aggregate --out <artifacts>/mat-008 \
+    python3 cli/discovery/evaluate_capability.py --aggregate --out <artifacts>/mat-008 \
       --child <artifacts>/mat-008/<dimension> ...
 context:
   target:
@@ -40,7 +40,7 @@ context:
                         fused_qknorm_rope_insert, swiglu_oai, multimodal]
 execution:
   mode: execute
-  tool: tools/evaluate_capability.py
+  tool: cli/discovery/evaluate_capability.py
   probes:
     quantization: tools/probe/quantized_linear_probe.py
     swa: tools/probe/sliding_window_decode_probe.py

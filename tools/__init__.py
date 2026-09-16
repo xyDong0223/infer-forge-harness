@@ -1,1 +1,1 @@
-"""Deterministic tooling used by the harness."""
+"""Portable probes, replayable patches, and Torch reference implementations."""

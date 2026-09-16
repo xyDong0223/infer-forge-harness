@@ -15,7 +15,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from core.paths import REPO_ROOT
 
 
 class WritePolicyError(ValueError):

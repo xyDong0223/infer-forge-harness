@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.run_adaptation import _environment_command, _parser  # noqa: E402
+from cli.adaptation import _environment_command, _parser
 
 
 class TestEnvironmentAttachWiring(unittest.TestCase):
@@ -39,8 +39,7 @@ class TestEnvironmentAttachWiring(unittest.TestCase):
         self.assertEqual(
             command[command.index("--attach-pod") + 1], "dongxinyu03-vllm-abc-0"
         )
-        # the rest of the invocation is unchanged
-        self.assertIn("task_runner.py", command[1])
+        self.assertTrue(command[1].endswith("cli/deployment/proof.py"))
         self.assertIn("--execute", command)
 
     def test_without_attach_pod_the_flag_is_absent(self) -> None:

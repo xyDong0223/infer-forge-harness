@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from adapters.kunlun_p800.adapter import KunlunP800Adapter, SafetyViolation  # noqa: E402
-from tools.model_intake import IntakeFailed, build_request, resolve_stack_commit  # noqa: E402
+from operations.intake.model_intake import IntakeFailed, build_request, resolve_stack_commit
 
 PROBE = ROOT / "tools" / "probe" / "model_fingerprint_probe.py"
 

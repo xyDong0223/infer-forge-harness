@@ -35,7 +35,7 @@ Kunlun and decides the outcome.
 ```bash
 export KUBECONFIG=/path/to/kubeconfig
 export AI_INFRA_SKILLS_DIR=/path/to/AI-Infra-Auto-Driven-SKILLS
-python3 tools/memory_budget.py \
+python3 cli/deployment/memory_budget.py \
   --pod <owned-pod> \
   --server-log /workspace/server_minimax.log \
   --out <artifact-dir>/memory

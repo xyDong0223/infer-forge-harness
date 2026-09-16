@@ -2,7 +2,7 @@ api_version: infer.kunlun/v1alpha1
 kind: ToolCatalog
 entries:
   - id: model_intake
-    command: python3 tools/model_intake.py
+    command: python3 cli/intake/model_intake.py
     purpose: identify the model artifact and reject invalid checkpoints
     side_effect: read_only
     retryable: true
@@ -10,7 +10,7 @@ entries:
       - model_request.yaml
       - intake_status.json
   - id: model_scan
-    command: python3 tools/scan_model_support.py
+    command: python3 cli/discovery/scan_model_support.py
     purpose: build an evidence-backed model support card
     side_effect: read_only
     retryable: true
@@ -18,7 +18,7 @@ entries:
       - model_support.json
       - scan_status.json
   - id: runtime_drift_scan
-    command: python3 tools/scan_runtime_drift.py
+    command: python3 cli/discovery/scan_runtime_drift.py
     purpose: import every plugin module against the installed engine and locate the moved symbols
     side_effect: pod_exec
     retryable: true
@@ -27,7 +27,7 @@ entries:
       - runtime_drift_card.md
       - drift_status.json
   - id: toy_bringup
-    command: python3 tools/toy_bringup.py
+    command: python3 cli/deployment/toy_bringup.py
     purpose: construct, prefill and decode a few-layer copy with dummy weights before the real load
     side_effect: pod_exec
     retryable: true
@@ -36,7 +36,7 @@ entries:
       - toy_bringup_card.md
       - bringup_status.json
   - id: torch_shim_handoff
-    command: python3 tools/scan_torch_shims.py
+    command: python3 cli/discovery/scan_torch_shims.py
     purpose: find torch shims standing in for vendor kernels and dispatch one operator request per unwaived shim
     side_effect: pod_exec
     retryable: true
@@ -46,7 +46,7 @@ entries:
       - shim_gaps.json
       - shim_status.json
   - id: capability_evaluation
-    command: python3 tools/evaluate_capability.py
+    command: python3 cli/discovery/evaluate_capability.py
     purpose: exercise only the capability dimensions demanded by the model
     side_effect: pod_exec
     retryable: true
@@ -54,7 +54,7 @@ entries:
       - capability_evaluation.json
       - evaluation_status.json
   - id: accuracy_differential
-    command: python3 tools/accuracy_differential.py
+    command: python3 cli/validation/accuracy_differential.py
     purpose: compare served output against an independent reference
     side_effect: pod_exec
     retryable: true
@@ -62,7 +62,7 @@ entries:
       - accuracy_differential.json
       - accuracy_status.json
   - id: vendor_handoff
-    command: python3 tools/vendor_handoff.py
+    command: python3 cli/operators/vendor_handoff.py
     purpose: package an unresolved platform gap for downstream ownership
     side_effect: write_artifact
     retryable: true
@@ -70,25 +70,25 @@ entries:
       - handoff.json
       - handoff_status.json
   - id: deployment_proof
-    command: python3 runners/task_runner.py
+    command: python3 cli/deployment/proof.py
     purpose: prove environment or service readiness
     side_effect: cluster_write
     retryable: false
     outputs: [status.json]
   - id: capability_match
-    command: python3 tools/match_capabilities.py
+    command: python3 cli/discovery/match_capabilities.py
     purpose: match static model demands to registered capabilities
     side_effect: read_only
     retryable: true
     outputs: [capability_match.json]
   - id: gap_classification
-    command: python3 tools/classify_gaps.py
+    command: python3 cli/discovery/classify_gaps.py
     purpose: classify ownership and route unresolved gaps
     side_effect: read_only
     retryable: true
     outputs: [gap_classification.json]
   - id: instrument_kernel_trace
-    command: python3 tools/instrument_kernel_trace.py
+    command: python3 cli/operators/instrument_kernel_trace.py
     purpose: capture arguments and tensors for a failing call
     side_effect: pod_exec
     retryable: false
@@ -100,49 +100,49 @@ entries:
     retryable: false
     outputs: [placement_report.json]
   - id: deployment_plan
-    command: python3 tools/plan_deployment.py
+    command: python3 cli/deployment/plan_deployment.py
     purpose: derive launch parameters from recorded facts
     side_effect: write_artifact
     retryable: true
     outputs: [deployment_plan.json]
   - id: memory_budget
-    command: python3 tools/memory_budget.py
+    command: python3 cli/deployment/memory_budget.py
     purpose: reconcile xpu_smi counters with the serving process
     side_effect: pod_exec
     retryable: true
     outputs: [memory_budget.json]
   - id: api_conformance
-    command: python3 tools/check_api_conformance.py
+    command: python3 cli/validation/check_api_conformance.py
     purpose: verify response shape and parser behavior
     side_effect: pod_exec
     retryable: true
     outputs: [api_conformance.json]
   - id: support_matrix
-    command: python3 tools/update_support_matrix.py
+    command: python3 cli/validation/update_support_matrix.py
     purpose: publish evidence-bounded support claims
     side_effect: write_artifact
     retryable: true
     outputs: [support_matrix.yaml]
   - id: tensor_diff
-    command: python3 tools/tensor_diff.py
+    command: python3 cli/validation/tensor_diff.py
     purpose: compare candidate and reference tensors with a relative-L2 gate
     side_effect: read_only
     retryable: true
     outputs: [tensor_diff.json]
   - id: operator_task_dispatch
-    command: python3 tools/operator_lifecycle.py dispatch
+    command: python3 cli/operators/operator_lifecycle.py dispatch
     purpose: create durable asynchronous requests for xpu-op-gen
     side_effect: write_artifact
     retryable: true
     outputs: [dispatch_status.json, requests/]
   - id: baseline_freeze
-    command: python3 tools/operator_lifecycle.py freeze-baseline
+    command: python3 cli/operators/operator_lifecycle.py freeze-baseline
     purpose: freeze a passing serving and accuracy baseline
     side_effect: write_artifact
     retryable: false
     outputs: [baseline_manifest.json, baseline_status.json]
   - id: operator_candidate_integration
-    command: python3 tools/operator_lifecycle.py integrate
+    command: python3 cli/operators/operator_lifecycle.py integrate
     purpose: gate one operator candidate against the frozen baseline
     side_effect: write_artifact
     retryable: false

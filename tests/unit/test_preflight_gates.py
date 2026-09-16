@@ -21,8 +21,8 @@ if str(ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from tools.probe.toy_bringup_probe import STAGES  # noqa: E402
-from tools.scan_runtime_drift import render_card as render_drift_card  # noqa: E402
-from tools.toy_bringup import render_card as render_bringup_card  # noqa: E402
+from operations.discovery.scan_runtime_drift import render_card as render_drift_card
+from operations.deployment.toy_bringup import render_card as render_bringup_card
 from validators.bringup_validator import validate_bringup_report  # noqa: E402
 from validators.drift_validator import validate_drift_report  # noqa: E402
 

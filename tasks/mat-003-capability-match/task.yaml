@@ -12,7 +12,7 @@ spec:
   # implementation runs would compare requirements against the wrong code path.
   consumes: [ModelRequest, ModelSupportCard, EnvironmentProof]
   runs_with: |
-    python3 tools/match_capabilities.py \
+    python3 cli/discovery/match_capabilities.py \
       --model-request <artifacts>/mat-001/model_request.yaml \
       --support-card <artifacts>/mat-002/model_support.json \
       --env-status <artifacts>/kdp-001a/status.json \
@@ -32,7 +32,7 @@ execution:
   mode: execute
   scope: installed_runtime
   probe: tools/probe/capability_match_probe.py
-  tool: tools/match_capabilities.py
+  tool: cli/discovery/match_capabilities.py
 actions:
   - derive_required_capabilities
   - inventory_provided_capabilities

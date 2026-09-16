@@ -29,8 +29,9 @@ from runners.graph_runner import (  # noqa: E402
     fact_environment,
     record_fact,
 )
-from tools.journal import query, record  # noqa: E402
+from engine.state.journal import query, record
 from runners import graph_runner  # noqa: E402
+import cli.workflow.graph as _graph_runner_cli
 from core.storage import RunPaths, WritePolicyError  # noqa: E402
 
 WORKFLOW = ROOT / "workflows" / "model_adaptation.yaml"
@@ -66,17 +67,17 @@ def graph_fixture(tmp_path, monkeypatch, outcomes):
 def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_path, monkeypatch):
     argv, calls = graph_fixture(tmp_path, monkeypatch, [])
     monkeypatch.setattr(sys, "argv", argv + ["--execute"])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     root = tmp_path / "run"
     first = next(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
     old = first.read_bytes()
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
     assert len(reports) == 2
     assert first.read_bytes() == old
     assert all((p.parent.parent / "manifest.json").is_file() for p in reports)
     monkeypatch.setattr(sys, "argv", argv + ["--execute", "--resume"])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     assert len(calls) == 2
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
@@ -86,13 +87,13 @@ def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_pat
 def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
     argv, calls = graph_fixture(tmp_path, monkeypatch, [])
     monkeypatch.setattr(sys, "argv", argv)
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     assert not (tmp_path / "run").exists()
     monkeypatch.setattr(sys, "argv", argv + ["--execute"])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     files = {p: p.read_bytes() for p in (tmp_path / "run").rglob("*") if p.is_file()}
     monkeypatch.setattr(sys, "argv", argv + ["--resume"])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     assert files == {p: p.read_bytes() for p in (tmp_path / "run").rglob("*") if p.is_file()}
     assert len(calls) == 1
 
@@ -107,7 +108,7 @@ def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
 def test_graph_write_violation_blocks_before_commands(tmp_path, monkeypatch, extra):
     argv, calls = graph_fixture(tmp_path, monkeypatch, [])
     monkeypatch.setattr(sys, "argv", argv + ["--execute"] + extra)
-    assert graph_runner.main() == 2
+    assert _graph_runner_cli.main() == 2
     assert calls == []
     assert not (tmp_path / "run").exists()
 
@@ -118,7 +119,7 @@ def test_graph_default_run_root_uses_explicit_identity(tmp_path, monkeypatch):
     del argv[index:index + 2]
     monkeypatch.setenv("INFER_FORGE_STATE_ROOT", str(tmp_path / "state"))
     monkeypatch.setattr(sys, "argv", argv + ["--run-id", "explicit", "--execute"])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     root = tmp_path / "state" / "runs" / "explicit"
     assert json.loads((root / "run.json").read_text())["run_id"] == "explicit"
     assert len(calls) == 1
@@ -133,7 +134,7 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     monkeypatch.setattr(sys, "argv", argv + [
         "--execute", "--auto-recover", "--brain", "rule", "--recovery-budget", "2",
     ])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     root = tmp_path / "run"
     reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
     assert len(calls) == len(reports) == 3
@@ -156,7 +157,7 @@ def test_recovery_exit_zero_without_valid_state_stays_blocked(tmp_path, monkeypa
     monkeypatch.setattr(sys, "argv", argv + [
         "--execute", "--auto-recover", "--brain", "rule", "--recovery-budget", "1",
     ])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     assert len(calls) == 2
     outcome = next((tmp_path / "run").rglob("recovery_outcome.json"))
     assert json.loads(outcome.read_text())["status"] == "BLOCKED"
@@ -175,7 +176,7 @@ def test_retry_cannot_redirect_output_to_source(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", argv + [
         "--execute", "--auto-recover", "--recovery-budget", "1",
     ])
-    assert graph_runner.main() == 0
+    assert _graph_runner_cli.main() == 0
     assert len(calls) == 1
     assert len(list((tmp_path / "run").glob("tasks/intake/attempts/*"))) == 1
 
@@ -192,7 +193,7 @@ def test_malformed_existing_state_blocks_before_node(tmp_path, monkeypatch, name
     root.mkdir()
     (root / name).write_text(content)
     monkeypatch.setattr(sys, "argv", argv + ["--execute", "--run-id", "expected"])
-    assert graph_runner.main() == 2
+    assert _graph_runner_cli.main() == 2
     assert calls == []
     assert not (root / "tasks").exists()
 
@@ -204,7 +205,7 @@ def test_symlinked_journal_into_source_is_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", argv + [
         "--execute", "--journal", str(link / "runtime-journal.jsonl"),
     ])
-    assert graph_runner.main() == 2
+    assert _graph_runner_cli.main() == 2
     assert calls == []
 
 

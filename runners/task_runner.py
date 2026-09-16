@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
-# Allow `python3 runners/task_runner.py` from anywhere in the repository.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
+from core.paths import REPO_ROOT
 from validators.contract_validator import (
     find_placeholders,
     validate_contract_file,
@@ -160,9 +156,8 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     except ValueError as error:
         return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
-    repo_root = Path(__file__).resolve().parents[1]
     if task_type == "environment_proof":
-        profile = load_yaml(repo_root / "config" / "clusters" / "p800-cluster.yaml")
+        profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
         base = profile.get("validation", {}).get("base_model", {})
         deployment = profile.get("deployment", {})
         cluster = profile.get("cluster", {})
@@ -204,7 +199,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     runner = DeploymentProofRunner(
         contract=contract,
         adapter=bundle.hardware(config),
-        repo_root=repo_root,
+        repo_root=REPO_ROOT,
         artifact_dir=target_dir,
         attach_pod=attach_pod,
         phase=phase,
@@ -221,32 +216,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     return finish(status, 0 if not gate else 6)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Run or plan an inference engineering task")
-    parser.add_argument("contract", type=Path)
-    parser.add_argument("--target", type=Path, help="Requested target; must agree with the contract")
-    parser.add_argument("--subject", help="Bind the model identity of an unbound --target")
-    parser.add_argument("--execute", action="store_true", help="Run against the real cluster")
-    parser.add_argument("--output", type=Path, help="Where to write the plan (plan mode)")
-    parser.add_argument("--artifact-dir", type=Path, help="External run root, or allocated attempt output/")
-    parser.add_argument("--run-id", help="Durable run identity for allocated attempts")
-    parser.add_argument(
-        "--phase",
-        choices=["all", "environment", "service"],
-        default="all",
-        help="Which half of the proof to run; a contract's task_type overrides this",
-    )
-    parser.add_argument(
-        "--attach-pod",
-        help="Prove against an already prepared Pod instead of creating one (Imported Context)",
-    )
-    parser.add_argument(
-        "--server-log",
-        help="Override execution.server_log with a path of this attempt's own. "
-             "A reproof (e.g. the MAT-006 triage rerun) must not truncate the "
-             "log of the attempt it exists to explain.",
-    )
-    args = parser.parse_args()
+def run(args) -> int:
 
     errors = validate_contract_file(args.contract)
     contract = load_yaml(args.contract)
@@ -283,7 +253,3 @@ def main() -> int:
             return 2
     print(rendered)
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

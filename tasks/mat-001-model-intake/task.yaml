@@ -40,7 +40,7 @@ execution:
       - infer.kunlun/ephemeral
       - infer.kunlun/task-id
       - infer.kunlun/attempt-id
-  tool: tools/model_intake.py
+  tool: cli/intake/model_intake.py
 actions:
   - resolve_stack_commit
   - create_probe_pod

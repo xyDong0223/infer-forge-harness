@@ -359,7 +359,7 @@ def test_legacy_cli_discovery_uses_bound_environment(tmp_path):
             "outputs": [spec().outputs[0].to_dict()], "semantics": {"description": "identity"},
         }],
     }))
-    script = Path(__file__).resolve().parents[2] / "tools" / "adaptation_orchestrator.py"
+    script = Path(__file__).resolve().parents[2] / "cli" / "scheduler.py"
     completed = subprocess.run([
         sys.executable, str(script), "--state", str(tmp_path / "state.db"),
         "discover", "--run-id", "run", "--model", "model", "--backend", "device",

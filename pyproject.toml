@@ -18,19 +18,23 @@ test = [
 ]
 
 [project.scripts]
-run-adaptation = "tools.run_adaptation:main"
+run-adaptation = "cli.adaptation:main"
 
-[tool.setuptools]
-packages = [
-    "core",
-    "adapters",
-    "adapters.kunlun_p800",
-    "runtimes",
-    "engine",
-    "runners",
-    "tools",
-    "validators",
+[tool.setuptools.packages.find]
+include = [
+    "core*",
+    "adapters*",
+    "runtimes*",
+    "engine*",
+    "runners*",
+    "tools*",
+    "validators*",
+    "operations*",
+    "cli*",
 ]
+
+[tool.setuptools.package-data]
+runtimes = ["scripts/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

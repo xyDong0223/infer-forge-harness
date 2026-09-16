@@ -1,7 +1,7 @@
 """Replay a captured vendor-kernel failure and sweep around it.
 
 Model-agnostic by construction: the base case comes from the arguments
-`tools/instrument_kernel_trace.py` captured in the server, so the geometry is
+`cli/operators/instrument_kernel_trace.py` captured in the server, so the geometry is
 whatever that model actually used. Nothing here knows about Qwen3 — the earlier
 version hardcoded 32/8/128 and would have needed editing for every new model.
 

@@ -10,7 +10,7 @@ spec:
   produces: OperatorTaskDispatch
   consumes: [GapClassification]
   runs_with: |
-    python3 tools/operator_lifecycle.py dispatch --gaps <gap_classification.json> \
+    python3 cli/operators/operator_lifecycle.py dispatch --gaps <gap_classification.json> \
       --subject <model> --out <artifacts>
 context:
   target:
@@ -18,7 +18,7 @@ context:
 execution:
   mode: execute
   tools:
-    - tools/operator_lifecycle.py
+    - cli/operators/operator_lifecycle.py
 actions:
   - select_operator_gaps
   - create_independent_requests

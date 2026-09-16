@@ -10,7 +10,7 @@ spec:
   produces: ServingBaseline
   consumes: [DeploymentProof, AccuracyDifferential]
   runs_with: |
-    python3 tools/operator_lifecycle.py freeze-baseline --service <status.json> \
+    python3 cli/operators/operator_lifecycle.py freeze-baseline --service <status.json> \
       --accuracy <accuracy_status.json> --subject <model> --out <artifacts>
 context:
   target:
@@ -18,7 +18,7 @@ context:
 execution:
   mode: execute
   tools:
-    - tools/operator_lifecycle.py
+    - cli/operators/operator_lifecycle.py
 actions:
   - verify_service_ready
   - verify_accuracy_pass

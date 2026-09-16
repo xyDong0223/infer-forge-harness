@@ -13,8 +13,8 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from tools.accuracy_differential import compare  # noqa: E402
-from tools.update_support_matrix import build_entry  # noqa: E402
+from operations.validation.accuracy_differential import compare
+from operations.validation.update_support_matrix import build_entry
 from validators.accuracy_validator import validate_accuracy_report  # noqa: E402
 from validators.matrix_validator import validate_matrix_entry  # noqa: E402
 
