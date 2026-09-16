@@ -683,12 +683,16 @@ def input_fact(
     producer = next(((name, spec) for name, spec in NODES.items() if spec.get("produces") == kind), None)
     if producer is None:
         return None
-    _, spec = producer
+    producer_name, spec = producer
+    producer_task_types = (context or {}).get("_producer_task_types")
+    producer_task_type = (
+        producer_task_types.get(kind) if isinstance(producer_task_types, dict) else producer_name
+    )
     skill = None
     if verify_skill:
         try:
-            selected = skill_registry.resolve_for_context(producer[0], context or {})
-            skill = skill_registry.execution_contract(selected, producer[0])
+            selected = skill_registry.resolve_for_context(producer_task_type, context or {})
+            skill = skill_registry.execution_contract(selected, producer_task_type)
         except (OSError, skill_registry.SkillResolutionError):
             return None
     return reusable_fact(spec, subject, journal, environment, skill=skill)
@@ -1105,6 +1109,13 @@ def _run(args, resources: ExitStack) -> int:
     order = [node["id"] for node in nodes]
     start = order.index(args.from_node) if args.from_node else 0
     by_id = {node["id"]: node for node in nodes}
+    context["_producer_task_types"] = {
+        spec["produces"]: task_type
+        for node in nodes
+        for task_type in [node_task_type(node)]
+        for spec in [NODES.get(task_type or "")]
+        if task_type and spec and spec.get("produces")
+    }
 
     current = order[start]
     visits: dict[str, int] = {}
