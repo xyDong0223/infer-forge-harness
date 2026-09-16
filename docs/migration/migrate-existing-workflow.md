@@ -17,3 +17,7 @@ Map existing assets into the harness incrementally:
 Start with a configuration-only target. Keep the original workflow as a
 golden reference, run both paths, and migrate one task at a time. Do not move
 weights, credentials, private endpoints, or large traces into the repository.
+
+For the complete onboarding sequence, package ownership, scheduler decision,
+evidence contract, and mandatory capability scenario, see
+[`../guides/add-workflow.zh-CN.md`](../guides/add-workflow.zh-CN.md).

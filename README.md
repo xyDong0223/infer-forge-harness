@@ -385,6 +385,7 @@ openwiki/      上游、插件和项目工程经验参考
 | --- | --- |
 | [`docs/architecture/implementation-layers.zh-CN.md`](docs/architecture/implementation-layers.zh-CN.md) | 抽象层级、每层意义、Graph/Scheduler 衔接和边界 |
 | [`docs/architecture/source-layout.zh-CN.md`](docs/architecture/source-layout.zh-CN.md) | 当前源码目录责任和依赖方向 |
+| [`docs/guides/add-workflow.zh-CN.md`](docs/guides/add-workflow.zh-CN.md) | 把已有流程或性能、上下文等新能力接入 Harness 的完整步骤 |
 | [`tests/e2e/README.md`](tests/e2e/README.md) | 本地必选场景、真实设备 Smoke、真实模型回归及新增能力模板 |
 | [`docs/migration/runtime-write-policy.zh-CN.md`](docs/migration/runtime-write-policy.zh-CN.md) | 外部 run root、attempt、manifest 和写入约束 |
 | [`docs/migration/worker-results.md`](docs/migration/worker-results.md) | worker 结果 envelope、租约和证据要求 |
