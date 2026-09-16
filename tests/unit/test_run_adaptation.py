@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from engine.contracts import OperatorTask
+from tests.scheduler_helpers import stage_result
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_adaptation.py"
@@ -60,6 +62,13 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
     assert json.loads(created.stdout)["run"]["run_id"] == "run-1"
 
     proof = tmp_path / "environment-status.json"
+    artifact_names = [
+        "environment_fingerprint.txt", "runtime_import.txt", "code_readiness.json",
+        "device_readiness.json", "base_model_identity.json", "base_health_result.txt",
+        "base_chat_result.json", "base_server_log.txt",
+    ]
+    for name in artifact_names:
+        (tmp_path / name).write_text("local test fixture: " + name, encoding="utf-8")
     proof.write_text(
         json.dumps(
             {
@@ -70,13 +79,14 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
                     "runtime_importable": True,
                     "code_ready": True,
                     "device_ready": True,
+                    "base_model_loaded": True,
+                    "base_prefill": True,
+                    "base_decode": True,
+                    "base_health_check": 200,
+                    "base_chat_completion": "non_empty",
+                    "unexpected_fallback": False,
                 },
-                "artifacts": [
-                    "environment_fingerprint.txt",
-                    "runtime_import.txt",
-                    "code_readiness.json",
-                    "device_readiness.json",
-                ],
+                "artifacts": artifact_names,
             }
         ),
         encoding="utf-8",
@@ -117,7 +127,12 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
     ]
 
     result = tmp_path / "torch-result.json"
-    result.write_text(json.dumps({"status": "pass", "artifact": "reference.py"}), encoding="utf-8")
+    claim = OperatorTask.from_dict(json.loads(claimed.stdout)["tasks"][0])
+    fingerprint = json.loads(environment.stdout)["run"]["environment"]["environment_proof"]["fingerprint"]
+    result.write_text(json.dumps(stage_result(
+        tmp_path / "evidence", claim, worker="torch-agent",
+        environment_fingerprint=fingerprint, evidence_mode="real",
+    )), encoding="utf-8")
     completed = _run(
         state,
         "complete",
@@ -125,11 +140,72 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
         payload["tasks"][0]["task_id"],
         "--worker",
         "torch-agent",
+        "--lease-token",
+        claim.lease_token,
         "--result",
         str(result),
     )
     assert completed.returncode == 0, completed.stdout
     assert json.loads(completed.stdout)["task"]["status"] == "succeeded"
+
+
+def test_cli_requires_token_and_renews_current_lease(tmp_path: Path) -> None:
+    from engine import IOSpec, OperatorSpec, TaskScheduler
+
+    state = tmp_path / "state.db"
+    scheduler = TaskScheduler(state)
+    scheduler.create_run(run_id="r", model_id="m", metadata={"evidence_mode": "simulation"})
+    spec = OperatorSpec(
+        operator_id="op", model_id="m", model_revision="1", plugin_revision="1", backend="device",
+        inputs=[IOSpec("x", "float32", [1], "contiguous")],
+        outputs=[IOSpec("y", "float32", [1], "contiguous")], semantics={"op": "identity"},
+    )
+    scheduler.discover_operator("r", spec)
+    task = scheduler.claim_ready("worker")[0]
+    renewed = _run(
+        state, "renew-lease", "--task-id", task.task_id, "--worker", "worker",
+        "--lease-token", task.lease_token, "--lease-seconds", "600",
+    )
+    assert renewed.returncode == 0, renewed.stdout
+    assert json.loads(renewed.stdout)["task"]["lease_expires"] > task.lease_expires
+    result = tmp_path / "result.json"
+    result.write_text('{"status": "PASS"}', encoding="utf-8")
+    missing = _run(state, "complete", "--task-id", task.task_id, "--worker", "worker", "--result", str(result))
+    assert missing.returncode == 2
+    rejected = _run(
+        state, "complete", "--task-id", task.task_id, "--worker", "worker",
+        "--lease-token", task.lease_token, "--result", str(result),
+    )
+    assert rejected.returncode == 6
+    assert json.loads(rejected.stdout)["task"]["status"] == "failed"
+
+
+def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tools.run_adaptation import _parser, _run as run_command
+
+    expected = ROOT / "artifacts" / "relative-proof"
+    proof = {"state": "ENVIRONMENT_READY", "artifact_root": str(expected)}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "tools.run_adaptation.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(proof), stderr="",
+        ),
+    )
+    observed = {}
+
+    class Scheduler:
+        def bind_environment(self, run_id, status, artifact_root):
+            observed.update(root=artifact_root, status=status)
+            return SimpleNamespace(to_dict=lambda: {"run_id": run_id})
+
+    args = _parser().parse_args([
+        "--state", "state.db", "environment", "--run-id", "r",
+        "--contract", "contract.yaml", "--artifact-dir", "artifacts/relative-proof",
+    ])
+    run_command(args, Scheduler())
+    assert Path(observed["root"]) == expected
 
 
 def test_unknown_run_is_machine_readable_error(tmp_path: Path) -> None:

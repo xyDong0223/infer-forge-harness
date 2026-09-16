@@ -225,6 +225,7 @@ class FanOutTest(unittest.TestCase):
         bundle.mkdir(parents=True, exist_ok=True)
         (bundle / "capability_match.json").write_text(json.dumps(match_payload(axes)),
                                                       encoding="utf-8")
+        (bundle / "match_status.json").write_text('{"state":"MATCH_READY"}', encoding="utf-8")
         record(journal, "CapabilityMatch", "MiniMax-M2.5", "MATCH_READY", bundle, ENVIRONMENT)
         return journal, bundle
 

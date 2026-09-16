@@ -93,15 +93,23 @@ def query(
 
     A fact recorded under a different fingerprint is not returned even when the
     subject matches: reusing it would answer a question about this environment
-    with evidence from another one.
+    with evidence from another one. None is unfiltered inspection; {} returns
+    no hits because it provides no runtime identity.
     """
-    wanted = fingerprint(environment) if environment else None
+    # None is an explicitly unfiltered inspection query. An empty runtime
+    # context is not permission to reuse facts from every environment.
+    if environment is not None and not environment:
+        return []
+    wanted = fingerprint(environment) if environment is not None else None
     hits = [
         entry
         for entry in load(journal)
         if entry["kind"] == kind
         and (subject is None or entry["subject"] == subject)
-        and (wanted is None or entry["fingerprint"] == wanted)
+        and (wanted is None or (
+            entry.get("environment") == environment
+            and entry.get("fingerprint") == wanted
+        ))
         and (not states or entry["state"] in states)
     ]
     return list(reversed(hits))

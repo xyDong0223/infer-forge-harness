@@ -3,6 +3,10 @@
 > 基于提交 `d9f855439132638ae0a39f2b5b5812b4d7852fc7`（2026-09-16，`Add platform-neutral target abstraction`）。
 > 本文描述这个代码快照的实现，不代表所有接口都已完成多平台接入，也不是模型适配或硬件验收报告。
 > 执行规则以根目录 [AGENTS.md](../../AGENTS.md)、任务契约和实际证据为准。
+> 后续可靠性改动已收紧调度门禁、租约和证据复用，并修正性能判定。
+> 本文仍保留上述提交的架构快照；最新执行要求参见
+> [Worker 结果迁移说明](../migration/worker-results.md)及
+> [性能分析指南](../guides/performance-analysis.md)。
 
 ## 1. 核心设计：固定工程流程，隔离平台差异
 

@@ -237,8 +237,26 @@ python3 tools/run_adaptation.py \
   complete \
   --task-id <task-id> \
   --worker <worker-id> \
+  --lease-token <token-from-claim> \
   --result /path/to/result.json
 ```
+
+Completion requires the current unexpired claim token. A reused worker name
+does not authorize an older attempt. Renew long-running work before expiry:
+
+```bash
+python3 tools/run_adaptation.py \
+  --state /path/to/adaptation.db \
+  renew-lease --task-id <task-id> --worker <worker-id> \
+  --lease-token <token-from-claim> --lease-seconds 300
+```
+
+Results follow `contracts/worker_result.schema.yaml` and the evidence-binding
+rules in `docs/migration/worker-results.md`. Empty results, bare PASS reports,
+missing artifacts, mismatched hashes or task/environment identities, and
+missing independent validation are rejected into diagnosis. Local fake-agent
+runs must explicitly declare `metadata.evidence_mode: simulation`; they cannot
+satisfy an environment-backed real run.
 
 The scheduler creates the next operator stage only after the previous task
 passes. The normal chain is `torch -> xpu -> integration`.
@@ -255,11 +273,13 @@ python3 tools/run_adaptation.py \
   fail \
   --task-id <task-id> \
   --worker <worker-id> \
+  --lease-token <token-from-claim> \
   --error '<structured error or concise original message>'
 ```
 
 The Diagnosis Agent claims `--stage diagnosis`, examines the `BugReport` and
 artifacts, then submits its structured conclusion with `resolve-diagnosis`.
+That command also requires the current `--lease-token`.
 The Main Agent must consume that conclusion before choosing the next action.
 
 ### 5. Prove integration before delivery

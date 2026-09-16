@@ -703,6 +703,7 @@ class DeploymentProofRunner:
             # exact pod, and a scan Task runs inside it.
             "pod": self.pod,
             "phase": self.phase,
+            "artifact_root": str(self.artifact_dir.resolve()),
             # Which in-pod log this attempt wrote; a reproof (triage rerun)
             # records its own .rerun-* path here, so the original attempt's
             # log can always be identified from the status that produced it.

@@ -12,7 +12,7 @@ from runtimes.registry import get_runtime
 @dataclass(frozen=True)
 class AdapterBundle:
     target: TargetContext
-    hardware: type
+    hardware: type | None
     runtime: Any
     compatibility: dict[str, Any]
 
@@ -35,7 +35,7 @@ def resolve_adapters(target: TargetContext, *, require_supported: bool = False) 
             f"({status['status']})"
         )
     if status["status"] != "supported":
-        return AdapterBundle(target, get_hardware(target.hardware), None, status)
+        return AdapterBundle(target, None, None, status)
     hardware = get_hardware(target.hardware)
     runtime_name = target.plugin or f"{target.engine}-{target.backend}"
     runtime = get_runtime(runtime_name)

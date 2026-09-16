@@ -42,10 +42,13 @@ class Workload:
 
 @dataclass(frozen=True)
 class Metric:
+    """A measurement with optional higher_is_better/lower_is_better direction."""
+
     name: str
     value: float
     unit: str
     labels: dict[str, str] = field(default_factory=dict)
+    direction: str | None = None
 
 
 @dataclass(frozen=True)

@@ -131,6 +131,7 @@ class OperatorTask:
     input: dict[str, Any] = field(default_factory=dict)
     output: dict[str, Any] = field(default_factory=dict)
     lease_token: str | None = None
+    lease_expires: float | None = None
     schema_version: int = 1
     def __post_init__(self):
         if self.stage not in {"torch", "xpu", "integration", "diagnosis"}:
@@ -157,6 +158,7 @@ class DiagnosticTask:
     input: dict[str, Any] = field(default_factory=dict)
     output: dict[str, Any] = field(default_factory=dict)
     lease_token: str | None = None
+    lease_expires: float | None = None
     stage: str = "diagnosis"
     schema_version: int = 1
 

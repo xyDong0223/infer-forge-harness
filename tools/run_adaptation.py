@@ -117,6 +117,9 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--run-id", required=True)
     status.add_argument("--events", action="store_true", help="include append-only events")
 
+    reconcile = sub.add_parser("reconcile", help="repair historical missing task edges using evidence")
+    reconcile.add_argument("--run-id", required=True)
+
     claim = sub.add_parser("claim", help="claim ready work for a child Agent")
     claim.add_argument("--worker", required=True)
     claim.add_argument("--stage", choices=["torch", "xpu", "integration", "diagnosis"])
@@ -126,17 +129,26 @@ def _parser() -> argparse.ArgumentParser:
     complete = sub.add_parser("complete", help="submit a successful child Agent result")
     complete.add_argument("--task-id", required=True)
     complete.add_argument("--worker", required=True)
+    complete.add_argument("--lease-token", required=True)
     complete.add_argument("--result", type=Path, required=True)
 
     fail = sub.add_parser("fail", help="report a task failure and create diagnosis work")
     fail.add_argument("--task-id", required=True)
     fail.add_argument("--worker", required=True)
+    fail.add_argument("--lease-token", required=True)
     fail.add_argument("--error", required=True)
 
     diagnosis = sub.add_parser("resolve-diagnosis", help="submit a diagnosis Agent result")
     diagnosis.add_argument("--task-id", required=True)
     diagnosis.add_argument("--worker", required=True)
+    diagnosis.add_argument("--lease-token", required=True)
     diagnosis.add_argument("--result", type=Path, required=True)
+
+    renew = sub.add_parser("renew-lease", help="extend a live worker lease")
+    renew.add_argument("--task-id", required=True)
+    renew.add_argument("--worker", required=True)
+    renew.add_argument("--lease-token", required=True)
+    renew.add_argument("--lease-seconds", type=float, default=300.0)
     return parser
 
 
@@ -177,7 +189,10 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                 error = f"environment task failed with exit code {completed.returncode}: {proof.get('state', 'UNKNOWN')}"
                 run = scheduler.record_environment_failure(args.run_id, proof, error)
                 return {"command": "environment", "run": run.to_dict(), "proof": proof, "error": error}
-        run = scheduler.bind_environment(args.run_id, proof)
+        root = args.status.parent if args.status else proof.get("artifact_root")
+        if root is None and args.artifact_dir is not None:
+            root = REPO_ROOT / args.artifact_dir
+        run = scheduler.bind_environment(args.run_id, proof, artifact_root=root)
         return {"command": "environment", "run": run.to_dict(), "proof": proof}
 
     if args.command == "discover":
@@ -196,7 +211,7 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
             model_id=args.model or run.model_id,
             backend=args.backend or run.backend,
             model_revision=args.model_revision or run.model_revision,
-            plugin_revision=args.plugin_revision,
+            plugin_revision=args.plugin_revision or run.plugin_revision,
             environment=proof_context,
             include_waived=args.include_waived,
         )
@@ -219,17 +234,26 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
 
     if args.command == "complete":
         result = _json_file(args.result, field="result")
-        task = scheduler.complete(args.task_id, worker_id=args.worker, result=result)
+        task = scheduler.complete(args.task_id, worker_id=args.worker, result=result,
+                                  lease_token=args.lease_token)
         return {"command": "complete", "task": task.to_dict()}
 
     if args.command == "fail":
-        task = scheduler.fail(args.task_id, worker_id=args.worker, error=args.error)
+        task = scheduler.fail(args.task_id, worker_id=args.worker, error=args.error,
+                              lease_token=args.lease_token)
         return {"command": "fail", "task": task.to_dict()}
 
     if args.command == "resolve-diagnosis":
         result = _json_file(args.result, field="result")
-        task = scheduler.complete(args.task_id, worker_id=args.worker, result=result)
+        task = scheduler.complete(args.task_id, worker_id=args.worker, result=result,
+                                  lease_token=args.lease_token)
         return {"command": "resolve-diagnosis", "task": task.to_dict()}
+
+    if args.command == "renew-lease":
+        task = scheduler.renew_lease(
+            args.task_id, args.worker, args.lease_token, args.lease_seconds,
+        )
+        return {"command": "renew-lease", "task": task.to_dict()}
 
     if args.command == "status":
         run = scheduler.store.run(args.run_id)
@@ -243,6 +267,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         if args.events:
             result["events"] = [event.to_dict() for event in scheduler.store.events(args.run_id)]
         return result
+
+    if args.command == "reconcile":
+        return {"command": "reconcile", "run_id": args.run_id, **scheduler.reconcile(args.run_id)}
 
     raise ValueError(f"unsupported command: {args.command}")
 
@@ -258,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"error": str(exc), "command": args.command}, ensure_ascii=False))
         return 2
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    return 6 if result.get("error") or result.get("blocked") or result.get("task", {}).get("status") == "failed" else 0
 
 
 if __name__ == "__main__":

@@ -21,11 +21,34 @@ from runners.graph_runner import (  # noqa: E402
     node_task_type,
     resolve,
     reusable_fact,
+    bind_proven_environment,
+    fact_environment,
+    record_fact,
 )
-from tools.journal import record  # noqa: E402
+from tools.journal import query, record  # noqa: E402
 
 WORKFLOW = ROOT / "workflows" / "model_adaptation.yaml"
 ENVIRONMENT = {"hardware": "P800", "stack_commit": "3ced109a"}
+
+
+def environment_bundle(bundle: Path) -> None:
+    bundle.mkdir(parents=True, exist_ok=True)
+    names = [
+        "environment_fingerprint.txt", "runtime_import.txt", "code_readiness.json",
+        "device_readiness.json", "base_model_identity.json", "base_server_log.txt",
+        "base_health_result.txt", "base_chat_result.json",
+    ]
+    for name in names:
+        (bundle / name).write_text("fixture evidence", encoding="utf-8")
+    (bundle / "status.json").write_text(json.dumps({
+        "state": "ENVIRONMENT_READY", "pod": "prepared-pod", "artifacts": names,
+        "checks": {
+            "pod_ready": True, "runtime_importable": True, "code_ready": True,
+            "device_ready": True, "base_model_loaded": True, "base_prefill": True,
+            "base_decode": True, "base_health_check": 200,
+            "base_chat_completion": "non_empty", "unexpected_fallback": False,
+        },
+    }), encoding="utf-8")
 
 
 class WorkflowShapeTest(unittest.TestCase):
@@ -113,6 +136,8 @@ class InputResolutionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "journal.jsonl"
             bundle = Path(tmp) / "mat-001"
+            environment_bundle(bundle)
+            (bundle / "intake_status.json").write_text('{"state":"INTAKE_READY"}')
             record(path, "ModelRequest", "Qwen3-8B", "INTAKE_READY", bundle, ENVIRONMENT)
             record(path, "EnvironmentProof", "Qwen3-8B", "ENVIRONMENT_READY", bundle, ENVIRONMENT)
             command = resolve(NODES["model_scan"], self.context(Path(tmp)), path, ENVIRONMENT)
@@ -141,6 +166,9 @@ class InputResolutionTest(unittest.TestCase):
             path = Path(tmp) / "journal.jsonl"
             old, new = Path(tmp) / "old", Path(tmp) / "new"
             for bundle in (old, new):
+                bundle.mkdir()
+                (bundle / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+                (bundle / "match_status.json").write_text('{"state":"MATCH_READY"}')
                 record(path, "ModelSupportCard", "Qwen3-8B", "SCAN_READY", bundle, ENVIRONMENT)
                 record(path, "CapabilityMatch", "Qwen3-8B", "MATCH_READY", bundle, ENVIRONMENT)
             command = resolve(NODES["gap_classification"], self.context(Path(tmp)), path, ENVIRONMENT)
@@ -171,6 +199,109 @@ class InputResolutionTest(unittest.TestCase):
             self.assertIsNone(
                 reusable_fact(NODES["model_scan"], "Qwen3-8B", journal, ENVIRONMENT)
             )
+
+
+class FactReliabilityTest(unittest.TestCase):
+    def test_recovered_environment_can_retain_crash_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            environment_bundle(root)
+            (root / "crash").mkdir()
+            status_path = root / "status.json"
+            status = json.loads(status_path.read_text())
+            status["artifacts"].append("crash")
+            status_path.write_text(json.dumps(status))
+            record_fact(journal, NODES["environment_proof"], "demo", root, ENVIRONMENT)
+            self.assertIsNotNone(reusable_fact(NODES["environment_proof"], "demo", journal, ENVIRONMENT))
+            required = root / "device_readiness.json"
+            required.unlink()
+            required.mkdir()
+            self.assertIsNone(reusable_fact(NODES["environment_proof"], "demo", journal, ENVIRONMENT))
+
+    def test_empty_environment_never_reuses_or_resolves_facts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            for env in (ENVIRONMENT, {}):
+                record(journal, "ModelSupportCard", "demo", "SCAN_READY", root, env)
+            self.assertEqual(len(query(journal, "ModelSupportCard", environment=None)), 2)
+            self.assertEqual(query(journal, "ModelSupportCard", environment={}), [])
+            self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, {}))
+            with self.assertRaisesRegex(Unresolved, "nonempty environment"):
+                resolve(NODES["model_scan"], {"subject": "demo"}, journal, {})
+
+    def test_resume_rejects_changed_failed_malformed_or_invalid_status(self):
+        for content in ('{"state":"SCAN_FAILED"}', '{"state":"INTAKE_READY"}',
+                        '{"state":"SCAN_READY","validator":{"passed":false}}',
+                        '{"state":"SCAN_READY","validator":{"passed":true,"errors":["bad"]}}',
+                        '[]', 'null', '{invalid', '{}'):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                journal = root / "journal.jsonl"
+                record(journal, "ModelSupportCard", "demo", "SCAN_READY", root, ENVIRONMENT)
+                (root / "scan_status.json").write_text(content)
+                self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_new_failure_invalidates_older_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            record(journal, "ModelSupportCard", "demo", "SCAN_READY", root, ENVIRONMENT)
+            record(journal, "ModelSupportCard", "demo", "SCAN_FAILED", root / "failed", ENVIRONMENT)
+            self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_recorded_status_is_content_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            status = root / "scan_status.json"
+            status.write_text('{"state":"SCAN_READY","revision":"old"}')
+            record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT)
+            status.write_text('{"state":"SCAN_READY","revision":"new"}')
+            self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_failed_command_cannot_reuse_a_leftover_success_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT, returncode=1)
+            self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_proven_fingerprint_scopes_runtime_but_not_intake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            environment_bundle(root)
+            record_fact(journal, NODES["environment_proof"], "demo", root, ENVIRONMENT)
+            env, context = dict(ENVIRONMENT), {"subject": "demo"}
+            bind_proven_environment(context, env, journal)
+            self.assertTrue(env["environment_fingerprint"])
+            self.assertEqual(context["pod"], "prepared-pod")
+            self.assertEqual(fact_environment("ModelRequest", env), ENVIRONMENT)
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            record_fact(journal, NODES["model_scan"], "demo", root, env)
+            changed = {**env, "environment_fingerprint": "other-proof"}
+            self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, changed))
+            (root / "environment_fingerprint.txt").write_text("changed stack")
+            self.assertIsNone(reusable_fact(NODES["environment_proof"], "demo", journal, ENVIRONMENT))
+
+    def test_invalid_environment_proof_cannot_supply_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            environment_bundle(root)
+            (root / "runtime_import.txt").unlink()
+            record(journal, "EnvironmentProof", "demo", "ENVIRONMENT_READY", root, ENVIRONMENT)
+            spec = {"command": ["probe"], "needs": {"--env-status": "fact:EnvironmentProof:status.json"}}
+            with self.assertRaises(Unresolved):
+                resolve(spec, {"subject": "demo"}, journal, ENVIRONMENT)
+            context, env = {"subject": "demo"}, dict(ENVIRONMENT)
+            bind_proven_environment(context, env, journal)
+            self.assertNotIn("environment_fingerprint", env)
 
 
 if __name__ == "__main__":

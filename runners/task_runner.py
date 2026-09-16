@@ -21,6 +21,8 @@ from validators.deployment_validator import (
     validate_deployment_status,
     validate_environment_status,
 )
+from core.contracts import TargetContext
+from core.target import bind_subject, contract_target, load_target, require_supported
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -32,7 +34,9 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
-def build_plan(contract: dict[str, Any]) -> dict[str, Any]:
+def build_plan(contract: dict[str, Any], target: TargetContext | None = None) -> dict[str, Any]:
+    resolved = contract_target(contract, target)
+    require_supported(resolved)
     return {
         "task_id": contract.get("metadata", {}).get("name"),
         "task_type": contract.get("metadata", {}).get("task_type"),
@@ -41,7 +45,7 @@ def build_plan(contract: dict[str, Any]) -> dict[str, Any]:
         "requires": {
             "explicit_execute": True,
             "cluster_access": True,
-            "environment_adapter": "adapters/kunlun_p800",
+            "environment_adapter": f"adapters/{resolved.hardware.replace('/', '_')}",
         },
     }
 
@@ -52,10 +56,10 @@ def execute(
     artifact_dir: Path | None,
     attach_pod: str | None = None,
     phase: str = "all",
+    target: TargetContext | None = None,
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
     from adapters import ClusterConfig
-    from core.contracts import TargetContext
     from core.facade import resolve_adapters
 
     from runners.deployment_proof import DeploymentProofRunner
@@ -67,6 +71,13 @@ def execute(
     if task_type not in ("deployment_proof", "environment_proof", "service_proof"):
         print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "message": "no executor for this task_type"}, indent=2))
         return 4
+
+    try:
+        target_context = contract_target(contract, target)
+        bundle = resolve_adapters(target_context, require_supported=True)
+    except ValueError as error:
+        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
+        return 2
 
     repo_root = Path(__file__).resolve().parents[1]
     if task_type == "environment_proof":
@@ -91,32 +102,15 @@ def execute(
             "path": base["path"],
             **base,
         }
-        runtime_spec = contract.get("context", {}).get("runtime", {})
-        target_context = TargetContext(
-            model=base["name"],
-            hardware="kunlun/p800",
-            engine=runtime_spec.get("engine", "vllm"),
-            backend=runtime_spec.get("backend", "kunlun"),
-            plugin=runtime_spec.get("plugin", "vllm-kunlun"),
-        )
-        bundle = resolve_adapters(target_context, require_supported=True)
         contract["execution"] = {"mode": "execute", "namespace": cluster["namespace"], "resource_name": f"{user_id}-environment-base", "manifest": deployment["base_manifest"], "startup_timeout_seconds": 1800, "health_interval_seconds": 10, "health_successes_required": 3, "retain_on_failure": True, "commands": {"install": ["bash /workspace/install_vllm_kunlun.sh"], "setup": common_setup, "serve": [bundle.runtime.build_serve_command(serve_config)]}}
         contract["checks"] = {"health": {"path": "/health", "expected_status": 200}, "chat": {"path": "/v1/chat/completions", "method": "POST", "expected_non_empty_text": True, "payload": {"model": base["served_model_name"], "messages": [{"role": "user", "content": "Say hello in one short sentence."}], "max_tokens": 16}}, "backend": {"expected": "kunlun", "reject_unexpected_fallback": True}}
-    target = contract.get("context", {}).get("target", {})
-    runtime_spec = contract.get("context", {}).get("runtime", {})
-    target_context = TargetContext(
-        model=contract.get("context", {}).get("model", {}).get("name", "<unspecified>"),
-        hardware=target.get("hardware", "kunlun/p800"),
-        engine=runtime_spec.get("engine", "vllm"),
-        backend=runtime_spec.get("backend", "kunlun"),
-        plugin=runtime_spec.get("plugin", "vllm-kunlun"),
-    )
-    bundle = resolve_adapters(target_context, require_supported=True)
     contract.setdefault("context", {})["resolved_target"] = {
+        "model": target.model if target else target_context.model,
         "hardware": target_context.hardware,
         "engine": target_context.engine,
         "backend": target_context.backend,
         "plugin": target_context.plugin,
+        "revisions": target_context.revisions,
         "compatibility": bundle.compatibility,
     }
     errors = validate_executable(contract)
@@ -153,6 +147,10 @@ def execute(
         else validate_deployment_status(status)
     )
     status["validator"] = {"passed": not gate, "errors": gate}
+    status["target"] = contract["context"]["resolved_target"]
+    (target_dir / "status.json").write_text(
+        json.dumps(status, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0 if not gate else 6
 
@@ -160,6 +158,8 @@ def execute(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run or plan an inference engineering task")
     parser.add_argument("contract", type=Path)
+    parser.add_argument("--target", type=Path, help="Requested target; must agree with the contract")
+    parser.add_argument("--subject", help="Bind the model identity of an unbound --target")
     parser.add_argument("--execute", action="store_true", help="Run against the real cluster")
     parser.add_argument("--output", type=Path, help="Where to write the plan (plan mode)")
     parser.add_argument("--artifact-dir", type=Path, help="Override the contract artifact directory")
@@ -186,6 +186,16 @@ def main() -> int:
     if errors:
         print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
         return 2
+    try:
+        target = load_target(args.target) if args.target else None
+        if args.subject:
+            if target is None:
+                raise ValueError("--subject requires --target")
+            target = bind_subject(target, args.subject)
+        require_supported(contract_target(contract, target))
+    except (ValueError, OSError) as error:
+        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
+        return 2
     if args.server_log:
         contract.setdefault("execution", {})["server_log"] = args.server_log
     placeholders = [] if args.execute and contract.get("metadata", {}).get("task_type") == "environment_proof" else find_placeholders(contract)
@@ -193,9 +203,9 @@ def main() -> int:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3
     if args.execute:
-        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase)
+        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase, target)
 
-    plan = build_plan(contract)
+    plan = build_plan(contract, target)
     rendered = json.dumps(plan, indent=2)
     if args.output:
         args.output.write_text(rendered + "\n", encoding="utf-8")

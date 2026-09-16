@@ -4,7 +4,8 @@ The harness deliberately performs real local computations and writes evidence
 artifacts.  A stage can advance only when :class:`EvidenceGate` validates those
 artifacts; a worker cannot promote a task by returning ``{"status": "pass"}``
 alone.  This provides a safe, hardware-independent rehearsal of the future
-PyTorch/XPU Agent contracts.
+PyTorch/XPU Agent contracts. Only explicitly configured simulation runs are
+accepted; these artifacts never prove real device or service readiness.
 """
 from __future__ import annotations
 
@@ -103,9 +104,9 @@ class EvidenceGate:
         validation = _read_json(validation_path)
         if ref.get("operator_key") != spec.operator_key:
             raise EvidenceError("reference artifact operator key mismatch")
-        if validation.get("verdict") != "pass" or not validation.get("checks"):
+        if str(validation.get("verdict", "")).lower() != "pass" or not validation.get("checks"):
             raise EvidenceError("independent torch validation did not pass")
-        if evidence.get("reference_sha256") != _sha256(ref_path):
+        if result.get("evidence_sha256", {}).get("reference_artifact") != _sha256(ref_path):
             raise EvidenceError("reference artifact hash mismatch")
         if not all(c.get("passed") is True for c in validation["checks"]):
             raise EvidenceError("torch validation contains a failed check")
@@ -124,7 +125,7 @@ class EvidenceGate:
             raise EvidenceError("device artifact operator key mismatch")
         if device.get("executed") is not True or not str(device.get("device", "")).startswith("fake-xpu"):
             raise EvidenceError("device test was not executed on fake XPU")
-        if validation.get("verdict") != "pass" or not validation.get("checks"):
+        if str(validation.get("verdict", "")).lower() != "pass" or not validation.get("checks"):
             raise EvidenceError("independent device validation did not pass")
         if not all(c.get("passed") is True for c in device.get("checks", [])):
             raise EvidenceError("device test contains a failed check")
@@ -162,8 +163,72 @@ class FakeAgentHarness:
 
     def __init__(self, scheduler: TaskScheduler, artifact_dir: str | Path):
         self.scheduler = scheduler
-        self.artifact_dir = Path(artifact_dir)
+        self.artifact_dir = Path(artifact_dir).resolve()
         self.calls: list[FakeAgentCall] = []
+
+    def _artifact(self, task: OperatorTask, name: str) -> Path:
+        task_key = hashlib.sha256(task.task_id.encode()).hexdigest()[:16]
+        return self.artifact_dir / task_key / str(task.attempt) / f"{name}.json"
+
+    def _identity(self, task: OperatorTask) -> dict[str, Any]:
+        run = self.scheduler.store.run(task.run_id)
+        if run is None or run.metadata.get("evidence_mode") != "simulation" or run.metadata.get("environment_required"):
+            raise EvidenceError("fake harness requires an explicit simulation run")
+        return {
+            "task_id": task.task_id,
+            "operator_key": task.operator_key,
+            "stage": task.stage,
+            "attempt": task.attempt,
+            "evidence_mode": "simulation",
+            "environment_fingerprint": run.environment.get("environment_proof", {}).get("fingerprint"),
+        }
+
+    def _write_artifact(self, task: OperatorTask, name: str, payload: dict[str, Any]) -> str:
+        return _write_json(self._artifact(task, name), {
+            **payload,
+            **self._identity(task),
+            "simulation_notice": "Local Python rehearsal; not real XPU or service evidence.",
+        })
+
+    def _envelope(self, task: OperatorTask, spec: OperatorSpec, result: dict[str, Any]) -> dict[str, Any]:
+        """Bind the already-gated local checks and artifacts to this lease attempt."""
+        evidence = dict(result["evidence"])
+        if task.stage == "integration":
+            report = _read_json(evidence["integration_report"])
+            validation = {
+                "validator": "fake-integration-validator",
+                "checks": [{
+                    "name": "simulated_service_output_recomputed",
+                    "passed": _close(report["outputs"], _apply_fake_op(report["inputs"], spec)),
+                }],
+            }
+        else:
+            validation = _read_json(evidence["independent_validation"])
+        checks = validation["checks"]
+        if not checks or not all(check.get("passed") is True for check in checks):
+            raise EvidenceError("independent simulation validation failed")
+        hashes = {key: _sha256(path) for key, path in evidence.items() if key != "independent_validation"}
+        evidence["independent_validation"] = self._write_artifact(task, "independent-validation", {
+            **validation,
+            "schema_version": 1,
+            "verdict": "PASS",
+            "evidence_sha256": hashes,
+        })
+        return {
+            "schema_version": 1,
+            "status": "PASS",
+            "verdict": "PASS",
+            **self._identity(task),
+            "evidence": evidence,
+            "evidence_sha256": {key: _sha256(path) for key, path in evidence.items()},
+        }
+
+    def _complete(self, task: OperatorTask, worker: str, result: dict[str, Any]) -> None:
+        completed = self.scheduler.complete(
+            task.task_id, worker_id=worker, lease_token=task.lease_token, result=result,
+        )
+        if completed.status != "succeeded":
+            raise EvidenceError(f"scheduler rejected simulated {task.stage} evidence: {completed.output}")
 
     def _claim(self, stage: str, worker: str) -> OperatorTask:
         claimed = self.scheduler.claim_ready(worker, stage=stage, limit=1)
@@ -178,25 +243,34 @@ class FakeAgentHarness:
         artifact and recomputes the expected output.  The scheduler receives a
         result only after the stage evidence gate accepts it.
         """
+        run = self.scheduler.store.run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if run.metadata.get("evidence_mode") != "simulation" or run.metadata.get("environment_required"):
+            raise EvidenceError("fake harness requires an explicit simulation run")
         self.scheduler.discover_operator(run_id, spec)
         torch_task = self._claim("torch", "fake-torch-agent")
         torch_result = self._torch_agent(torch_task, spec)
         EvidenceGate.torch(torch_result, spec)
-        self.scheduler.complete(torch_task.task_id, worker_id="fake-torch-agent", result=torch_result)
+        torch_result = self._envelope(torch_task, spec, torch_result)
+        self._complete(torch_task, "fake-torch-agent", torch_result)
 
         xpu_task = self._claim("xpu", "fake-xpu-agent")
         xpu_result = self._xpu_agent(xpu_task, spec, torch_result)
         EvidenceGate.xpu(xpu_result, spec)
-        self.scheduler.complete(xpu_task.task_id, worker_id="fake-xpu-agent", result=xpu_result)
+        xpu_result = self._envelope(xpu_task, spec, xpu_result)
+        self._complete(xpu_task, "fake-xpu-agent", xpu_result)
 
         integration_task = self._claim("integration", "fake-integration-agent")
         integration_result = self._integration_agent(integration_task, spec, torch_result, xpu_result)
         EvidenceGate.integration(integration_result, spec)
-        self.scheduler.complete(integration_task.task_id, worker_id="fake-integration-agent", result=integration_result)
+        integration_result = self._envelope(integration_task, spec, integration_result)
+        self._complete(integration_task, "fake-integration-agent", integration_result)
         return {
             "run_id": run_id,
             "operator_key": spec.operator_key,
             "verdict": "pass",
+            "evidence_mode": "simulation",
             "calls": [call.__dict__ for call in self.calls],
             "tasks": [
                 {"stage": stage, "status": self.scheduler.store.get_task(f"{run_id}:{spec.operator_key}:{stage}").status}
@@ -208,32 +282,40 @@ class FakeAgentHarness:
     def _torch_agent(self, task: OperatorTask, spec: OperatorSpec) -> dict[str, Any]:
         values = [round((i + 1) / 10, 4) for i in range(_numel(spec.inputs[0].shape))]
         output = _apply_fake_op(values, spec)
-        ref_path = self.artifact_dir / f"{spec.operator_id}.torch.reference.json"
-        _write_json(ref_path, {"operator_key": spec.operator_key, "inputs": values, "outputs": output, "implementation": "fake-pytorch"})
+        ref_path = self._write_artifact(task, "torch.reference", {"inputs": values, "outputs": output, "implementation": "fake-pytorch"})
         self.calls.append(FakeAgentCall("fake-torch-agent", "torch", task.task_id, "generate_reference", {"path": str(ref_path)}))
 
-        # Independent validator has no access to the Agent's output computation.
-        expected = _apply_fake_op(values, spec)
-        checks = [{"name": "reference_matches_independent_recompute", "passed": _close(output, expected)}]
-        validation_path = self.artifact_dir / f"{spec.operator_id}.torch.validation.json"
-        _write_json(validation_path, {"operator_key": spec.operator_key, "verdict": "pass" if all(c["passed"] for c in checks) else "fail", "checks": checks, "validator": "fake-independent-validator"})
+        reference = _read_json(ref_path)
+        expected = _apply_fake_op(reference["inputs"], spec)
+        checks = [{"name": "reference_matches_independent_recompute", "passed": _close(reference["outputs"], expected)}]
+        focused_path = self._write_artifact(task, "torch.focused-tests", {"checks": checks})
+        validation_path = self._write_artifact(task, "independent-validation", {"verdict": "pass" if all(c["passed"] for c in checks) else "fail", "checks": checks, "validator": "fake-independent-validator"})
         self.calls.append(FakeAgentCall("fake-independent-validator", "torch", task.task_id, "validate_reference", {"path": str(validation_path)}))
-        return {"verdict": "pass", "evidence": {"reference_artifact": str(ref_path), "reference_sha256": _sha256(ref_path), "independent_validation": str(validation_path)}}
+        return {
+            "verdict": "pass",
+            "evidence": {"reference_artifact": ref_path, "focused_tests": focused_path, "independent_validation": validation_path},
+            "evidence_sha256": {"reference_artifact": _sha256(ref_path)},
+        }
 
     def _xpu_agent(self, task: OperatorTask, spec: OperatorSpec, torch_result: dict[str, Any]) -> dict[str, Any]:
         ref = _read_json(torch_result["evidence"]["reference_artifact"])
         values = list(ref["inputs"])
         output = _apply_fake_op(values, spec)
         checks = [{"name": "xpu_matches_torch_reference", "passed": _close(output, list(ref["outputs"]))}]
-        device_path = self.artifact_dir / f"{spec.operator_id}.xpu.device-test.json"
-        _write_json(device_path, {"operator_key": spec.operator_key, "device": "fake-xpu:simulator", "executed": True, "outputs": output, "checks": checks})
+        device_path = self._write_artifact(task, "xpu.device-test", {"device": "fake-xpu:simulator", "executed": True, "actual_xpu_execution": False, "outputs": output, "checks": checks})
         self.calls.append(FakeAgentCall("fake-xpu-agent", "xpu", task.task_id, "run_device_test", {"path": str(device_path), "device": "fake-xpu:simulator"}))
 
-        validation_checks = [{"name": "device_execution_marker", "passed": True}, {"name": "device_output_recomputed", "passed": _close(output, _apply_fake_op(values, spec))}]
-        validation_path = self.artifact_dir / f"{spec.operator_id}.xpu.validation.json"
-        _write_json(validation_path, {"operator_key": spec.operator_key, "verdict": "pass" if all(c["passed"] for c in validation_checks) else "fail", "checks": validation_checks, "validator": "fake-device-validator"})
+        device = _read_json(device_path)
+        validation_checks = [{"name": "device_execution_marker", "passed": device.get("executed") is True}, {"name": "device_output_recomputed", "passed": _close(device["outputs"], _apply_fake_op(values, spec))}]
+        validation_path = self._write_artifact(task, "independent-validation", {"verdict": "pass" if all(c["passed"] for c in validation_checks) else "fail", "checks": validation_checks, "validator": "fake-device-validator"})
         self.calls.append(FakeAgentCall("fake-device-validator", "xpu", task.task_id, "validate_device_test", {"path": str(validation_path)}))
-        return {"verdict": "pass", "evidence": {"device_test": str(device_path), "independent_validation": str(validation_path)}}
+        return {"verdict": "pass", "evidence": {
+            "device_test": device_path,
+            "independent_validation": validation_path,
+            "build_record": self._write_artifact(task, "xpu.build", {"implementation": "local-python-simulator", "compiled": False}),
+            "registration_record": self._write_artifact(task, "xpu.registration", {"dispatch": "_apply_fake_op", "torch_dispatcher_registered": False}),
+            "dispatch_report": self._write_artifact(task, "xpu.dispatch", {"dispatch": "_apply_fake_op", "actual_xpu_execution": False, "checks": checks}),
+        }}
 
     def _integration_agent(self, task: OperatorTask, spec: OperatorSpec, torch_result: dict[str, Any], xpu_result: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
@@ -241,10 +323,14 @@ class FakeAgentHarness:
         device = _read_json(xpu_result["evidence"]["device_test"])
         checks = [{"name": "service_output_matches_device", "passed": _close(list(torch["outputs"]), list(device["outputs"]))}, {"name": "dispatch_marker_present", "passed": device.get("executed") is True}]
         latency_ms = max((time.perf_counter() - started) * 1000.0, 0.001)
-        report_path = self.artifact_dir / f"{spec.operator_id}.integration.report.json"
-        _write_json(report_path, {"operator_key": spec.operator_key, "service_smoke": all(c["passed"] for c in checks), "latency_ms": latency_ms, "checks": checks, "implementation": "fake-service"})
+        report_path = self._write_artifact(task, "integration.report", {"service_smoke": all(c["passed"] for c in checks), "latency_ms": latency_ms, "checks": checks, "implementation": "fake-service", "inputs": torch["inputs"], "outputs": device["outputs"]})
         self.calls.append(FakeAgentCall("fake-integration-agent", "integration", task.task_id, "run_service_smoke", {"path": str(report_path)}))
-        return {"verdict": "pass", "evidence": {"integration_report": str(report_path)}}
+        return {"verdict": "pass", "evidence": {
+            "integration_report": report_path,
+            "service_regression": self._write_artifact(task, "integration.service", {"implementation": "fake-service", "actual_service_request": False, "checks": checks}),
+            "accuracy_regression": self._write_artifact(task, "integration.accuracy", {"checks": checks}),
+            "fallback_report": self._write_artifact(task, "integration.fallback", {"execution_path": "local-python-simulation", "cpu_execution": True, "actual_xpu_execution": False}),
+        }}
 
 
 def run_fake_adaptation(scheduler: TaskScheduler, run_id: str, spec: OperatorSpec, artifact_dir: str | Path) -> dict[str, Any]:

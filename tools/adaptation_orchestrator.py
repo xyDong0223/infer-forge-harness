@@ -55,17 +55,26 @@ def main() -> int:
     complete = sub.add_parser("complete")
     complete.add_argument("--task-id", required=True)
     complete.add_argument("--worker", required=True)
+    complete.add_argument("--lease-token", required=True)
     complete.add_argument("--result", type=Path, required=True)
 
     fail = sub.add_parser("fail")
     fail.add_argument("--task-id", required=True)
     fail.add_argument("--worker", required=True)
+    fail.add_argument("--lease-token", required=True)
     fail.add_argument("--error", required=True)
 
     diagnosis = sub.add_parser("resolve-diagnosis")
     diagnosis.add_argument("--task-id", required=True)
     diagnosis.add_argument("--worker", required=True)
+    diagnosis.add_argument("--lease-token", required=True)
     diagnosis.add_argument("--result", type=Path, required=True)
+
+    renew = sub.add_parser("renew-lease")
+    renew.add_argument("--task-id", required=True)
+    renew.add_argument("--worker", required=True)
+    renew.add_argument("--lease-token", required=True)
+    renew.add_argument("--lease-seconds", type=float, default=300.0)
 
     sub.add_parser("list")
     args = parser.parse_args()
@@ -88,6 +97,7 @@ def main() -> int:
         specs = operator_specs_from_report(
             report, model_id=args.model, backend=args.backend,
             model_revision=args.model_revision, plugin_revision=args.plugin_revision,
+            environment=run.environment.get("environment_proof", {}),
         )
         result = {
             "run_id": args.run_id,
@@ -96,19 +106,26 @@ def main() -> int:
     elif args.command == "claim":
         result = {"tasks": [task.to_dict() for task in scheduler.claim_ready(args.worker, args.stage, limit=args.limit)]}
     elif args.command == "complete":
-        result = scheduler.complete(args.task_id, worker_id=args.worker, result=json.loads(args.result.read_text(encoding="utf-8"))).to_dict()
+        result = scheduler.complete(args.task_id, worker_id=args.worker, lease_token=args.lease_token,
+                                    result=json.loads(args.result.read_text(encoding="utf-8"))).to_dict()
     elif args.command == "fail":
-        result = scheduler.fail(args.task_id, worker_id=args.worker, error=args.error).to_dict()
+        result = scheduler.fail(args.task_id, worker_id=args.worker, lease_token=args.lease_token,
+                                error=args.error).to_dict()
     elif args.command == "resolve-diagnosis":
         result = scheduler.complete(
             args.task_id,
             worker_id=args.worker,
+            lease_token=args.lease_token,
             result=json.loads(args.result.read_text(encoding="utf-8")),
+        ).to_dict()
+    elif args.command == "renew-lease":
+        result = scheduler.renew_lease(
+            args.task_id, args.worker, args.lease_token, args.lease_seconds,
         ).to_dict()
     else:
         result = {"tasks": [task.to_dict() for task in scheduler.store.tasks()]}
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    return 6 if result.get("status") == "failed" else 0
 
 
 if __name__ == "__main__":

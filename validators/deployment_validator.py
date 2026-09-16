@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 
+ENVIRONMENT_ARTIFACTS = (
+    "environment_fingerprint.txt", "runtime_import.txt", "code_readiness.json",
+    "device_readiness.json", "base_model_identity.json", "base_server_log.txt",
+    "base_health_result.txt", "base_chat_result.json",
+)
+
+
 def validate_deployment_status(status: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if status.get("state") != "DEPLOYMENT_READY":
@@ -49,16 +56,7 @@ def validate_environment_status(status: dict[str, Any]) -> list[str]:
     if not status.get("pod"):
         errors.append("pod must be recorded so a later phase can import it")
     artifacts = status.get("artifacts") or []
-    for required in (
-        "environment_fingerprint.txt",
-        "runtime_import.txt",
-        "code_readiness.json",
-        "device_readiness.json",
-        "base_model_identity.json",
-        "base_server_log.txt",
-        "base_health_result.txt",
-        "base_chat_result.json",
-    ):
+    for required in ENVIRONMENT_ARTIFACTS:
         if required not in artifacts:
             errors.append(f"{required} must be part of the evidence bundle")
     return errors

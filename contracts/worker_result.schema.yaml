@@ -1,0 +1,70 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Evidence-backed worker result
+type: object
+required:
+  - schema_version
+  - task_id
+  - operator_key
+  - stage
+  - attempt
+  - environment_fingerprint
+  - evidence_mode
+  - evidence
+  - evidence_sha256
+anyOf:
+  - required: [status]
+  - required: [verdict]
+properties:
+  schema_version: {type: integer, const: 1}
+  status: {type: string, enum: [PASS, pass]}
+  verdict: {type: string, enum: [PASS, pass]}
+  task_id: {type: string, minLength: 1}
+  operator_key: {type: string, minLength: 1}
+  stage: {enum: [torch, xpu, integration, diagnosis]}
+  attempt: {type: integer, minimum: 1}
+  environment_fingerprint: {type: [string, "null"]}
+  evidence_mode: {enum: [real, simulation]}
+  evidence:
+    type: object
+    minProperties: 1
+    additionalProperties: {type: string, minLength: 1}
+  evidence_sha256:
+    type: object
+    minProperties: 1
+    additionalProperties: {type: string, pattern: "^[0-9a-f]{64}$"}
+  diagnosis: {}
+  repair_conclusion: {}
+  confidence: {type: number, minimum: 0, maximum: 1}
+  next_action:
+    enum: [REDISCOVER_OPERATOR, DISPATCH_TORCH_FIX, DISPATCH_XPU_FIX, RETRY, BLOCKED]
+allOf:
+  - if:
+      properties: {stage: {const: torch}}
+    then:
+      properties:
+        evidence:
+          required: [reference_artifact, focused_tests, independent_validation]
+  - if:
+      properties: {stage: {const: xpu}}
+    then:
+      properties:
+        evidence:
+          required: [build_record, registration_record, device_test, dispatch_report, independent_validation]
+  - if:
+      properties: {stage: {const: integration}}
+    then:
+      properties:
+        evidence:
+          required: [integration_report, service_regression, accuracy_regression, fallback_report, independent_validation]
+  - if:
+      properties: {stage: {const: diagnosis}}
+    then:
+      required: [diagnosis, repair_conclusion, confidence, next_action]
+      properties:
+        evidence:
+          required: [diagnosis_report]
+  - if:
+      properties: {evidence_mode: {const: real}}
+    then:
+      properties:
+        environment_fingerprint: {type: string, minLength: 1}

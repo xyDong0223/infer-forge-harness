@@ -13,6 +13,7 @@ graph that cannot be inspected before it touches a cluster is not safe to trust.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -28,7 +29,14 @@ from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
 from core.facade import resolve_adapters  # noqa: E402
-from core.target import load_target  # noqa: E402
+from core.target import (  # noqa: E402
+    bind_subject, canonical_hardware, contract_target, load_target, require_supported,
+    target_environment,
+)
+from runners.task_runner import load_yaml  # noqa: E402
+from validators.deployment_validator import (  # noqa: E402
+    ENVIRONMENT_ARTIFACTS, validate_deployment_status, validate_environment_status,
+)
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
 # node's own output directory; `fact:<Kind>:<file>` resolves through the Journal.
@@ -305,17 +313,19 @@ def node_task_type(node: dict) -> str | None:
 
 def resolve(spec: dict, context: dict, journal: Path, environment: dict,
             command: list[str] | None = None, include_optional: bool = True) -> list[str]:
+    if spec.get("needs") and not environment:
+        raise Unresolved("a nonempty environment is required to reuse Journal inputs; "
+                         "provide --target/--env and a current environment proof")
     if "contract_instance" not in context:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
-        plan = journal_module.latest(journal, "DeploymentPlan", subject=context["subject"],
-                                     environment=environment)
+        plan = input_fact(journal, "DeploymentPlan", context["subject"], environment)
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
     command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
-        hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
+        hit = input_fact(journal, kind, context["subject"], environment)
         if not hit:
             raise Unresolved(
                 f"{kind} for {context['subject']} is not in the Journal for this environment; "
@@ -325,9 +335,19 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
     if include_optional:
         for flag, reference in (spec.get("optional") or {}).items():
             _, kind, filename = reference.split(":", 2)
-            hit = journal_module.latest(journal, kind, subject=context["subject"], environment=environment)
+            hit = input_fact(journal, kind, context["subject"], environment)
             if hit:
                 command += [flag, str(Path(hit["artifacts"]) / filename)]
+    requested = (bind_subject(load_target(context["target_file"]), context["subject"])
+                 if context.get("target_file") else None)
+    if "runners/task_runner.py" in command:
+        path = command[command.index("runners/task_runner.py") + 1]
+        require_supported(contract_target(load_yaml(Path(path)), requested))
+        if requested is not None:
+            command += ["--target", context["target_file"], "--subject", context["subject"]]
+    elif "--contract-instance" in command:
+        path = command[command.index("--contract-instance") + 1]
+        require_supported(contract_target(load_yaml(Path(path)), requested))
     return command
 
 
@@ -381,12 +401,18 @@ def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
     return plan
 
 
-def read_state(artifacts: Path, spec: dict) -> str:
+def read_status(artifacts: Path, spec: dict) -> dict:
     path = artifacts / spec["state_file"]
-    if not path.exists():
-        return "UNKNOWN"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return payload.get("state", "UNKNOWN")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_state(artifacts: Path, spec: dict) -> str:
+    state = read_status(artifacts, spec).get("state")
+    return state if isinstance(state, str) else "UNKNOWN"
 
 
 SUCCESS_STATES = {
@@ -419,17 +445,114 @@ def reusable_fact(
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
     kind = spec.get("produces")
-    if not kind:
+    if not kind or not environment:
         return None
     hit = journal_module.latest(
-        journal, kind, subject=subject, environment=environment, states=tuple(SUCCESS_STATES)
+        journal, kind, subject=subject, environment=fact_environment(kind, environment)
     )
-    if not hit:
+    if not hit or hit.get("state") not in SUCCESS_STATES:
         return None
     artifact_dir = Path(hit["artifacts"])
-    if not (artifact_dir / spec["state_file"]).exists():
+    payload = read_status(artifact_dir, spec)
+    if payload.get("state") != hit["state"]:
         return None
+    validator = payload.get("validator")
+    if validator is not None and (
+        not isinstance(validator, dict) or validator.get("passed") is not True
+        or validator.get("errors")
+    ):
+        return None
+    detail = hit.get("detail") or {}
+    if detail.get("returncode", 0) != 0:
+        return None
+    if detail.get("status_sha256") and detail["status_sha256"] != file_digest(
+        artifact_dir / spec["state_file"]
+    ):
+        return None
+    if kind in ("EnvironmentProof", "DeploymentProof"):
+        validate = validate_environment_status if kind == "EnvironmentProof" else validate_deployment_status
+        try:
+            if validate(payload):
+                return None
+            if any(not (artifact_dir / name).exists() for name in payload["artifacts"]):
+                return None
+            if kind == "EnvironmentProof" and any(
+                not (artifact_dir / name).is_file() for name in ENVIRONMENT_ARTIFACTS
+            ):
+                return None
+        except (TypeError, AttributeError):
+            return None
+    if kind == "EnvironmentProof":
+        proven = proof_fingerprint(artifact_dir)
+        if not proven or (detail.get("environment_fingerprint")
+                          and proven != detail["environment_fingerprint"]):
+            return None
+        if environment.get("environment_fingerprint") not in (None, proven):
+            return None
     return hit
+
+
+def fact_environment(kind: str, environment: dict) -> dict:
+    # Intake is model identity, and the proof establishes the runtime scope.
+    # Neither depends on a fingerprint that is only produced by that proof.
+    if kind in ("ModelRequest", "EnvironmentProof"):
+        return {key: value for key, value in environment.items()
+                if key not in ("environment_fingerprint", "environment_pod")}
+    return environment
+
+
+def input_fact(journal: Path, kind: str, subject: str, environment: dict) -> dict | None:
+    spec = next((spec for spec in NODES.values() if spec.get("produces") == kind), None)
+    if spec is None:
+        return None
+    return reusable_fact(spec, subject, journal, environment)
+
+
+def file_digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def proof_fingerprint(artifacts: Path) -> str | None:
+    path = artifacts / "environment_fingerprint.txt"
+    try:
+        if not path.read_text(encoding="utf-8").strip():
+            return None
+    except (OSError, ValueError):
+        return None
+    return file_digest(path)
+
+
+def bind_proven_environment(context: dict, environment: dict, journal: Path) -> None:
+    proof = reusable_fact(NODES["environment_proof"], context["subject"], journal,
+                          fact_environment("EnvironmentProof", environment))
+    if not proof:
+        return
+    artifacts = Path(proof["artifacts"])
+    status = read_status(artifacts, NODES["environment_proof"])
+    proven = proof_fingerprint(artifacts)
+    if environment.get("environment_fingerprint") not in (None, proven):
+        raise Unresolved("current environment proof fingerprint does not match --env")
+    if (context.get("pod") not in (None, status["pod"])
+            and context.get("pod") != context.get("_environment_pod")):
+        raise Unresolved("pod does not match the current environment proof")
+    environment.update(environment_fingerprint=proven, environment_pod=status["pod"])
+    context["pod"] = status["pod"]
+    context["_environment_pod"] = status["pod"]
+
+
+def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
+                environment: dict, returncode: int = 0) -> dict:
+    detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
+              "returncode": returncode}
+    if spec["produces"] == "EnvironmentProof":
+        detail["environment_fingerprint"] = proof_fingerprint(artifacts)
+    return journal_module.record(
+        journal, spec["produces"], subject, read_state(artifacts, spec), artifacts,
+        fact_environment(spec["produces"], environment), extra=detail,
+    )
 
 
 def node_watch(args, node: str, artifacts: Path):
@@ -462,15 +585,10 @@ def emit_summary(summary: dict, json_output: bool) -> None:
 
 def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
     """Read what the node itself said, before falling back to the bare state."""
-    path = artifacts / spec["state_file"]
-    if path.exists():
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
-            payload = {}
-        for key in ("reason", "reason_code", "validation_errors"):
-            if payload.get(key):
-                return str(payload[key])
+    payload = read_status(artifacts, spec)
+    for key in ("reason", "reason_code", "validation_errors"):
+        if payload.get(key):
+            return str(payload[key])
     return f"node ended in state {state}"
 
 
@@ -511,7 +629,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                 commands = fan_out_plan(spec, merged, args.journal, environment, artifacts)
             else:
                 commands = [(artifacts, resolve(spec, merged, args.journal, environment))]
-        except (Unresolved, KeyError) as error:
+        except (Unresolved, KeyError, ValueError, OSError) as error:
             return False, f"UNRESOLVED: {error}"
         returncode = 0
         for target, command in commands:
@@ -593,26 +711,38 @@ def main() -> int:
 
     environment = dict(pair.split("=", 1) for pair in args.env)
     context = dict(pair.split("=", 1) for pair in args.set)
-    target = load_target(args.target) if args.target else None
-    if target is not None:
-        compatibility = resolve_adapters(target).compatibility
-        environment.update(
-            hardware=target.hardware,
-            engine=target.engine,
-            backend=target.backend,
-            plugin=target.plugin or "",
-            compatibility_status=compatibility["status"],
-        )
-        if compatibility["status"] != "supported":
-            reason = compatibility.get("reason") or "target is not executable"
-            print(
-                f"blocked: target {target.hardware} + {target.engine} + "
-                f"{target.plugin or target.backend} is "
-                f"{compatibility['status']}: {reason}"
-            )
-            return 2
+    try:
+        requested_target = load_target(args.target) if args.target else None
+        if requested_target is not None:
+            resolve_adapters(requested_target, require_supported=True)
+            requested_target = bind_subject(requested_target, args.subject)
+            target_env = target_environment(requested_target)
+            for key, value in target_env.items():
+                actual = environment.get(key)
+                if key == "hardware" and actual is not None:
+                    actual = canonical_hardware(actual)
+                if key in environment and actual != value:
+                    raise ValueError(f"--env {key} conflicts with --target")
+            environment.update(target_env, compatibility_status="supported")
+            context["target_file"] = str(args.target.resolve())
+        if context.get("contract_instance"):
+            require_supported(contract_target(
+                load_yaml(Path(context["contract_instance"])), requested_target
+            ))
+    except (ValueError, OSError) as error:
+        print(f"blocked: {error}")
+        emit_summary({"status": "BLOCKED", "reason_code": "TARGET_MISMATCH",
+                      "message": str(error)}, args.json)
+        return 2
     context.update(subject=args.subject, attempt="graph",
                    environment_text=",".join(f"{k}={v}" for k, v in sorted(environment.items())))
+    try:
+        bind_proven_environment(context, environment, args.journal)
+    except Unresolved as error:
+        emit_summary({"status": "BLOCKED", "reason_code": "ENVIRONMENT_MISMATCH",
+                      "message": str(error)}, args.json)
+        return 2
+    context["environment_text"] = ",".join(f"{k}={v}" for k, v in sorted(environment.items()))
     loop_state = args.loop_state or args.artifact_root / "task_memory.json"
     memory = task_memory.load(loop_state, args.workflow.stem, args.subject)
 
@@ -708,6 +838,8 @@ def main() -> int:
                  "artifacts": [prior["artifacts"]]},
                 args.json,
             )
+            if args.until_node and current == args.until_node:
+                break
             current = next_task if next_task in by_id else None
             continue
         try:
@@ -715,7 +847,7 @@ def main() -> int:
                 commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
             else:
                 commands = [(artifacts, resolve(spec, context, args.journal, environment))]
-        except (Unresolved, KeyError) as error:
+        except (Unresolved, KeyError, ValueError, OSError) as error:
             print(f"NEEDS_HUMAN: {current}: {error}")
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
@@ -764,8 +896,7 @@ def main() -> int:
                     print(f"[crash] {current}: evidence snapshotted to {result.crash_log}")
                     crash_logs.append(str(result.crash_log))
                 returncode = returncode or result.returncode
-            journal_module.record(args.journal, spec["produces"], args.subject,
-                                  read_state(artifacts, spec), artifacts, environment)
+            record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
             state = read_state(artifacts, spec)
             task_memory.finish_block(
                 memory,
@@ -790,8 +921,7 @@ def main() -> int:
                     if outcome.status == "RECOVERED":
                         recovered = True
                         state = outcome.final_state or read_state(artifacts, spec)
-                        journal_module.record(args.journal, spec["produces"], args.subject,
-                                              read_state(artifacts, spec), artifacts, environment)
+                        record_fact(args.journal, spec, args.subject, artifacts, environment)
                         emit_summary(
                             {"status": "RECOVERED", "node": current,
                              "next_task": node.get("on_success"),
@@ -821,6 +951,20 @@ def main() -> int:
                     )
                     current = failure if failure in by_id else None
                     continue
+            if spec["produces"] == "EnvironmentProof":
+                # A new proof replaces any prior runtime scope, never copies its
+                # fingerprint onto facts produced in this different environment.
+                environment.pop("environment_fingerprint", None)
+                environment.pop("environment_pod", None)
+                try:
+                    bind_proven_environment(context, environment, args.journal)
+                except Unresolved as error:
+                    emit_summary({"status": "BLOCKED", "reason_code": "ENVIRONMENT_MISMATCH",
+                                  "message": str(error)}, args.json)
+                    return 2
+                context["environment_text"] = ",".join(
+                    f"{key}={value}" for key, value in sorted(environment.items())
+                )
 
         if args.until_node and current == args.until_node:
             break
