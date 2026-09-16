@@ -141,6 +141,99 @@ def test_diagnosis_returns_repair_conclusion_to_main_agent(tmp_path: Path):
     assert scheduler.diagnosis_for(source.task_id).status == "succeeded"
 
 
+def test_completed_retry_diagnosis_requeues_source_with_a_new_attempt(tmp_path: Path):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="r", model_id="m", metadata={"evidence_mode": "simulation"})
+    source = scheduler.discover_operator("r", _spec())
+    first = scheduler.claim_ready("worker")[0]
+    scheduler.fail(
+        source.task_id, worker_id="worker", lease_token=first.lease_token,
+        error="transient failure",
+    )
+    diagnosis = scheduler.claim_ready("diagnoser", stage="diagnosis")[0]
+    scheduler.complete(
+        diagnosis.task_id, worker_id="diagnoser", lease_token=diagnosis.lease_token,
+        result=simulation_result(
+            diagnosis, tmp_path / "artifacts", worker_id="diagnoser",
+            next_action="RETRY",
+        ),
+    )
+    pending = scheduler.apply_diagnosis(diagnosis.task_id)
+    assert pending.status == "pending"
+    assert pending.attempt == first.attempt
+    assert pending.input["recovery"]["diagnosis_task_id"] == diagnosis.task_id
+    retried = scheduler.claim_ready("worker-2", stage="torch")[0]
+    assert retried.task_id == source.task_id
+    assert retried.attempt == first.attempt + 1
+    assert scheduler.apply_diagnosis(diagnosis.task_id).task_id == source.task_id
+    assert len([
+        event for event in scheduler.store.events("r")
+        if event.event_type == "diagnosis_applied"
+    ]) == 1
+
+    scheduler.fail(
+        retried.task_id, "worker-2", "failed again", retried.lease_token
+    )
+    reopened = scheduler.diagnosis_for(source.task_id)
+    assert reopened.status == "pending"
+    assert reopened.input["source_attempt"] == retried.attempt
+    second_diagnosis = scheduler.claim_ready("diagnoser-2", stage="diagnosis")[0]
+    assert second_diagnosis.attempt == diagnosis.attempt + 1
+    scheduler.complete(
+        second_diagnosis.task_id,
+        "diagnoser-2",
+        simulation_result(
+            second_diagnosis, tmp_path / "artifacts-2", worker_id="diagnoser-2",
+            next_action="RETRY",
+        ),
+        second_diagnosis.lease_token,
+    )
+    assert scheduler.apply_diagnosis(second_diagnosis.task_id).status == "pending"
+    assert len([
+        event for event in scheduler.store.events("r")
+        if event.event_type == "diagnosis_applied"
+    ]) == 2
+
+
+def test_blocked_diagnosis_is_consumed_without_requeue(tmp_path: Path):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="r", model_id="m", metadata={"evidence_mode": "simulation"})
+    source = scheduler.discover_operator("r", _spec())
+    claimed = scheduler.claim_ready("worker")[0]
+    scheduler.fail(source.task_id, "worker", "permanent", claimed.lease_token)
+    diagnosis = scheduler.claim_ready("diagnoser", stage="diagnosis")[0]
+    scheduler.complete(
+        diagnosis.task_id, "diagnoser",
+        simulation_result(
+            diagnosis, tmp_path / "artifacts", worker_id="diagnoser",
+            next_action="BLOCKED",
+        ),
+        diagnosis.lease_token,
+    )
+    assert scheduler.apply_diagnosis(diagnosis.task_id).status == "failed"
+    assert scheduler.pending_tasks("r", stage="torch") == []
+
+
+def test_external_repair_diagnosis_is_not_guessed_by_scheduler(tmp_path: Path):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="r", model_id="m", metadata={"evidence_mode": "simulation"})
+    source = scheduler.discover_operator("r", _spec())
+    claimed = scheduler.claim_ready("worker")[0]
+    scheduler.fail(source.task_id, "worker", "bad implementation", claimed.lease_token)
+    diagnosis = scheduler.claim_ready("diagnoser", stage="diagnosis")[0]
+    scheduler.complete(
+        diagnosis.task_id, "diagnoser",
+        simulation_result(
+            diagnosis, tmp_path / "artifacts", worker_id="diagnoser",
+            next_action="DISPATCH_XPU_FIX",
+        ),
+        diagnosis.lease_token,
+    )
+    with pytest.raises(ValueError, match="requires an external repair"):
+        scheduler.apply_diagnosis(diagnosis.task_id)
+    assert scheduler.task_status(source.task_id).status == "failed"
+
+
 def test_bug_report_normalizes_scalar_errors():
     report = BugReport.from_error("task", "timeout")
     assert report.source_task_id == "task"

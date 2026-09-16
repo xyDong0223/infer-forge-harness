@@ -37,7 +37,7 @@ smoke and real-model regression are separate opt-in tiers, not prerequisites for
 the local scenario. See [capability scenarios](tests/e2e/README.md).
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py' -v
+python -m pytest -q tests
 python cli/maintenance/check_repo_references.py
 python -m pytest -q -m local_e2e tests/e2e
 ```

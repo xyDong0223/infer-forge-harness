@@ -16,8 +16,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import torch
-from safetensors.torch import save_file
+import pytest
+
+torch = pytest.importorskip("torch")
+save_file = pytest.importorskip("safetensors.torch").save_file
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:

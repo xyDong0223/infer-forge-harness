@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from engine.contracts import OperatorTask
-from tests.scheduler_helpers import stage_result
+from tests.scheduler_helpers import simulation_result, stage_result
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "cli" / "adaptation.py"
@@ -214,6 +214,46 @@ def test_cli_requires_token_and_renews_current_lease(tmp_path: Path) -> None:
     )
     assert rejected.returncode == 6
     assert json.loads(rejected.stdout)["task"]["status"] == "failed"
+
+
+def test_cli_applies_retry_diagnosis_and_exposes_new_attempt(tmp_path: Path) -> None:
+    from engine import IOSpec, OperatorSpec, TaskScheduler
+
+    state = tmp_path / "state.db"
+    scheduler = TaskScheduler(state)
+    scheduler.create_run(run_id="r", model_id="m", metadata={"evidence_mode": "simulation"})
+    source = scheduler.discover_operator("r", OperatorSpec(
+        operator_id="op", model_id="m", model_revision="1", plugin_revision="1",
+        backend="device",
+        inputs=[IOSpec("x", "float32", [1], "contiguous")],
+        outputs=[IOSpec("y", "float32", [1], "contiguous")],
+        semantics={"op": "identity"},
+    ))
+    first = scheduler.claim_ready("worker", stage="torch")[0]
+    scheduler.fail(source.task_id, "worker", "transient", first.lease_token)
+    diagnosis = scheduler.claim_ready("diagnoser", stage="diagnosis")[0]
+    result = tmp_path / "diagnosis.json"
+    result.write_text(
+        json.dumps(simulation_result(
+            diagnosis, tmp_path / "evidence", worker_id="diagnoser",
+            next_action="RETRY",
+        )),
+        encoding="utf-8",
+    )
+    resolved = _run(
+        state, "resolve-diagnosis", "--task-id", diagnosis.task_id,
+        "--worker", "diagnoser", "--lease-token", diagnosis.lease_token,
+        "--result", str(result),
+    )
+    assert resolved.returncode == 0, resolved.stdout
+    applied = _run(state, "apply-diagnosis", "--task-id", diagnosis.task_id)
+    assert applied.returncode == 0, applied.stdout
+    assert json.loads(applied.stdout)["task"]["status"] == "pending"
+    retried = _run(state, "claim", "--worker", "worker-2", "--stage", "torch")
+    assert retried.returncode == 0, retried.stdout
+    retry_task = json.loads(retried.stdout)["tasks"][0]
+    assert retry_task["task_id"] == source.task_id
+    assert retry_task["attempt"] == first.attempt + 1
 
 
 def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monkeypatch):

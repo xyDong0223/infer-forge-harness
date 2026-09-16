@@ -639,20 +639,119 @@ class TaskScheduler:
             operator_key=task.operator_key,
             source_task_id=task.task_id,
             input={"source_task_id": task.task_id, "operator_key": task.operator_key,
-                   "failed_stage": task.stage, "bug_report": report.to_dict()},
+                   "failed_stage": task.stage, "source_attempt": task.attempt,
+                   "bug_report": report.to_dict()},
         )
         # The task table has one row per (run, operator, stage).  Scope the
         # persisted key by source task so torch and xpu failures each receive
         # their own diagnosis queue item.
         storage_key = f"diagnosis:{task.task_id}"
-        if self.store.insert_task(OperatorTask(task_id=diagnostic.task_id, run_id=diagnostic.run_id,
-                                               operator_key=storage_key, stage=_DIAGNOSIS_STAGE,
-                                               input=diagnostic.input)):
+        inserted = self.store.insert_task(
+            OperatorTask(
+                task_id=diagnostic.task_id,
+                run_id=diagnostic.run_id,
+                operator_key=storage_key,
+                stage=_DIAGNOSIS_STAGE,
+                input=diagnostic.input,
+            )
+        )
+        if inserted:
             self._emit(task.run_id, "diagnosis_task_created",
                        {"source_task_id": task.task_id, "operator_key": task.operator_key,
-                        "failed_stage": task.stage}, diagnostic.task_id)
+                        "failed_stage": task.stage, "source_attempt": task.attempt},
+                       diagnostic.task_id)
+        else:
+            row = self.store.db.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            existing_input = json.loads(row["input_json"])
+            if int(existing_input.get("source_attempt", 0)) < task.attempt:
+                self.store.db.execute(
+                    "UPDATE tasks SET status='pending',input_json=?,output_json='{}',"
+                    "lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? "
+                    "WHERE task_id=?",
+                    (json.dumps(diagnostic.input, sort_keys=True), time.time(), task_id),
+                )
+                self._emit(
+                    task.run_id,
+                    "diagnosis_task_reopened",
+                    {
+                        "source_task_id": task.task_id,
+                        "operator_key": task.operator_key,
+                        "failed_stage": task.stage,
+                        "source_attempt": task.attempt,
+                    },
+                    diagnostic.task_id,
+                )
         row = self.store.db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         return self.store._task(row)
+
+    @atomic_transition
+    def apply_diagnosis(self, diagnosis_task_id: str) -> OperatorTask:
+        """Apply a completed diagnosis where the scheduler can do so safely.
+
+        RETRY requeues the failed source row. The next claim increments its
+        attempt and allocates a fresh workspace, preserving the failed attempt.
+        BLOCKED is recorded as consumed without changing the failed source.
+        Repair/rediscovery actions require an external code or contract change
+        and are deliberately not guessed by the scheduler.
+        """
+        diagnosis = self.store.get_task(diagnosis_task_id)
+        if not isinstance(diagnosis, DiagnosticTask):
+            raise ValueError("apply-diagnosis requires a diagnosis task")
+        if diagnosis.status != "succeeded":
+            raise ValueError("diagnosis must be completed before it can be applied")
+        source = self.store.get_task(diagnosis.source_task_id)
+        if source is None or isinstance(source, DiagnosticTask):
+            raise ValueError("diagnosis source task is missing or invalid")
+        if source.run_id != diagnosis.run_id or source.operator_key != diagnosis.operator_key:
+            raise ValueError("diagnosis does not match its source task")
+        action = diagnosis.output.get("next_action")
+        if action not in {"RETRY", "BLOCKED"}:
+            raise ValueError(
+                f"next_action {action!r} requires an external repair or rediscovery before retry"
+            )
+        applied = [
+            event for event in self.store.events(diagnosis.run_id)
+            if event.event_type == "diagnosis_applied"
+            and event.task_id == diagnosis.task_id
+            and event.payload.get("source_attempt") == diagnosis.input.get("source_attempt")
+            and event.payload.get("diagnosis_attempt") == diagnosis.attempt
+        ]
+        if applied:
+            return source
+        if action == "RETRY":
+            if source.status != "failed":
+                raise ValueError("RETRY requires a failed source task")
+            recovery = {
+                "diagnosis_task_id": diagnosis.task_id,
+                "diagnosis_attempt": diagnosis.attempt,
+                "source_attempt": diagnosis.input.get("source_attempt"),
+                "next_action": action,
+                "repair_conclusion": diagnosis.output.get("repair_conclusion"),
+            }
+            source_input = {**source.input, "recovery": recovery}
+            cur = self.store.db.execute(
+                "UPDATE tasks SET status='pending',input_json=?,output_json='{}',"
+                "lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? "
+                "WHERE task_id=? AND status='failed'",
+                (json.dumps(source_input, sort_keys=True), time.time(), source.task_id),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("source task changed while applying diagnosis")
+        self._emit(
+            diagnosis.run_id,
+            "diagnosis_applied",
+            {
+                "source_task_id": source.task_id,
+                "source_attempt": diagnosis.input.get("source_attempt"),
+                "diagnosis_attempt": diagnosis.attempt,
+                "next_action": action,
+                "repair_conclusion": diagnosis.output.get("repair_conclusion"),
+            },
+            diagnosis.task_id,
+        )
+        return self.store.get_task(source.task_id)
 
     @atomic_transition
     def recover(self, force: bool = False) -> int:

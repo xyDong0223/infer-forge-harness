@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from runners.graph_runner import NODES, Unresolved, fan_out_plan  # noqa: E402
 from operations.discovery.evaluate_capability import PROBES, aggregate, dimensions_for, probe_argv
 from engine.state.journal import record
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
+
+TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
 
 CONTRACT = yaml.safe_load(
     (ROOT / "tasks" / "mat-008-capability-evaluation" / "task.yaml").read_text(encoding="utf-8")
@@ -67,6 +70,7 @@ class DimensionSelectionTest(unittest.TestCase):
         self.assertIn("fused_qknorm_rope_insert", PROBES)
 
 
+@unittest.skipUnless(TORCH_AVAILABLE, "torch is an optional test dependency")
 class BlockSparseReferenceTest(unittest.TestCase):
     """The probe's own reference arithmetic, on the CPU, with no accelerator."""
 
@@ -451,6 +455,7 @@ class ContractTest(unittest.TestCase):
         self.assertIn("TP first", text)
 
 
+@unittest.skipUnless(TORCH_AVAILABLE, "torch is an optional test dependency")
 class WindowMaskTest(unittest.TestCase):
     """The mask is the whole sliding-window implementation, so it is worth pinning."""
 
@@ -488,6 +493,7 @@ class WindowMaskTest(unittest.TestCase):
         self.assertEqual(mask[1].tolist(), [False, False, True, True, True, True])
 
 
+@unittest.skipUnless(TORCH_AVAILABLE, "torch is an optional test dependency")
 class FallbackRefusalTest(unittest.TestCase):
     def test_sinks_are_still_refused(self):
         """A per-head sink logit joins the softmax denominator and there is no sink
@@ -506,6 +512,7 @@ class FallbackRefusalTest(unittest.TestCase):
             torch_paged_decode(max_window_size=0, qlen=1)
 
 
+@unittest.skipUnless(TORCH_AVAILABLE, "torch is an optional test dependency")
 class MoeReferenceTest(unittest.TestCase):
     """The reference is CPU-only, so its routing logic can be tested here."""
 

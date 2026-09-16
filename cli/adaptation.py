@@ -150,6 +150,11 @@ def _parser() -> argparse.ArgumentParser:
     diagnosis.add_argument("--lease-token", required=True)
     diagnosis.add_argument("--result", type=Path, required=True)
 
+    apply_diagnosis = sub.add_parser(
+        "apply-diagnosis", help="apply a completed RETRY or BLOCKED diagnosis conclusion"
+    )
+    apply_diagnosis.add_argument("--task-id", required=True)
+
     renew = sub.add_parser("renew-lease", help="extend a live worker lease")
     renew.add_argument("--task-id", required=True)
     renew.add_argument("--worker", required=True)
@@ -281,6 +286,10 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         task = scheduler.complete(args.task_id, worker_id=args.worker, result=result,
                                   lease_token=args.lease_token)
         return {"command": "resolve-diagnosis", "task": task.to_dict()}
+
+    if args.command == "apply-diagnosis":
+        task = scheduler.apply_diagnosis(args.task_id)
+        return {"command": "apply-diagnosis", "task": task.to_dict()}
 
     if args.command == "renew-lease":
         task = scheduler.renew_lease(

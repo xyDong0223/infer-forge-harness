@@ -12,6 +12,7 @@ agree with the candidate for the wrong reason.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 
@@ -53,8 +54,6 @@ def _dequantize_int8_weights(model, model_path: str) -> dict:
     checkpoint metadata only, no accelerator involvement, so the reference stays
     independent.
     """
-    import os
-
     import torch
     from safetensors import safe_open
 
@@ -101,6 +100,45 @@ def _dequantize_int8_weights(model, model_path: str) -> dict:
     return {"patched": patched, "missing_scale": missing_scale[:5]}
 
 
+def _checkpoint_quantization(model_path: str) -> str:
+    """Classify the checkpoint format before applying any weight transform."""
+    config_path = os.path.join(model_path, "config.json")
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"cannot read checkpoint config: {error}") from error
+    quantization = config.get("quantization_config")
+    if not quantization:
+        return "unquantized"
+    if not isinstance(quantization, dict):
+        raise ValueError("quantization_config must be an object")
+    method = quantization.get("quant_method")
+    format_name = quantization.get("format")
+    groups = quantization.get("config_groups") or {}
+    weight_specs = [
+        group.get("weights")
+        for group in groups.values()
+        if isinstance(group, dict) and isinstance(group.get("weights"), dict)
+    ] if isinstance(groups, dict) else []
+    supported_int8_weights = bool(weight_specs) and all(
+        spec.get("type") == "int"
+        and spec.get("num_bits") == 8
+        and spec.get("strategy") == "channel"
+        and spec.get("symmetric") is True
+        for spec in weight_specs
+    )
+    if (
+        method == "compressed-tensors"
+        and format_name == "int-quantized"
+        and supported_int8_weights
+    ):
+        return "compressed-tensors-int8"
+    raise ValueError(
+        f"unsupported CPU reference quantization: method={method!r}, format={format_name!r}"
+    )
+
+
 def main(model_path: str, top_k: int, prompts: list[str]) -> int:
     if top_k < 1:
         print(json.dumps({"state": "CONTRACT_INVALID", "reason": "top_k must be >= 1"}))
@@ -130,6 +168,7 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
         return 0
 
     try:
+        quantization = _checkpoint_quantization(model_path)
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         # No device_map: it would pull in `accelerate`, and the point is to stay on
         # plain CPU torch with as little machinery as possible between the weights
@@ -139,17 +178,23 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
         )
         model.eval()
 
-        dequant = _dequantize_int8_weights(model, model_path)
-        if dequant["patched"] == 0:
-            print(
-                json.dumps(
-                    {
-                        "state": "REFERENCE_FAILED",
-                        "reason": "no weight_scale tensors applied; checkpoint may not be quantized",
-                    }
+        if quantization == "compressed-tensors-int8":
+            dequant = {
+                "mode": quantization,
+                **_dequantize_int8_weights(model, model_path),
+            }
+            if dequant["patched"] == 0:
+                print(
+                    json.dumps(
+                        {
+                            "state": "REFERENCE_FAILED",
+                            "reason": "compressed-tensors INT8 checkpoint has no applicable weight_scale tensors",
+                        }
+                    )
                 )
-            )
-            return 0
+                return 0
+        else:
+            dequant = {"mode": "not_required", "patched": 0, "missing_scale": []}
 
         results = {}
         for prompt in prompts:
@@ -169,6 +214,7 @@ def main(model_path: str, top_k: int, prompts: list[str]) -> int:
                     # candidate's reduced precision.
                     "dtype": "float32",
                     "transformers_version": transformers.__version__,
+                    "checkpoint_quantization": quantization,
                     "dequantized": dequant,
                     "results": results,
                 }

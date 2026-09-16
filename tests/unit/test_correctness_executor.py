@@ -40,7 +40,8 @@ class FakeOps:
 
     def __init__(self, *, probe_state="EXERCISED_PASS",
                  candidate=REFERENCE, control=DISCRIMINATING_CONTROL,
-                 differential_status="ACCURACY_PASS", differential_missing=False):
+                 differential_status="ACCURACY_PASS", differential_missing=False,
+                 differential_validator_passed=True, differential_returncode=None):
         self.probe_state = probe_state
         self.tensors = {
             "candidate.json": json.dumps(candidate),
@@ -50,6 +51,8 @@ class FakeOps:
         }
         self.differential_status = differential_status
         self.differential_missing = differential_missing
+        self.differential_validator_passed = differential_validator_passed
+        self.differential_returncode = differential_returncode
         self.calls: list[str] = []
 
     def run_probe(self, pod, probe, files, args):
@@ -78,7 +81,17 @@ class FakeOps:
                            "top1_candidate": " Paris", "top1_reference": " Paris",
                            "top5_overlap": 5}],
             }), encoding="utf-8")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            (out / "accuracy_status.json").write_text(json.dumps({
+                "state": self.differential_status,
+                "validator": {
+                    "passed": self.differential_validator_passed,
+                    "errors": [] if self.differential_validator_passed else ["top-5 overlap rejected"],
+                },
+            }), encoding="utf-8")
+            returncode = self.differential_returncode
+            if returncode is None:
+                returncode = 0 if self.differential_status == "ACCURACY_PASS" else 6
+            return SimpleNamespace(returncode=returncode, stdout="", stderr="")
         return subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
 
 
@@ -139,6 +152,44 @@ class EndToEndTest(unittest.TestCase):
         status = run_end_to_end("pod-0", FakeOps(differential_status="ACCURACY_FAIL"),
                                 self.out, self.request, "qwen3-8b", 8000)
         self.assertEqual(status["state"], "ACCURACY_FAIL")
+
+    def test_a_rejected_child_validator_cannot_be_repackaged_as_pass(self):
+        status = run_end_to_end(
+            "pod-0",
+            FakeOps(differential_validator_passed=False, differential_returncode=6),
+            self.out,
+            self.request,
+            "qwen3-8b",
+            8000,
+        )
+        self.assertEqual(status["state"], "CONTRACT_INVALID")
+        self.assertFalse(json.loads(
+            (self.out / "accuracy_status.json").read_text()
+        )["child_status"]["validator"]["passed"])
+
+    def test_child_exit_code_must_match_its_validated_state(self):
+        status = run_end_to_end(
+            "pod-0", FakeOps(differential_returncode=6), self.out,
+            self.request, "qwen3-8b", 8000,
+        )
+        self.assertEqual(status["state"], "CONTRACT_INVALID")
+
+    def test_non_object_child_status_is_contract_invalid(self):
+        ops = FakeOps()
+        original = ops.run_tool
+
+        def run_tool(command):
+            result = original(command)
+            out = Path(command[command.index("--out") + 1])
+            (out / "accuracy_status.json").write_text("[]", encoding="utf-8")
+            return result
+
+        ops.run_tool = run_tool
+        status = run_end_to_end(
+            "pod-0", ops, self.out, self.request, "qwen3-8b", 8000,
+        )
+        self.assertEqual(status["state"], "CONTRACT_INVALID")
+        self.assertTrue((self.out / "accuracy_status.json").is_file())
 
     def test_no_differential_report_is_needs_human_not_a_guessed_verdict(self):
         status = run_end_to_end("pod-0", FakeOps(differential_missing=True), self.out,

@@ -206,7 +206,7 @@ def run_end_to_end(pod: str, ops: CorrectnessOps, out: Path, model_request: Path
     if not model_request:
         status["state"] = "CONTRACT_INVALID"
         status["reason"] = "end-to-end accuracy needs the ModelRequest (pass --model-request)"
-        _write(out / "status.json", status)
+        _write(out / "accuracy_status.json", status)
         return status
     differential = out / "differential"
     result = ops.run_tool([
@@ -216,13 +216,46 @@ def run_end_to_end(pod: str, ops: CorrectnessOps, out: Path, model_request: Path
         "--out", str(differential),
     ])
     payload_path = differential / "accuracy_differential.json"
-    if not payload_path.exists():
+    child_status_path = differential / "accuracy_status.json"
+    if not payload_path.exists() or not child_status_path.exists():
         status["state"] = "NEEDS_HUMAN"
         status["reason"] = (result.stderr or result.stdout or "").strip()[-500:] \
-            or "accuracy_differential produced no report"
-        _write(out / "status.json", status)
+            or "accuracy_differential produced no report or status"
+        _write(out / "accuracy_status.json", status)
         return status
-    differential_report = json.loads(payload_path.read_text(encoding="utf-8"))
+    try:
+        differential_report = json.loads(payload_path.read_text(encoding="utf-8"))
+        child_status = json.loads(child_status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        status.update(state="CONTRACT_INVALID", reason=f"invalid accuracy child output: {error}")
+        _write(out / "accuracy_status.json", status)
+        return status
+    if not isinstance(differential_report, dict) or not isinstance(child_status, dict):
+        status.update(
+            state="CONTRACT_INVALID",
+            reason="accuracy child report and status must be JSON objects",
+        )
+        _write(out / "accuracy_status.json", status)
+        return status
+    child_state = child_status.get("state")
+    child_validator = child_status.get("validator")
+    expected_returncode = 0 if child_state == "ACCURACY_PASS" else 6
+    if (
+        child_state not in {"ACCURACY_PASS", "ACCURACY_FAIL"}
+        or differential_report.get("status") != child_state
+        or not isinstance(child_validator, dict)
+        or child_validator.get("passed") is not True
+        or child_validator.get("errors")
+        or result.returncode != expected_returncode
+    ):
+        status.update(
+            state="CONTRACT_INVALID",
+            reason="accuracy differential report, validator, and exit status disagree",
+            child_returncode=result.returncode,
+            child_status=child_status,
+        )
+        _write(out / "accuracy_status.json", status)
+        return status
     reference = differential_report.get("reference") or {}
     report = {
         "state": differential_report.get("status"),
@@ -244,19 +277,21 @@ def run_end_to_end(pod: str, ops: CorrectnessOps, out: Path, model_request: Path
             {"prompt": case.get("prompt"), "evidence": case}
             for case in differential_report.get("cases") or []
         ],
-        "artifacts": ["end_to_end_accuracy.json", "accuracy_status.json",
-                      "differential/accuracy_differential.json"],
+        "artifacts": [
+            "end_to_end_accuracy.json",
+            "accuracy_status.json",
+            "differential/accuracy_differential.json",
+            "differential/accuracy_status.json",
+        ],
     }
     _write(out / "end_to_end_accuracy.json", report)
     errors = validate_end_to_end(report)
+    status.update(report)
     if errors:
         status["state"] = "CONTRACT_INVALID"
         status["validation_errors"] = errors
-        _write(out / "status.json", status)
-        return status
-    status.update(report)
-    status["state"] = report["state"]
-    _write(out / "status.json", status)
+    status["validator"] = {"passed": not errors, "errors": errors}
+    _write(out / "accuracy_status.json", status)
     return status
 
 

@@ -75,6 +75,21 @@ These fields must match the submitted result. Allowed actions are
 `BLOCKED`. `PASS` means the diagnosis is complete, not that its source task
 has recovered; `next_action: BLOCKED` is a valid completed diagnosis.
 
+Completing diagnosis does not silently mutate its failed source task. For a
+validated `RETRY` or `BLOCKED` conclusion, consume it explicitly:
+
+```bash
+python3 cli/adaptation.py --state <db> apply-diagnosis \
+  --task-id <source-task-id>:diagnosis
+```
+
+`RETRY` atomically returns the source task to `pending`; its next claim creates
+a new attempt and workspace while preserving the failed attempt manifest.
+`BLOCKED` records that the conclusion was consumed and keeps the source failed.
+`REDISCOVER_OPERATOR`, `DISPATCH_TORCH_FIX`, and `DISPATCH_XPU_FIX` are rejected
+by this command until the Main Agent performs the named external repair or
+rediscovery; the scheduler never guesses such a change.
+
 Rejected results are persisted as task failures with `validation_errors` in
 the BugReport metadata, and create diagnosis work for ordinary operator stages.
 CLI rejection returns a nonzero exit code. Lease errors leave the current task

@@ -72,6 +72,9 @@ def main() -> int:
     diagnosis.add_argument("--lease-token", required=True)
     diagnosis.add_argument("--result", type=Path, required=True)
 
+    apply_diagnosis = sub.add_parser("apply-diagnosis")
+    apply_diagnosis.add_argument("--task-id", required=True)
+
     renew = sub.add_parser("renew-lease")
     renew.add_argument("--task-id", required=True)
     renew.add_argument("--worker", required=True)
@@ -125,6 +128,8 @@ def main() -> int:
             lease_token=args.lease_token,
             result=json.loads(args.result.read_text(encoding="utf-8")),
         ).to_dict()
+    elif args.command == "apply-diagnosis":
+        result = scheduler.apply_diagnosis(args.task_id).to_dict()
     elif args.command == "renew-lease":
         result = scheduler.renew_lease(
             args.task_id, args.worker, args.lease_token, args.lease_seconds,

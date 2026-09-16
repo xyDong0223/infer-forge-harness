@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
-import unittest
 from pathlib import Path
 
 
@@ -37,9 +37,12 @@ def main() -> int:
         print(str(error), file=sys.stderr)
         return 3
 
-    suite = unittest.defaultTestLoader.discover(str(root / "tests"), pattern="test_*.py")
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    return 0 if result.wasSuccessful() else 4
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", str(root / "tests")],
+        cwd=root,
+        check=False,
+    )
+    return 0 if result.returncode == 0 else 4
 
 
 if __name__ == "__main__":

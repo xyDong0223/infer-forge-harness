@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -13,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from operations.validation.accuracy_differential import compare
+from operations.validation.accuracy_differential import PROMPTS, compare, execute
 from operations.validation.update_support_matrix import build_entry
 from validators.accuracy_validator import validate_accuracy_report  # noqa: E402
 from validators.matrix_validator import validate_matrix_entry  # noqa: E402
@@ -89,6 +93,66 @@ class AccuracyDifferentialTest(unittest.TestCase):
         result = compare(candidate, reference, 20)
         self.assertTrue(result["top1_match"])
         self.assertEqual(result["top5_overlap"], 1)
+
+    def test_execute_downgrades_thin_top5_overlap_before_persisting_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            request = root / "model_request.yaml"
+            request.write_text(
+                "model: {id: Qwen3-8B, revision: abc, source: /models/qwen}\n",
+                encoding="utf-8",
+            )
+            reference_case = [
+                {"token": token, "logprob": -float(index)}
+                for index, token in enumerate(["same", "r2", "r3", "r4", "r5"])
+            ]
+            candidate = [
+                {"token": token, "logprob": -float(index)}
+                for index, token in enumerate(["same", "c2", "c3", "c4", "c5"])
+            ]
+            reference = {
+                "state": "REFERENCE_READY",
+                "dtype": "float32",
+                "transformers_version": "test",
+                "results": {prompt: reference_case for prompt in PROMPTS},
+            }
+            args = SimpleNamespace(
+                model_request=request,
+                out=root / "out",
+                pod="pod",
+                served_model_name="qwen",
+                port=8000,
+                top_k=20,
+                reference_timeout=60,
+            )
+            adapter = SimpleNamespace(assert_owned=lambda pod: None)
+            with (
+                patch(
+                    "operations.validation.accuracy_differential.KunlunP800Adapter",
+                    return_value=adapter,
+                ),
+                patch(
+                    "operations.validation.accuracy_differential.reference_topk",
+                    return_value=reference,
+                ),
+                patch(
+                    "operations.validation.accuracy_differential.server_topk",
+                    return_value=candidate,
+                ),
+            ):
+                self.assertEqual(execute(args), 6)
+            report = json.loads(
+                (root / "out/accuracy_differential.json").read_text(encoding="utf-8")
+            )
+            status = json.loads(
+                (root / "out/accuracy_status.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["status"], "ACCURACY_FAIL")
+            self.assertEqual(status["state"], "ACCURACY_FAIL")
+            self.assertTrue(status["validator"]["passed"])
+            self.assertTrue(any(
+                "top-5 overlap" in error for error in status["acceptance_errors"]
+            ))
 
 
 class SupportMatrixTest(unittest.TestCase):

@@ -128,7 +128,9 @@ def execute(args) -> int:
 
     matched = sum(1 for case in cases if case["top1_match"])
     report = {
-        "status": "ACCURACY_PASS" if matched == len(cases) else "ACCURACY_FAIL",
+        # Claim PASS provisionally so the validator evaluates every acceptance
+        # threshold. The persisted status below is downgraded if any gate fails.
+        "status": "ACCURACY_PASS",
         "subject": (request.get("model") or {}).get("id"),
         "revision": (request.get("model") or {}).get("revision"),
         "reference": {
@@ -143,13 +145,24 @@ def execute(args) -> int:
         "top1_agreement": f"{matched}/{len(cases)}",
         "cases": cases,
     }
-    (out / "accuracy_differential.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     thresholds = (contract.get("checks") or {}).get("thresholds") or {}
+    acceptance_errors = validate_accuracy_report(report, thresholds)
+    if acceptance_errors:
+        report["status"] = "ACCURACY_FAIL"
     gate = validate_accuracy_report(report, thresholds)
+    (out / "accuracy_differential.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
     (out / "accuracy_status.json").write_text(
-        json.dumps({"state": report["status"], "validator": {"passed": not gate, "errors": gate}}, indent=2),
+        json.dumps(
+            {
+                "state": report["status"],
+                "acceptance_errors": acceptance_errors,
+                "validator": {"passed": not gate, "errors": gate},
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     for case in cases:
@@ -157,4 +170,4 @@ def execute(args) -> int:
         print(f"{mark} {case['prompt']!r} -> {case['top1_candidate']!r} vs {case['top1_reference']!r} "
               f"(top5 overlap {case['top5_overlap']}/5)")
     print(f"status: {report['status']}  validator: {'passed' if not gate else gate}")
-    return 0 if not gate else 6
+    return 0 if report["status"] == "ACCURACY_PASS" and not gate else 6
