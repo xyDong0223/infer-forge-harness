@@ -1041,9 +1041,13 @@ def _run(args, resources: ExitStack) -> int:
             if args.execute:
                 bridge.bind_environment(Path(bound["artifact_root"]))
                 if input_fact(args.journal, "EnvironmentProof", args.subject, environment) is None:
+                    environment_skill = skill_registry.execution_contract(
+                        skill_registry.resolve_for_context("environment_proof", context),
+                        "environment_proof",
+                    )
                     record_fact(
                         args.journal, NODES["environment_proof"], args.subject,
-                        Path(bound["artifact_root"]), environment,
+                        Path(bound["artifact_root"]), environment, skill=environment_skill,
                     )
     try:
         bind_proven_environment(context, environment, args.journal)
