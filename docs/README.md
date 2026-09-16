@@ -1,7 +1,10 @@
 # Documentation
 
-- [`architecture.md`](architecture.md): the layer contract, the three target
-  axes, and the component ownership map. Start here.
+- [`architecture/implementation-layers.zh-CN.md`](architecture/implementation-layers.zh-CN.md):
+  current technical implementation guide in Chinese, explaining each abstraction
+  layer, target resolution, execution flow, and implementation boundaries. Start here.
+- [`architecture.md`](architecture.md): the earlier layer contract, target
+  axes, and component ownership map, including historical migration notes.
 - [`architecture/`](architecture/): the platform-neutral core model, the
   adapter/contract rules, and target resolution.
 - [`guides/`](guides/): how to add a platform and how performance analysis is
