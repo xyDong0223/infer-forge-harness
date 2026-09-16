@@ -101,6 +101,62 @@ def test_graph_snapshots_selected_skill_in_attempt_and_task_memory(tmp_path, mon
     )
 
 
+def test_graph_fanout_children_use_contextual_skill_packets(tmp_path, monkeypatch):
+    workflow = [{"id": "fanout", "task": "fixture", "on_success": "DELIVERED",
+                 "on_failure": "REWORK"}]
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: workflow)
+    monkeypatch.setattr(graph_runner, "node_task_type", lambda _: "fixture_fanout")
+    monkeypatch.setitem(graph_runner.NODES, "fixture_fanout", {
+        "produces": "CapabilityEvaluation",
+        "fan_out": {
+            "var": "dimension",
+            "list": ["list"],
+            "aggregate": ["aggregate", "--out", "{artifacts}"],
+        },
+        "command": ["child", "--dimension", "{dimension}", "--out", "{artifacts}"],
+        "state_file": "status.json",
+    })
+    monkeypatch.setattr(
+        graph_runner.subprocess,
+        "run",
+        lambda *_, **__: SimpleNamespace(
+            returncode=0, stdout='["quantization","moe"]', stderr=""
+        ),
+    )
+
+    def resolve_for_context(_, context=None):
+        context = context or {}
+        return {"id": context.get("dimension", "base"), "verification": [], "tools": []}
+
+    monkeypatch.setattr(graph_runner.skill_registry, "resolve_for_context", resolve_for_context)
+    monkeypatch.setattr(
+        graph_runner.skill_registry,
+        "execution_contract",
+        lambda selected, task_type, **_: {**selected, "task_type": task_type},
+    )
+
+    observed: list[str] = []
+
+    def run(command, *, log_path, **kwargs):
+        packet = Path(kwargs["env_overrides"]["INFER_FORGE_SKILL_CONTRACT"])
+        observed.append(json.loads(packet.read_text(encoding="utf-8"))["id"])
+        out = Path(command[command.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "status.json").write_text('{"state":"EVALUATION_PASS"}', encoding="utf-8")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("fixture console")
+        return SimpleNamespace(returncode=0, crash_log=None)
+
+    monkeypatch.setattr(graph_runner.evidence, "run_logged", run)
+    monkeypatch.setattr(sys, "argv", [
+        "graph", "--subject", "demo", "--artifact-root", str(tmp_path / "run"),
+        "--env", "hardware=P800", "--set", "model_path=fixture", "--watch-interval", "0",
+        "--execute",
+    ])
+    assert _graph_runner_cli.main() == 0
+    assert observed == ["quantization", "moe", "base"]
+
+
 def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
     argv, calls = graph_fixture(tmp_path, monkeypatch, [])
     monkeypatch.setattr(sys, "argv", argv)

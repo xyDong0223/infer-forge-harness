@@ -502,6 +502,35 @@ def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
     return attempt, resolved
 
 
+def command_skill_contract_path(
+    attempt, target: Path, output_root: Path, spec: dict, task_type: str | None, context: dict,
+    base_skill: dict | None, cache: dict[str, Path],
+) -> str:
+    packet = attempt.input / "skill.json"
+    if base_skill is None or "fan_out" not in spec or task_type is None:
+        return str(packet)
+    relative = target.relative_to(output_root)
+    if relative == Path("."):
+        return str(packet)
+    variable = spec["fan_out"].get("var")
+    if not isinstance(variable, str) or not variable:
+        return str(packet)
+    dimension = relative.parts[0]
+    cached = cache.get(dimension)
+    if cached is not None:
+        return str(cached)
+    resolved = skill_registry.resolve_for_context(task_type, {**context, variable: dimension})
+    contract = skill_registry.execution_contract(resolved, task_type)
+    child_packet = attempt.input / "skill-contracts" / f"{safe_component(dimension)}.json"
+    child_packet.parent.mkdir(parents=True, exist_ok=True)
+    child_packet.write_text(
+        json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    cache[dimension] = child_packet
+    return str(child_packet)
+
+
 def skill_routing(skill: dict, **extra) -> dict:
     """Keep Task Memory correlated with the immutable method snapshot."""
     routing = {
@@ -776,7 +805,8 @@ def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
 
 
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
-                     environment: dict, state: str, skill: dict, bridge=None) -> object:
+                     environment: dict, state: str, task_type: str | None,
+                     skill: dict, bridge=None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -836,9 +866,17 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         except (Unresolved, KeyError, ValueError, OSError) as error:
             return False, f"UNRESOLVED: {error}"
         returncode = 0
+        command_skill_cache: dict[str, Path] = {}
         for target, command in commands:
             print(f"[rerun ] {node}: {' '.join(command)}")
             target.mkdir(parents=True, exist_ok=True)
+            try:
+                skill_contract = command_skill_contract_path(
+                    attempt, target, attempt.output, spec, task_type,
+                    merged, skill, command_skill_cache,
+                )
+            except (OSError, skill_registry.SkillResolutionError) as error:
+                return False, f"UNRESOLVED: task_type={task_type}: {error}"
             # Same crash-first contract as the main walk: a recovery rerun
             # writes the live node_console.log, and a dead child is snapshotted
             # before the next attempt can replace it.
@@ -849,7 +887,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                     command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                     crash_tag="recovery", watch=watch,
                     env_overrides={
-                        "INFER_FORGE_SKILL_CONTRACT": str(attempt.input / "skill.json"),
+                        "INFER_FORGE_SKILL_CONTRACT": skill_contract,
                     },
                 )
             except (OSError, ValueError):
@@ -1230,9 +1268,23 @@ def _run(args, resources: ExitStack) -> int:
             for _, command in commands:
                 print(f"[plan] {current}: {' '.join(command)}")
         else:
+            command_skill_cache: dict[str, Path] = {}
             for target, command in commands:
                 print(f"[run ] {current}: {' '.join(command)}")
                 target.mkdir(parents=True, exist_ok=True)
+                try:
+                    skill_contract = command_skill_contract_path(
+                        attempt, target, attempt.output, spec, task_type, context, skill,
+                        command_skill_cache,
+                    )
+                except (OSError, skill_registry.SkillResolutionError) as error:
+                    emit_summary(
+                        {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                         "reason_code": "SKILL_UNRESOLVED",
+                         "message": f"task_type={task_type}: {error}"},
+                        args.json,
+                    )
+                    return 2
                 # A node's console output is evidence, not noise: it is teed
                 # live to the terminal (a long bring-up must show progress) and
                 # to node_console.log, and a non-zero exit is snapshotted to a
@@ -1247,7 +1299,7 @@ def _run(args, resources: ExitStack) -> int:
                         command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                         crash_tag="node", watch=watch,
                         env_overrides={
-                            "INFER_FORGE_SKILL_CONTRACT": str(attempt.input / "skill.json"),
+                            "INFER_FORGE_SKILL_CONTRACT": skill_contract,
                         },
                     )
                 except (OSError, ValueError):
@@ -1336,7 +1388,7 @@ def _run(args, resources: ExitStack) -> int:
                     outcome = attempt_recovery(
                         args, node=current, spec=spec, context=context,
                         artifacts=artifacts, environment=environment, state=state,
-                        skill=skill, bridge=bridge,
+                        task_type=task_type, skill=skill, bridge=bridge,
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
