@@ -7,6 +7,10 @@
 - 在现有模型适配流程中增加一个有独立验收条件的新阶段；
 - 为新的 Agent 协作任务增加持久化调度、失败诊断和恢复。
 
+如果待迁移资产是一个把目标、执行脚本和经验混在一起的旧 Skill，请先阅读
+[旧 Skill 迁移指南](migrate-legacy-skill.zh-CN.md)，完成职责拆分后再按本文
+接入 Workflow。
+
 模型适配是当前第一套完整模板：
 
 - 生产工作流：[`workflows/model_adaptation.yaml`](../../workflows/model_adaptation.yaml)
@@ -446,6 +450,7 @@ tiers:
 | 临时补丁 | `tools/patches/` 下幂等、可重放 patch |
 | 本地结果目录 | 外部 RunPaths / attempt |
 | 多人领取任务表格 | Scheduler task + lease |
+| 目标、脚本、经验混合的旧 Skill | 先按[旧 Skill 迁移指南](migrate-legacy-skill.zh-CN.md)拆分，再接入 Workflow |
 
 推荐迁移顺序：
 

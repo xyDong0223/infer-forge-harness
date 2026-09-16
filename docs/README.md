@@ -11,7 +11,8 @@
   adapter/contract rules, and target resolution.
 - [`guides/`](guides/): how to add a platform and how performance analysis is
   structured, including the Chinese
-  [new workflow onboarding guide](guides/add-workflow.zh-CN.md).
+  [new workflow onboarding guide](guides/add-workflow.zh-CN.md) and
+  [legacy Skill migration guide](guides/migrate-legacy-skill.zh-CN.md).
 - [`migration/`](migration/): moving an existing script-based workflow into the
   harness.
 - [`migration/runtime-write-policy.zh-CN.md`](migration/runtime-write-policy.zh-CN.md):
