@@ -1,32 +1,121 @@
 <p align="center">
-  <img src="assets/readme-hero.png" alt="Hand-drawn engineering flow from a task contract through a compute runner and validation to a reproducible artifact" width="100%">
+  <img src="assets/readme-hero.png" alt="Infer-Forge 从任务契约经过执行与验证生成可复现证据" width="100%">
 </p>
 
-# infer-forge-harness
+# Infer-Forge Harness
 
-> **An agentic harness for bringing up, validating, and optimizing inference models across heterogeneous accelerators.**
+> 面向异构加速器的模型适配、验证与优化编排框架。
 
-**Python 3.10+** · **Real-cluster execution behind explicit authorization** · **416 unit tests green** (scheduler and run-adaptation suites deselected pending pre-existing fixes)
+Infer-Forge 不实现推理引擎，也不重新实现已经存在的模型网络。它把环境证明、模型扫描、算子缺口发现、Agent 协作、设备验证、服务回归和最终交付组织成一条**可恢复、可审计、有证据门禁**的工程流程。
 
-`infer-forge-harness` turns inference-engineering work into explicit, verifiable loops. It keeps reusable engineering rules in version control, separates them from runtime state, and requires independent validation before an outcome becomes a reusable fact. Kunlun P800 with vLLM-Kunlun is the first target stack; the current adaptation, GLM5.2-Int-W8A8, reached `DEPLOYMENT_READY` on its service proof (accuracy differential still open). Earlier bring-ups are recorded where their evidence lives — Qwen3-8B as a `validated` entry in the support matrix, the MiniMax era in git history.
+当前第一套完整能力是 **vLLM-Kunlun + Kunlun P800 的模型适配**。项目同时提供不依赖集群和 Torch 的本地端到端演练，用于验证 Graph Runner、持久化 Scheduler、Validator 和产物系统能否真正衔接。
 
-## Contents
+## 目录
 
-- [Quick start](#quick-start)
-- [What it solves](#what-it-solves)
-- [Design model](#design-model)
-- [Execution path](#execution-path)
-- [Execution model](#execution-model)
-- [Operator integration loop](#operator-integration-loop)
-- [Repository map](#repository-map)
-- [Run the checks](#run-the-checks)
-- [Reference material](#reference-material)
-- [Contributing](#contributing)
-- [Status](#status)
+- [当前支持](#当前支持)
+- [系统如何工作](#系统如何工作)
+- [快速开始：本地完整演练](#快速开始本地完整演练)
+- [运行真实模型适配](#运行真实模型适配)
+- [处理算子任务](#处理算子任务)
+- [结果与证据](#结果与证据)
+- [项目结构](#项目结构)
+- [文档导航](#文档导航)
+- [开发与验证](#开发与验证)
 
-## Quick start
+## 当前支持
 
-Use Python 3.10 or later. Local checks resolve contracts and validate artifacts without creating or changing cluster resources — plan-only is what you get by *not* passing `--execute`, not a limitation of the scaffold. Real-cluster execution (pod creation, service bring-up, in-pod probes) is wired and E2E-proven; it requires an authorized Kubernetes context, a reachable cluster, the model volume and revision, and a vLLM-Kunlun image. Those environment-specific prerequisites are intentionally not created by this repository.
+### 能力状态
+
+| 能力 | 状态 | 当前边界 |
+| --- | --- | --- |
+| 模型适配工作流 | **可用** | 覆盖 intake、环境证明、运行时漂移、能力匹配、toy bring-up、算子适配、服务与精度回归、支持矩阵 |
+| Graph Runner + 持久化 Scheduler | **可用** | Graph 负责流程和失败边，SQLite Scheduler 负责 `torch -> xpu -> integration` 任务、租约、诊断和恢复 |
+| 部署环境证明 | **可用** | 验证 Pod、运行时、代码工作树、XPU、基础模型 prefill/decode、健康检查和 chat 请求 |
+| 缺失算子适配 | **可用** | 严格 `OperatorSpec`、独立 PyTorch 参考、XPU 实现、dispatch 证明、服务集成回归 |
+| Torch shim 治理 | **可用** | 未豁免的 shim 必须进入持久化算子任务，不能只留下文件请求 |
+| 自动失败恢复 | **可用** | 支持外部 Agent 决策或规则决策；每次修复都会重新执行节点验证器 |
+| 运行产物治理 | **可用** | 外部 run root、独立 attempt、文件哈希、manifest、Journal、Task Memory 和 SQLite 状态 |
+| 本地模型适配 E2E | **必选回归** | 使用生产工作流和真实内部组件，只模拟集群、远端运行时观察和外部 Agent；结果为 `SIMULATION_PASS` |
+| 真实设备 Smoke | **可选** | 必须显式授权，复用已经证明的 Pod；普通本地测试不会连接集群 |
+| 真实模型回归 | **可选** | 必须有真实 run、已完成算子任务和固定环境身份 |
+| 性能分析/优化 | **流程骨架** | 已有 workflow 和 runner 结构，尚未注册为完整可交付场景 |
+| 上下文长度与显存优化 | **规划中** | 已有 memory budget 等基础节点，但没有完整端到端能力模板 |
+
+### 平台兼容性
+
+平台组合以 [`compatibility/matrix.yaml`](compatibility/matrix.yaml) 为准：
+
+| Hardware | Engine | Backend / Plugin | 状态 |
+| --- | --- | --- | --- |
+| Kunlun P800 | vLLM | Kunlun / vLLM-Kunlun | **supported** |
+| Kunlun P800 | SGLang | Kunlun / SGLang-Kunlun | planned |
+| NVIDIA B200 | SGLang | CUDA | planned |
+| NVIDIA B200 | vLLM | CUDA | unsupported |
+
+`planned` 表示接口或目录已经预留，不表示可以完成真实交付。未声明的平台组合会在执行前被拒绝。
+
+## 系统如何工作
+
+### 模型适配主流程
+
+```mermaid
+flowchart LR
+    A["创建 AdaptationRun"] --> B["模型身份 Intake"]
+    B --> C["部署环境证明"]
+    C --> D["运行时漂移与模型扫描"]
+    D --> E["能力匹配与缺口分类"]
+    E --> F["持久化 OperatorSpec"]
+    F --> G["Toy bring-up 与 shim 检查"]
+    G --> H["服务证明与精度基线"]
+    H --> I{"算子任务完成？"}
+    I -- 否 --> J["torch -> xpu -> integration"]
+    J --> I
+    I -- 是 --> K["重新执行最终服务与精度回归"]
+    K --> L["内存 / API / 支持矩阵"]
+    L --> M["FUNCTIONAL_READY 或 SIMULATION_PASS"]
+    D -. 失败 .-> N["诊断 / 修复 / 重试"]
+    G -. 失败 .-> N
+    K -. 失败 .-> N
+    N --> D
+```
+
+环境证明是硬门禁：真实扫描、算子发现和设备任务必须绑定同一个 Pod、代码版本和环境指纹。算子完成以后，流程会重新执行服务与精度回归，不能用替换算子之前的基线证明最终模型。
+
+### Graph 与 Scheduler 的职责
+
+```mermaid
+flowchart TB
+    W["Workflow YAML"] --> G["Graph Runner"]
+    G --> T["Task CLI / Operation"]
+    T --> V["Independent Validator"]
+    V --> J["Journal + Task Memory"]
+    J --> G
+
+    G --> B["GraphSchedulerBridge"]
+    B --> S["SQLite TaskScheduler"]
+    S --> P["PyTorch Agent"]
+    P --> X["XPU Agent"]
+    X --> I["Integration Agent"]
+    I --> S
+
+    S --> B
+    B --> R["Final service + accuracy snapshots"]
+    R --> D["Delivery receipt + manifest"]
+```
+
+- **Workflow / Graph Runner**：决定节点顺序、失败边、恢复路径和可复用事实。
+- **Task / Operation**：定义并执行一个有边界的工程目标。
+- **Scheduler**：持久化算子任务、worker 租约、attempt、事件和诊断任务。
+- **Validator**：独立判定证据是否满足任务契约；退出码 0 本身不是成功。
+- **Artifact Store**：保存输入、日志、输出、哈希和 manifest，避免重试覆盖历史。
+
+更完整的层级说明见[技术实现与抽象层级](docs/architecture/implementation-layers.zh-CN.md)。
+
+## 快速开始：本地完整演练
+
+这是第一次使用时推荐的入口。它会执行原始生产工作流，并跨多个真实 Python 进程验证 CLI、Graph、Scheduler、租约、Validator、恢复和最终交付；不会访问网络、集群或真实 XPU。
+
+### 1. 安装
 
 ```bash
 git clone https://github.com/xyDong0223/infer-forge-harness.git
@@ -35,255 +124,297 @@ cd infer-forge-harness
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install pyyaml
-python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-python -m unittest discover -s tests -p 'test_*.py' -v
-python cli/maintenance/check_repo_references.py
+python -m pip install -e '.[test]'
 ```
 
-The full unit suite uses **PyYAML** to load contracts and **PyTorch** for CPU reference arithmetic. A real P800 run additionally requires an authorized Kubernetes context, a reachable cluster, the model volume and revision, and a vLLM-Kunlun image. Those environment-specific prerequisites are intentionally not created by this repository.
+项目要求 Python 3.10+。本地 E2E 不需要安装 Torch；只有部分 CPU 数值参考测试需要额外安装 Torch。
 
-## What it solves
-
-Inference model adaptation needs more than a sequence of scripts. A reliable workflow must declare the expected input, select a constrained method, record environment-specific facts, execute only authorized platform actions, and prove that the result satisfies an independent acceptance gate.
-
-**KDP-001 — Kunlun Deployment Proof** was the first vertical slice and is now fully equipped: from a fixed Deployment Manifest, the platform prepares a Kunlun P800 environment, installs and drift-checks the vLLM-Kunlun stack, starts a service, verifies readiness and a chat completion, and produces a reproducible artifact manifest. On top of it stand the complete model-adaptation chain (intake, scan, capability match, gap classification, evaluation, toy bring-up, shim handoff, accuracy differential, support matrix) and the operator-integration loop. See [docs/architecture.md](docs/architecture.md) for the target axes (Runtime / Hardware / Capability) and the component ownership map.
-
-Cluster-side execution is intentionally not implicit. The runner stays in plan mode unless `--execute` is passed; an environment-specific Adapter and explicit authorization are required before actions reach a cluster.
-
-## Design model
-
-> **Workflow orchestrates, Task defines acceptance, Skill provides engineering method, Tool performs deterministic actions, Runner executes, Adapter isolates platform differences, Validator decides, and Catalog stores capability facts.**
-
-| Building block | Responsibility |
-| --- | --- |
-| **Workflow** | Orchestrates business stages and cross-task routing through the Task Graph. |
-| **Task** | Defines the verifiable contract, acceptance criteria, and task-local guidance. |
-| **Skill** | Encodes the engineering method, including preconditions, verification, exit conditions, and learned rules. |
-| **Tool** | Performs a deterministic action with a constrained interface. |
-| **Runner** | Coordinates the state machine, task memory, artifacts, and the next decision. |
-| **Adapter** | Isolates Kubernetes and Kunlun P800 platform differences (safety-gated writes, pod exec, file push). |
-| **Validator** | Applies an independent acceptance gate and determines the verdict. |
-| **Catalog** | Stores model, runtime/hardware, tool, and support capability facts. |
-
-The building blocks are *what* something is; three orthogonal axes — **Runtime** (vllm-kunlun today, sglang-kunlun planned), **Hardware** (kunlun-p800), and **Capability** (model adaptation today; performance and memory analysis planned) — describe *what it is about*. `docs/architecture.md` carries the full ownership map and the refactor plan that makes the axes explicit.
-
-The repository versions contracts, schemas, workflows, skills, tools, adapters, validators, tests, and documentation. Logs, traces, benchmark outputs, model caches, Pod state, and temporary worktrees belong in an external artifact root.
-
-## Execution path
-
-<p align="center">
-  <a href="docs/assets/agent-workflow.excalidraw">
-    <img src="docs/assets/agent-workflow.png" alt="Hand-drawn workflow showing task contract through deployment manifest, graph runner, tool or adapter, validator, artifact manifest, and final PASS, REWORK, NO_GO, or NEEDS_HUMAN verdict" width="100%">
-  </a>
-</p>
-
-The rendered diagram is backed by an editable [Excalidraw source](docs/assets/agent-workflow.excalidraw). It shows the main contract-to-verdict path, the persistent Task Memory loop, and the explicit outcomes that prevent unverified progress from becoming a capability fact.
-
-### Three gates before anything expensive
-
-A registry entry proves a name is mapped, not that the code behind it loads, and loading it is not the same as running it. Both gaps used to be closed by launching the model, which on a 744B checkpoint means a 700 GiB read per error message.
-
-- **MAT-027 Runtime Drift** imports every module of the installed plugin against the installed engine in one pass, and indexes the engine's own source to say where each missing symbol lives now. No model, no weights, no XPU. A version label is not evidence of a matching install: vLLM-Kunlun `v0.25.1-dev` pairs with a wheel labelled `0.25.1` whose internals are months newer, and every MLA module failed to import while the label matched.
-- **MAT-028 Toy Bring-up** derives a few-layer copy of the real config, points the engine at dummy weights, and runs prefill and one decode step. Depth, expert count and MTP shrink; every dimension that selects a kernel stays at real size, so it is the same code path. It catches what sits between "imports" and "serves" — an abstract method the engine now requires, a factory whose return shape changed, a KV-cache tensor whose rank the layer slices wrongly — and it cannot see a wrong number, because the weights are random.
-
-### The gate that turns torch shims into operator requests
-
-A torch shim standing in for a vendor kernel is the right way to keep bring-up moving — and a silent way to ship un-optimised arithmetic forever. GLM-5.2's adaptation produced three of them; post-hoc inspection showed only one (`kv_spans_from_batches`) was actually on a call path — the other two were dead on arrival because the live paths already called the vendor kernels through `torch.ops.xspeedgate_ops` — but nothing in the loop could have told the difference. The dispatch path (MAT-024) was fed only by the static gap classification, and nothing connected the place shims are born to it, so all three sat unregistered and unexamined.
-
-**MAT-029 Shim Handoff** re-enters the graph from every fix edge, nets shim candidates out of the installed plugin (the `kunlun_` prefix, docstrings that admit to replacing a triton/CUDA kernel), refuses any signal the shim registry cannot explain, and immediately dispatches one durable operator request per non-waived shim through the same `operator_lifecycle` requests MAT-026 integrates. Its first question to the adapter is the one GLM-5.2 never got asked: is this shim even wired in? A waiver is allowed — but it needs a reason someone can audit; "nobody got to it" is not one.
-
-## Execution model
-
-The graph runner keeps the Task Graph for cross-task routing and stores the current and completed Loop Blocks in Task Memory. A successful fact can be reused only when its Journal environment fingerprint matches the current execution context.
-
-### A task lifecycle
-
-<p align="center">
-  <img src="docs/assets/task-lifecycle-sequence.png" alt="Sequence diagram showing the Runner, Journal, Tool or Adapter, Validator, and Artifact root exchanging inputs, authorized actions, evidence, validation results, and reusable facts" width="100%">
-</p>
-
-Each task is a bounded evidence loop. The Runner selects the contract and method, the Tool or Adapter performs the authorized action, the Validator applies an independent acceptance gate, and the Journal receives a reusable fact only after that gate passes.
+### 2. 运行模型适配场景
 
 ```bash
-python3 cli/workflow/graph.py \
-  --subject GLM5.2-Int-W8A8 \
-  --artifact-root /path/to/artifacts \
-  --journal /path/to/journal.jsonl \
+E2E_ROOT="$(mktemp -d)"
+
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q \
+  -m local_e2e tests/e2e \
+  --basetemp "$E2E_ROOT/pytest" \
+  --junitxml "$E2E_ROOT/model-adaptation-e2e.xml"
+```
+
+该场景会验证：
+
+- 正常流程从 `create-run` 到持久化交付凭据；
+- 缺失或篡改的 worker 证据不能推进任务；
+- 中断、租约过期和新进程恢复不会重复创建任务或覆盖旧 attempt；
+- 算子完成前的服务和精度结果不能证明最终模型；
+- 模拟环境证明不能解锁真实 run；
+- 运行期间不会向源码目录写入临时产物。
+
+最终状态是 **`SIMULATION_PASS`**，只证明编排和持久化链路正确，不证明真实设备数值、真实模型精度或性能。
+
+完整场景契约和可选硬件层级见 [`tests/e2e/README.md`](tests/e2e/README.md)。
+
+## 运行真实模型适配
+
+### 前置条件
+
+- 有权限访问目标 Kubernetes 集群；
+- 模型目录已挂载并记录准确 revision；
+- vLLM-Kunlun 镜像、插件 revision 和运行时版本已固定；
+- `KUBECONFIG` 等凭据只存在于外部环境；
+- 状态数据库和所有运行产物位于源码目录之外；
+- 使用匹配模型的 deployment contract，或准备一个内容完整的实例。
+
+仓库内已有示例实例：
+
+- [`qwen3-8b-p800.yaml`](tasks/kdp-001-deployment-proof/instances/qwen3-8b-p800.yaml)
+- [`glm52-int-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/glm52-int-w8a8-p800.yaml)
+- [`minimax-m25-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/minimax-m25-w8a8-p800.yaml)
+
+示例是参数模板，不包含模型权重、凭据或私有地址。
+
+### 1. 创建或恢复 run
+
+```bash
+export INFER_FORGE_STATE_ROOT="$HOME/.local/state/infer-forge"
+
+RUN_ID="my-model-p800-001"
+STATE="$INFER_FORGE_STATE_ROOT/state.sqlite"
+RUN_ROOT="$INFER_FORGE_STATE_ROOT/runs/$RUN_ID"
+MODEL_PATH="/mounted/models/MyModel"
+MODEL_REVISION="<model-revision>"
+PLUGIN_REVISION="<vllm-kunlun-commit>"
+CONTRACT="/path/to/pinned-deployment-contract.yaml"
+
+python cli/adaptation.py --state "$STATE" create-run \
+  --run-id "$RUN_ID" \
+  --model "MyModel" \
+  --model-revision "$MODEL_REVISION" \
+  --plugin-revision "$PLUGIN_REVISION" \
+  --backend kunlun \
+  --artifact-root "$RUN_ROOT"
+```
+
+重复执行 `create-run` 会恢复同一个 `run_id`，不会创建第二个 run。已经有算子任务以后，不能静默替换环境身份或 artifact root。
+
+### 2. 先查看前置计划
+
+不传 `--execute` 时 Graph 只解析前置命令，不修改集群：
+
+```bash
+python cli/workflow/graph.py \
+  --subject "MyModel" \
+  --run-id "$RUN_ID" \
   --env hardware=P800 \
-  --env stack_commit=<commit> \
-  --resume --json
+  --env stack_commit="$PLUGIN_REVISION" \
+  --set model_path="$MODEL_PATH" \
+  --set contract_instance="$CONTRACT" \
+  --until-node kdp-001a-environment-proof \
+  --json
 ```
 
-`--resume` skips nodes whose successful artifact and state file are still available. `--json` emits a compact result for each decision with `status`, `reason_code`, `next_task`, and artifact paths. Task Memory is written to `<artifact-root>/task_memory.json` by default and can be overridden with `--loop-state`.
-
-The tool capability index in [`catalog/tool_catalog.yaml`](catalog/tool_catalog.yaml) is the first lookup for an Agent choosing a deterministic tool. Task-specific contracts and validators remain authoritative for inputs and acceptance. The Skill registry in [`catalog/skill_catalog.yaml`](catalog/skill_catalog.yaml) maps every workflow `task_type` to a method unit with its preconditions, tools, verification, exit conditions, and prior P800 adaptation rules. The graph runner records the selected Skill in Task Memory and JSON summaries.
-
-When a Task exposes a more specific fact, the resolver selects the narrower method automatically:
+### 3. 执行完整 Graph
 
 ```bash
---set issue=cache_layout       # cache-layout-validation
---set dimension=quantization   # quantization-differential
---set issue=runtime_state      # runtime-state-triage
---set issue=p800_kernel        # p800-fallback-selection
+python cli/workflow/graph.py \
+  --subject "MyModel" \
+  --scheduler-state "$STATE" \
+  --run-id "$RUN_ID" \
+  --artifact-root "$RUN_ROOT" \
+  --env hardware=P800 \
+  --env stack_commit="$PLUGIN_REVISION" \
+  --set model_path="$MODEL_PATH" \
+  --set contract_instance="$CONTRACT" \
+  --operator-report /path/to/measured-operators.json \
+  --shim-registry /path/to/shim-registry.json \
+  --execute --resume --json
 ```
 
-The generic Skill remains the fallback when no specialized fact is present. Specialized Skills are activated by observed context, not by a model name or an unverified guess.
+重要约束：
 
-### Autonomous failure recovery
+- `--operator-report` 必须包含实测 shape、dtype、layout、输入输出和语义证据；不能从算子名字猜测契约。
+- 没有可执行 gap，或者分类结果本身已经包含完整契约时，才可以省略 `--operator-report`。
+- `--shim-registry` 记录 shim 的调用证据、替代算子和豁免理由。
+- 如果复用已经准备好的 Pod，传入 `--set pod=<prepared-pod>`；Graph 会 attach 并重新证明，不会创建第二个环境。
+- 不使用 `--scheduler-state` 时仍可运行旧的 graph-only 模式，但不会生成 scheduler-backed 功能交付凭据。
 
-A new model fails by default, and the interesting part of bring-up is what
-happens next. `--auto-recover` replaces the "stop and wait for a person" step
-with a bounded decide/act/rerun loop:
+Graph 的常见退出码：
 
-```bash
-python3 cli/workflow/graph.py \
-  --subject GLM5.2-Int-W8A8 --artifact-root /path/to/artifacts \
-  --execute --auto-recover --brain agent
+| 退出码 | 含义 | 下一步 |
+| --- | --- | --- |
+| `0` | 当前请求完成 | 检查 JSON `status`；`--until-node` 完成不等于模型已交付 |
+| `2` | 输入、证据或门禁阻塞 | 查看 `reason_code`、失败 attempt 和诊断任务 |
+| `3` | `WAITING_FOR_OPERATORS` | 领取并完成持久化算子任务，然后用同一个 run 执行 `--resume` |
+
+## 处理算子任务
+
+缺口被转换成严格的 `OperatorSpec` 后，Scheduler 按阶段推进：
+
+```text
+torch reference
+  -> independent reference validation
+  -> XPU implementation/build/registration
+  -> device correctness + dispatch validation
+  -> integration + service/accuracy regression
 ```
 
-When a node fails, the runner packages the failure evidence, the repair
-history, the remaining budget, and the node's current context into a
-`decision_request.json`. A decider — an LLM agent session, a model API behind
-`--decide-command`, or anything else that can write JSON — answers with a
-`decision.json` naming one of `RETRY`, `RETRY_WITH_PARAMS`, `RUN_TRIAGE`,
-`PLACE_PATCH`, `DISPATCH_OPERATOR_TASK`, `REDISCOVER`, `ROLLBACK`, or
-`BLOCKED`. The controller executes the action, reruns the node, and only the
-node's own validator can declare the failure gone. Every failed node gets
-`--recovery-budget` attempts (default 3); a malformed decider answer is
-re-asked once and then degrades to `BLOCKED`, never to a guessed action.
-`--brain rule` swaps in a deterministic classifier for environments without a
-decider. The triage and placement steps the loop can invoke are sequenced
-executors (`cli/operators/triage.py`, `cli/operators/place_patch.py`), not
-prompts: mat-006's instrument/capture/isolate/restore sequence and mat-007's
-apply/validate/compare/reject sequence run as written, and the independent
-validators still decide their verdicts.
-
-The three correctness gates are sequenced the same way
-(`cli/validation/correctness.py`): mat-021 grades a platform kernel against
-an independent CPU reference through `cli/validation/tensor_diff.py`, mat-022 packages
-the integrated-serving-path differential into case-level evidence, and mat-023
-exercises sparse selection beyond `block_size * topk` with a shifted-block
-control. In all three, a control that cannot fail makes the verdict AMBIGUOUS,
-never a pass. With these, every task type in the workflow has an executor and
-none stops for a person.
-
-## Operator integration loop
-
-`model_adaptation` dispatches confirmed `CAPABILITY_MISSING` gaps to durable `xpu-op-gen` requests and continues model bring-up. After service and independent accuracy both pass, it freezes a baseline. Generated candidates are then tested one at a time against that baseline. A failed kernel, dispatch, service, or accuracy gate is rejected and must be rolled back before the next candidate is considered.
-
-The GLM-5.2 candidate integration recorded what the four failed swaps before a green one taught, now checks in MAT-026's contract: build the candidate **in the target environment** (a host-built wheel failed on glibc), from the **commit the operator team ships** (local HEAD had silently diverged and lost eight operators), enumerate **every operator the plugin references** against the new package, **restore side-car modules** the old wheel owned (`cocopod` vanished with the uninstall), and reconcile the **version metadata** a rebuild without git metadata breaks. The verification ladder is fixed: exact numeric equality against the shim on the target device, then worker logs proving every rank took the new path, then service health and a real completion.
-
-The lifecycle tool can also be driven directly:
+### 领取任务
 
 ```bash
-python3 cli/operators/operator_lifecycle.py integrate \
-  --baseline /path/to/baseline_manifest.json \
-  --candidate /path/to/candidate_manifest.json \
-  --subject GLM5.2-Int-W8A8 \
-  --out /path/to/integration
+python cli/adaptation.py --state "$STATE" claim \
+  --worker torch-agent-01 \
+  --stage torch \
+  --limit 1
 ```
 
-The candidate manifest must reference independent reports for `KERNEL_PASS`, `DISPATCH_CONFIRMED`, service regression, and accuracy regression. The tool does not mutate the running service; integration and rollback remain explicit Adapter actions.
+claim 返回完整任务输入、`task_id`、attempt workspace、`lease_token` 和租约截止时间。Worker 只能把正式证据写到当前 attempt 的 `output/`。
 
-## Repository map
-
-Cluster and deployment resource profiles are kept separately under
-[`config/clusters/`](config/clusters/). Add one profile per target cluster;
-keep kubeconfig contents and credentials outside the repository.
-
-The directories below are grouped by the role they play. The three target
-axes (**Runtime** / **Hardware** / **Capability**, see
-[docs/architecture.md](docs/architecture.md)) cut across the groups: the
-seams live in `adapters/` and `runtimes/`, and everything else is written
-to be axis-agnostic.
-
-### Declarative — what should happen
-
-| Directory | Responsibility |
-| --- | --- |
-| [`workflows/`](workflows/) | Orchestration graphs: topology and failure edges only, never shell commands. `model_adaptation` is fully equipped; `performance_optimization` and `test_release` are stubs until their capability work lands. |
-| [`tasks/`](tasks/) | The authority: one directory per verifiable objective — `task.yaml` defines acceptance gates and terminal states, `instances/` carries per-model parameters, `manifests/` holds pod templates. Contract changes require migration notes. |
-| [`skills/`](skills/) | Engineering method units (preconditions, rules, exit conditions), registered in [`catalog/skill_catalog.yaml`](catalog/skill_catalog.yaml); a new skill enters only after a golden task plus an independent validator pass. |
-| [`contracts/`](contracts/) | Machine-readable schemas: the task contract shape, the status state machine every state file must speak, artifact and deployment manifests. |
-| [`catalog/`](catalog/) | The fact registry: tool commands, the runtime registry, device facts ([`xpu_specs.yaml`](catalog/xpu_specs.yaml)), and the support matrix — every fact graded by the evidence attached to it. |
-| [`config/`](config/) | Cluster profiles (`clusters/`), deployment manifest templates (`manifests/`), and the runtime profile (`profiles/`) — the single source for venv / site-packages / engine module. |
-
-### Execution — what actually happens
-
-| Directory | Responsibility |
-| --- | --- |
-| [`cli/`](cli/) | Host command entry points, argument parsing, and managed-output guards. Commands delegate to task implementations or runners. |
-| [`operations/`](operations/) | Task implementations grouped by intake, discovery, deployment, validation, and operators; no command-line parsing. |
-| [`core/`](core/) | Shared contracts, target resolution, task errors, versioned resource paths, and external runtime storage. |
-| [`engine/`](engine/) | The adaptation-run scheduler, SQLite event store, operator discovery, recovery, and Skill registry; `state/` owns Journal and Task Memory. |
-| [`runners/`](runners/) | Node executors: `graph_runner` walks the task graph (failure edges route to triage with crash evidence attached); `deployment_proof` installs, replays patches, drift-prechecks, and proves readiness; triage/patch/correctness executors; `evidence` (crash-first snapshots) and `watch` (heartbeats — a silent process is never a mystery). |
-| [`tools/`](tools/) | Portable `probe/` scripts, replayable `patches/`, and `torch/` references. Host commands and task implementations no longer live here. |
-
-The [source ownership guide](docs/architecture/source-layout.zh-CN.md) defines
-where new code belongs. Removed host entry points have no compatibility wrappers;
-use the canonical `cli/` paths recorded in task contracts and the tool catalog.
-
-### Platform seams — where the target lives
-
-| Directory | Responsibility |
-| --- | --- |
-| [`adapters/`](adapters/) | The **Hardware** axis: kubectl primitives, safety gates (writes limited to owned prefixes), device probes (`xpu_smi`). Reached only through `adapters.get_hardware(name)`. |
-| [`runtimes/`](runtimes/) | The **Runtime** axis: registry plus profile per inference stack (`vllm-kunlun` today; `sglang-kunlun` is declared in the catalog, not yet implemented). Environment strings now; launch, readiness, and in-process capture grow here next. |
-
-### Judgment — what counts as done
-
-| Directory | Responsibility |
-| --- | --- |
-| [`validators/`](validators/) | Independent acceptance gates. A command's exit code 0 is never a PASS; the validator re-runs the checks and owns the verdict. |
-
-### Knowledge — why it works this way
-
-| Directory | Responsibility |
-| --- | --- |
-| [`openwiki/`](openwiki/) | Layered reference material: upstream vLLM contracts (`vllm-core/`), the Kunlun plugin (`vllm-kunlun/`), and this project's own practice (`harness/`) — including capability-axis experience homes (`harness/experiences/`) where lessons are filed by the capability they belong to, not the model that first hit them. Reference, never proof. |
-
-### Support
-
-| Directory | Responsibility |
-| --- | --- |
-| [`tests/`](tests/) | 427 unit tests plus standing guards: scripted-path resolution (every command a workflow or contract names must exist on disk), import invariants (concrete adapters/runtimes stay inside their packages), and failure-edge walks through the real graph runner. |
-| [`docs/`](docs/) | [architecture.md](docs/architecture.md) — the layer contract, the three target axes, and the component ownership map — plus contribution guidance and diagrams. |
-| [`assets/`](assets/) | README and documentation imagery. |
-
-## Run the checks
-
-Run the documented local validation commands before proposing a change:
+### 提交结果
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py' -v
+python cli/adaptation.py --state "$STATE" complete \
+  --task-id "$TASK_ID" \
+  --worker torch-agent-01 \
+  --lease-token="$LEASE_TOKEN" \
+  --result "$RESULT_JSON"
+```
+
+`--lease-token=...` 使用等号是有意的：token 可能以 `-` 开头。结果必须包含任务身份、环境指纹、证据模式、显式 PASS、全部证据文件哈希，以及不同于生产者的独立验证报告。
+
+### 报告失败
+
+```bash
+python cli/adaptation.py --state "$STATE" fail \
+  --task-id "$TASK_ID" \
+  --worker torch-agent-01 \
+  --lease-token="$LEASE_TOKEN" \
+  --error "concise original failure"
+```
+
+失败会创建持久化 diagnosis 任务，不应直接修改 SQLite 状态或静默重试。任务结果协议见 [`docs/migration/worker-results.md`](docs/migration/worker-results.md)。
+
+### 查看状态并继续
+
+```bash
+python cli/adaptation.py --state "$STATE" status \
+  --run-id "$RUN_ID" \
+  --events
+
+python cli/workflow/graph.py \
+  --subject "MyModel" \
+  --scheduler-state "$STATE" \
+  --run-id "$RUN_ID" \
+  --artifact-root "$RUN_ROOT" \
+  --env hardware=P800 \
+  --env stack_commit="$PLUGIN_REVISION" \
+  --set model_path="$MODEL_PATH" \
+  --set contract_instance="$CONTRACT" \
+  --execute --resume --json
+```
+
+恢复时必须继续使用相同的模型、revision、环境、数据库和 artifact root。
+
+## 结果与证据
+
+### 状态不能混用
+
+| 状态 | 证明了什么 | 不证明什么 |
+| --- | --- | --- |
+| `ENVIRONMENT_READY` | Pod、运行时、代码和基础设备/模型检查通过 | 目标模型已经适配完成 |
+| `DEPLOYMENT_READY` | 当前服务健康并完成真实请求 | 所有缺失算子都已经实现 |
+| `WAITING_FOR_OPERATORS` | Graph 已完成前置流程，仍有异步任务 | 功能可交付 |
+| `SIMULATION_PASS` | 本地生产流程、调度和证据门禁衔接通过 | 真实 XPU、真实模型精度、性能 |
+| `FUNCTIONAL_READY` | 真实环境、算子阶段、最终服务和精度回归均通过 | 性能目标已经达成 |
+| `BLOCKED` / `REWORK` | 证据不足、身份不一致或验证失败 | 可以忽略后继续发布 |
+
+性能是独立的后置阶段。功能就绪不能从一次 profiler 或单请求吞吐推导，性能优化也不能绕过正确性回归。
+
+### 运行目录
+
+默认状态根目录为 `$XDG_STATE_HOME/infer-forge`，未设置时使用 `~/.local/state/infer-forge`；可通过 `INFER_FORGE_STATE_ROOT` 覆盖。
+
+```text
+<state-root>/
+  state.sqlite
+  runs/<run-id>/
+    run.json
+    journal.jsonl
+    task_memory.json
+    tasks/<task-id>/attempts/000001/
+      .attempt.json
+      input/
+      scratch/
+      output/
+      logs/
+      manifest.json
+```
+
+- 每次执行和重试使用新的 attempt；
+- `scratch/` 用于调查，不进入正式证据清单；
+- `output/` 是 worker 正式结果的唯一允许位置；
+- `manifest.json` 记录文件和哈希，但不替代 Validator；
+- 源码仓库不是运行工作区，受管 CLI 会拒绝把状态或产物写入项目目录。
+
+详细规则见[运行时写入策略](docs/migration/runtime-write-policy.zh-CN.md)。
+
+## 项目结构
+
+```text
+workflows/     场景拓扑和成功/失败边
+tasks/         任务契约、验收条件和实例
+skills/        可复用工程方法
+catalog/       工具、runtime、设备和能力事实
+cli/           稳定命令入口和参数解析
+operations/    按领域组织的任务实现
+engine/        Scheduler、Graph bridge、诊断与恢复
+engine/state/  Journal 和 Task Memory
+runners/       Graph、部署证明和任务执行序列
+validators/    独立验收门禁
+adapters/      硬件与集群差异
+runtimes/      推理引擎/backend/plugin 差异
+core/          共享契约、目标解析、路径和存储
+tools/         可移植 probe、可重放 patch、Torch 参考
+tests/e2e/     能力场景及外部边界替身
+openwiki/      上游、插件和项目工程经验参考
+```
+
+新增源码前先阅读[源码归类说明](docs/architecture/source-layout.zh-CN.md)。运行时修复必须同时提供 `tools/patches/` 下幂等、可重放的源码补丁，不能只修改某个 Pod 的 site-packages。
+
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/architecture/implementation-layers.zh-CN.md`](docs/architecture/implementation-layers.zh-CN.md) | 抽象层级、每层意义、Graph/Scheduler 衔接和边界 |
+| [`docs/architecture/source-layout.zh-CN.md`](docs/architecture/source-layout.zh-CN.md) | 当前源码目录责任和依赖方向 |
+| [`tests/e2e/README.md`](tests/e2e/README.md) | 本地必选场景、真实设备 Smoke、真实模型回归及新增能力模板 |
+| [`docs/migration/runtime-write-policy.zh-CN.md`](docs/migration/runtime-write-policy.zh-CN.md) | 外部 run root、attempt、manifest 和写入约束 |
+| [`docs/migration/worker-results.md`](docs/migration/worker-results.md) | worker 结果 envelope、租约和证据要求 |
+| [`docs/guides/performance-analysis.md`](docs/guides/performance-analysis.md) | 性能阶段边界和指标解释 |
+| [`openwiki/harness/`](openwiki/harness/) | 已沉淀的模型适配、运行时漂移和算子接入经验 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 修改边界、场景要求和提交规范 |
+| [`AGENTS.md`](AGENTS.md) | Agent 执行协议和证据门禁，任务执行时以此为准 |
+
+## 开发与验证
+
+基础安装：
+
+```bash
+python -m pip install -e '.[test]'
+```
+
+按改动范围选择最小测试；提交前至少检查源码引用：
+
+```bash
 python cli/maintenance/check_repo_references.py
 ```
 
-The required [model-adaptation capability scenario](tests/e2e/README.md) exercises
-the production Graph and persistent scheduler across process boundaries, including
-evidence rejection and restart. It needs only `.[test]`, not Torch or cluster access:
+运行必选能力场景：
 
 ```bash
 python -m pytest -q -m local_e2e tests/e2e
 ```
 
-Its final receipt is explicitly `SIMULATION_PASS`, never real-device readiness.
-The local-scenarios CI job preserves logs, database state and evidence manifests.
+部分 CPU 数值测试会 import Torch；只有执行这些测试时才需要安装对应版本。真实设备测试默认跳过，不能在没有 namespace、镜像 digest、模型 revision、硬件身份和清理策略时连接共享集群。
 
-The P800 integration suite is opt-in. It must never run against a shared cluster without explicit environment configuration, including the namespace, image digest, model revision, hardware, and cleanup policy.
+---
 
-## Reference material
-
-The [`openwiki/`](openwiki/) directory is a layered reference base: [`vllm-core/`](openwiki/vllm-core/) documents the upstream vLLM hardware-backend integration contract, [`vllm-kunlun/`](openwiki/vllm-kunlun/) records the Kunlun P800 plugin implementation, and [`harness/`](openwiki/harness/) contains Infer-Forge engineering practice. Their separate provenance and evidence baselines are registered in [`openwiki/SOURCE.md`](openwiki/SOURCE.md). Use these as runtime and architecture reference material; platform contracts and executable Task definitions in this repository remain the source of truth for the Agent platform.
-
-## Contributing
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Changes should identify their affected layer, include the relevant validation evidence, and keep runtime artifacts, model weights, tokens, private endpoints, raw production traffic, and large traces outside the repository.
-
-## Status
-
-The harness runs real adaptation end to end on the P800 + vLLM-Kunlun target stack: three model bring-ups have produced durable evidence, and the current refactor track ([docs/architecture.md](docs/architecture.md), target axes) is separating the Runtime / Hardware / Capability axes so that SGLang-Kunlun support, performance, and memory-analysis capabilities can be added without touching the core.
-
-It does **not** ship model weights, provide a hosted inference endpoint, or create a turnkey multi-node production deployment. Runtime artifacts, model caches, credentials, private endpoints, raw production traffic, and large traces remain outside the repository.
+Infer-Forge 版本化的是**流程、契约、方法和验收规则**。模型权重、凭据、私有端点、Pod 状态、原始生产流量和大型 trace 始终保存在仓库之外。
