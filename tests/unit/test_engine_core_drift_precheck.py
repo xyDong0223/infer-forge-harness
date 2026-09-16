@@ -329,7 +329,7 @@ class DeploymentPrecheckWiringTest(unittest.TestCase):
             runner.engine_core_drift_precheck()
 
         self.assertEqual(ctx.exception.state, "RUNTIME_DRIFT")
-        self.assertIn("patch_vllm_kunlun_drift.py", ctx.exception.reason)
+        self.assertIn("same pod", ctx.exception.reason)
         self.assertIn("split_prefill_chunks", ctx.exception.reason)
         self.assertEqual(runner.checks["engine_core_drift"], "DRIFT")
         # The full report is evidence, persisted before the gate decision.

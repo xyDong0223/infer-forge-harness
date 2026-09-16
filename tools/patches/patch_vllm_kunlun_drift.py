@@ -29,6 +29,9 @@ would reject equivalent cherry-picks and rebuilt wheels, while version strings
 are already known to be unreliable for this stack. All anchors are checked and
 staged first; no file is written unless the complete patch set matches.
 
+Historical manual reference only: environment and service proof do not invoke
+this script. Diagnose current source before considering any of these repairs.
+
 Usage (inside the prepared pod):
     python3 patch_vllm_kunlun_drift.py
 

@@ -35,8 +35,8 @@ def validate_deployment_status(status: dict[str, Any]) -> list[str]:
 def validate_environment_status(status: dict[str, Any]) -> list[str]:
     """Acceptance for the environment half of the proof.
 
-    Deliberately says nothing about a server. What this phase delivers is a pod
-    whose stack actually imports, plus the fingerprint that says which stack —
+    Requires the configured MiniMax base-model service smoke as well as a pod
+    whose stack imports, plus the fingerprint that says which stack —
     and downstream Tasks (model scan, failure triage) run inside that pod, so the
     pod name and the fingerprint are part of the deliverable, not decoration.
     """

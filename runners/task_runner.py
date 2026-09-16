@@ -157,7 +157,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     except ValueError as error:
         return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
-    if task_type == "environment_proof":
+    if phase == "environment":
         profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
         base = profile.get("validation", {}).get("base_model", {})
         deployment = profile.get("deployment", {})
@@ -177,7 +177,23 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
             "path": base["path"],
             **base,
         }
-        contract["execution"] = {"mode": "execute", "namespace": cluster["namespace"], "resource_name": f"{user_id}-environment-base", "manifest": deployment["base_manifest"], "startup_timeout_seconds": 1800, "health_interval_seconds": 10, "health_successes_required": 3, "retain_on_failure": True, "commands": {"install": ["bash /workspace/install_vllm_kunlun.sh"], "setup": common_setup, "serve": [bundle.runtime.build_serve_command(serve_config)]}}
+        previous_execution = contract.get("execution", {})
+        contract["execution"] = {
+            "mode": "execute", "namespace": cluster["namespace"],
+            "resource_name": f"{user_id}-environment-base",
+            "manifest": deployment["base_manifest"],
+            "startup_timeout_seconds": 1800,
+            "health_interval_seconds": previous_execution.get("health_interval_seconds", 10),
+            "health_successes_required": previous_execution.get("health_successes_required", 3),
+            "retain_on_failure": True,
+            "commands": {
+                "install": ["bash /workspace/install_vllm_kunlun.sh"],
+                "setup": common_setup,
+                "serve": [bundle.runtime.build_serve_command(serve_config)],
+            },
+        }
+        if previous_execution.get("server_log"):
+            contract["execution"]["server_log"] = previous_execution["server_log"]
         contract["checks"] = {"health": {"path": "/health", "expected_status": 200}, "chat": {"path": "/v1/chat/completions", "method": "POST", "expected_non_empty_text": True, "payload": {"model": base["served_model_name"], "messages": [{"role": "user", "content": "Say hello in one short sentence."}], "max_tokens": 16}}, "backend": {"expected": "kunlun", "reject_unexpected_fallback": True}}
     contract.setdefault("context", {})["resolved_target"] = {
         "model": target.model if target else target_context.model,
@@ -236,7 +252,9 @@ def run(args) -> int:
         return 2
     if args.server_log:
         contract.setdefault("execution", {})["server_log"] = args.server_log
-    placeholders = [] if args.execute and contract.get("metadata", {}).get("task_type") == "environment_proof" else find_placeholders(contract)
+    environment_phase = (args.phase == "environment" or
+                         contract.get("metadata", {}).get("task_type") == "environment_proof")
+    placeholders = [] if args.execute and environment_phase else find_placeholders(contract)
     if placeholders:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3

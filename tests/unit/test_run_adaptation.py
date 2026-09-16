@@ -272,7 +272,7 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
     observed = {}
 
     class Scheduler:
-        store = SimpleNamespace(run=lambda run_id: SimpleNamespace(metadata={}))
+        store = SimpleNamespace(run=lambda run_id: SimpleNamespace(metadata={}, environment={}))
 
         def bind_environment(self, run_id, status, artifact_root):
             observed.update(root=artifact_root, status=status)

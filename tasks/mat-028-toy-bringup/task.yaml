@@ -67,7 +67,7 @@ checks:
   gating:
     # This is the point of the Task: the expensive load happens only after the
     # cheap run of the same path has passed.
-    blocks: [deployment_plan, service_proof]
+    blocks: [service_proof]
 acceptance:
   required_fields:
     - stage

@@ -45,6 +45,7 @@ actions:
   - run_base_prefill_decode_smoke
   - verify_base_service
   - collect_environment_fingerprint
+  - release_base_service_memory_keep_pod
 acceptance:
   pod_ready: true
   # `uv pip list` showing the package proves nothing: on 2026-09-03 vllm_kunlun
