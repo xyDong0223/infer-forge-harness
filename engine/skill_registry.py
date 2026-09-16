@@ -175,12 +175,18 @@ def execution_contract(
             f"method package {package_id!r} does not support task_type={task_type!r}"
         )
     catalog_value = Path(package["catalog"])
-    package_catalog = (
-        catalog_value.resolve()
-        if catalog_value.is_absolute()
-        else (REPO_ROOT / catalog_value).resolve()
-    )
     expected_catalog = catalog_path.resolve()
+    if catalog_value.is_absolute():
+        package_catalog = catalog_value.resolve()
+    else:
+        candidates = [
+            (REPO_ROOT / catalog_value).resolve(),
+            (skills_root.parent / catalog_value).resolve(),
+        ]
+        package_catalog = next(
+            (candidate for candidate in candidates if candidate == expected_catalog),
+            candidates[0],
+        )
     if package_catalog != expected_catalog:
         raise SkillResolutionError(
             f"method package {package_id!r} does not reference "

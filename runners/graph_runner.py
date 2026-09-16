@@ -556,6 +556,25 @@ def command_skill_contract_path(
     return str(child_packet)
 
 
+def fan_out_skill_bindings(
+    spec: dict, contracts: dict[str, Path],
+) -> list[dict]:
+    """Summarize the exact contextual Skills used by fan-out children."""
+    variable = (spec.get("fan_out") or {}).get("var")
+    if not isinstance(variable, str) or not variable:
+        return []
+    bindings = []
+    for value, path in sorted(contracts.items()):
+        contract = json.loads(path.read_text(encoding="utf-8"))
+        method = contract.get("method")
+        bindings.append({
+            "context": {variable: value},
+            "id": contract["id"],
+            "method_sha256": method["sha256"] if method else None,
+        })
+    return bindings
+
+
 def skill_routing(skill: dict, **extra) -> dict:
     """Keep Task Memory correlated with the immutable method snapshot."""
     routing = {
@@ -628,7 +647,7 @@ SUCCESS_STATES = {
 
 def reusable_fact(
     spec: dict, subject: str, journal: Path, environment: dict,
-    skill: dict | None = None,
+    skill: dict | None = None, context: dict | None = None,
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
     kind = spec.get("produces")
@@ -652,12 +671,36 @@ def reusable_fact(
     detail = hit.get("detail") or {}
     if skill is not None:
         method = skill.get("method")
-        expected = {
+        recorded = detail.get("skill")
+        expected_base = {
             "id": skill["id"],
             "method_sha256": method["sha256"] if method else None,
         }
-        if detail.get("skill") != expected:
+        if not isinstance(recorded, dict) or any(
+            recorded.get(key) != value for key, value in expected_base.items()
+        ):
             return None
+        for child in recorded.get("children", []):
+            if (
+                not isinstance(child, dict)
+                or not isinstance(child.get("context"), dict)
+                or not skill.get("task_type")
+            ):
+                return None
+            try:
+                selected = skill_registry.resolve_for_context(
+                    skill["task_type"], {**(context or {}), **child["context"]},
+                )
+                current = skill_registry.execution_contract(
+                    selected, skill["task_type"],
+                )
+            except (OSError, skill_registry.SkillResolutionError):
+                return None
+            current_method = current.get("method")
+            if child.get("id") != current["id"] or child.get("method_sha256") != (
+                current_method["sha256"] if current_method else None
+            ):
+                return None
     if detail.get("returncode", 0) != 0:
         return None
     if detail.get("status_sha256") and detail["status_sha256"] != file_digest(
@@ -799,7 +842,9 @@ def input_fact(
             skill = skill_registry.execution_contract(selected, producer_task_type)
         except (OSError, skill_registry.SkillResolutionError):
             return None
-    return reusable_fact(spec, subject, journal, environment, skill=skill)
+    return reusable_fact(
+        spec, subject, journal, environment, skill=skill, context=context,
+    )
 
 
 def file_digest(path: Path) -> str | None:
@@ -839,7 +884,8 @@ def bind_proven_environment(context: dict, environment: dict, journal: Path) -> 
 
 def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
                 environment: dict, returncode: int = 0,
-                skill: dict | None = None) -> dict:
+                skill: dict | None = None,
+                child_skills: list[dict] | None = None) -> dict:
     detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
               "returncode": returncode}
     if skill is not None:
@@ -848,6 +894,8 @@ def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
             "id": skill["id"],
             "method_sha256": method["sha256"] if method else None,
         }
+        if child_skills:
+            detail["skill"]["children"] = child_skills
     if spec["produces"] == "EnvironmentProof":
         detail["environment_fingerprint"] = proof_fingerprint(artifacts)
     return journal_module.record(
@@ -1022,6 +1070,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         record_fact(
             args.journal, spec, args.subject, attempt.output, environment,
             returncode, skill=skill,
+            child_skills=fan_out_skill_bindings(spec, command_skill_cache),
         )
         failure_evidence.artifacts.append(str(attempt.output))
         if passed:
@@ -1301,7 +1350,7 @@ def _run(args, resources: ExitStack) -> int:
         artifacts = args.artifact_root / "{attempt-output}"
         context.update(artifacts=str(artifacts), attempt="{attempt-id}")
         prior = reusable_fact(
-            spec, args.subject, args.journal, environment, skill=skill,
+            spec, args.subject, args.journal, environment, skill=skill, context=context,
         )
         if "fan_out" in spec:
             # Child methods are selected after fan-out discovery. Until their
@@ -1472,7 +1521,11 @@ def _run(args, resources: ExitStack) -> int:
             record_fact(
                 args.journal, spec, args.subject, artifacts, environment,
                 returncode, skill=skill,
+                child_skills=fan_out_skill_bindings(spec, command_skill_cache),
             )
+            child_skills = fan_out_skill_bindings(spec, command_skill_cache)
+            if child_skills:
+                memory["current_loop_block"]["routing"]["child_skills"] = child_skills
             next_block = node.get("on_success" if passed else "on_failure")
             if bridge and not passed and spec["produces"] in (
                 "OperatorTaskDispatch", "OperatorIntegration",
@@ -1542,16 +1595,24 @@ def _run(args, resources: ExitStack) -> int:
                         artifacts = Path(outcome.final_artifacts)
                         context["artifacts"] = str(artifacts)
                         state = outcome.final_state or read_state(artifacts, spec)
-                        record_fact(
-                            args.journal, spec, args.subject, artifacts,
-                            environment, skill=skill,
+                        recovered_fact = reusable_fact(
+                            spec, args.subject, args.journal, environment,
+                            skill=skill, context=context,
                         )
+                        recovered_children = (
+                            ((recovered_fact or {}).get("detail") or {})
+                            .get("skill", {})
+                            .get("children", [])
+                        )
+                        routing = skill_routing(skill, mode="recovery")
+                        if recovered_children:
+                            routing["child_skills"] = recovered_children
                         task_memory.start_block(
                             memory,
                             block_id=f"{current}:recovered:{len(memory['completed_loop_blocks']) + 1}",
                             sub_target=current,
                             exit_condition={"success_states": sorted(SUCCESS_STATES)},
-                            routing=skill_routing(skill, mode="recovery"),
+                            routing=routing,
                         )
                         task_memory.finish_block(
                             memory, state, artifacts=[str(artifacts)],

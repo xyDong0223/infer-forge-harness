@@ -180,7 +180,7 @@ class SkillRegistryTest(unittest.TestCase):
                     "kind: Skill",
                     "id: example",
                     "task_types: [model_scan]",
-                    f"catalog: {catalog}",
+                    "catalog: catalog.yaml",
                     "method_document: skills/example/SKILL.md",
                     "",
                 ]),

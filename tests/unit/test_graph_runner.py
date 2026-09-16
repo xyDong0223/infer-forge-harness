@@ -229,6 +229,11 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     assert hit["artifacts"] == str(reports[-1].parent)
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
+    facts = [
+        json.loads(line)
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(facts) == 3
 
 
 @pytest.mark.parametrize("payload", [
@@ -606,6 +611,50 @@ class FactReliabilityTest(unittest.TestCase):
             record_fact(journal, spec, "demo", root, ENVIRONMENT, skill=skill)
             self.assertIsNotNone(
                 reusable_fact(spec, "demo", journal, ENVIRONMENT, skill=skill)
+            )
+
+    def test_fan_out_fact_rejects_a_changed_child_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            spec = NODES["capability_evaluation"]
+            (root / spec["state_file"]).write_text('{"state":"EVALUATION_PASS"}')
+            base = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context(
+                    "capability_evaluation", {}
+                ),
+                "capability_evaluation",
+            )
+            contextual = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context(
+                    "capability_evaluation", {"dimension": "quantization"}
+                ),
+                "capability_evaluation",
+            )
+            binding = {
+                "context": {"dimension": "quantization"},
+                "id": contextual["id"],
+                "method_sha256": "stale",
+            }
+            record_fact(
+                journal, spec, "demo", root, ENVIRONMENT, skill=base,
+                child_skills=[binding],
+            )
+            self.assertIsNone(
+                reusable_fact(
+                    spec, "demo", journal, ENVIRONMENT, skill=base, context={},
+                )
+            )
+            method = contextual.get("method")
+            binding["method_sha256"] = method["sha256"] if method else None
+            record_fact(
+                journal, spec, "demo", root, ENVIRONMENT, skill=base,
+                child_skills=[binding],
+            )
+            self.assertIsNotNone(
+                reusable_fact(
+                    spec, "demo", journal, ENVIRONMENT, skill=base, context={},
+                )
             )
 
     def test_reuse_rejects_a_consumer_older_than_its_latest_input(self):
