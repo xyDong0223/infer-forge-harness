@@ -1082,11 +1082,14 @@ def _run(args, resources: ExitStack) -> int:
             context["_environment_pod"] = bound["pod"]
             if args.execute:
                 bridge.bind_environment(Path(bound["artifact_root"]))
-                if input_fact(args.journal, "EnvironmentProof", args.subject, environment) is None:
-                    environment_skill = skill_registry.execution_contract(
-                        skill_registry.resolve_for_context("environment_proof", context),
-                        "environment_proof",
-                    )
+                environment_skill = skill_registry.execution_contract(
+                    skill_registry.resolve_for_context("environment_proof", context),
+                    "environment_proof",
+                )
+                if reusable_fact(
+                    NODES["environment_proof"], args.subject, args.journal,
+                    environment, skill=environment_skill,
+                ) is None:
                     record_fact(
                         args.journal, NODES["environment_proof"], args.subject,
                         Path(bound["artifact_root"]), environment, skill=environment_skill,
