@@ -52,6 +52,7 @@ class PatchTransaction:
 
     def __init__(self) -> None:
         self._staged: dict[Path, str] = {}
+        self._originals: dict[Path, str | None] = {}
 
     def read(self, path: Path) -> str:
         if path in self._staged:
@@ -62,13 +63,35 @@ class PatchTransaction:
         current = self.read(path) if path.exists() or path in self._staged else None
         if current == content:
             return False
+        if path not in self._originals:
+            self._originals[path] = current
         self._staged[path] = content
         return True
 
     def commit(self) -> list[Path]:
-        for path, content in self._staged.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+        attempted: list[Path] = []
+        try:
+            for path, content in self._staged.items():
+                attempted.append(path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+        except OSError as error:
+            rollback_errors: list[str] = []
+            for path in reversed(attempted):
+                try:
+                    original = self._originals[path]
+                    if original is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_text(original, encoding="utf-8")
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{path}: {rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(
+                    f"patch commit failed ({error}); rollback also failed: "
+                    + "; ".join(rollback_errors)
+                ) from error
+            raise
         return list(self._staged)
 
 

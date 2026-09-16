@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -40,6 +41,11 @@ class _RecordingAdapter:
             args=[], returncode=code,
             stdout=f"PATCHED something (exit {code})\n", stderr=""
         )
+
+
+class _RaisingAdapter:
+    def exec(self, pod, script, timeout=None):  # noqa: ANN001
+        raise subprocess.TimeoutExpired(script, timeout)
 
 
 def make_runner(adapter) -> DeploymentProofRunner:
@@ -105,11 +111,26 @@ class RuntimePatchReplayTest(unittest.TestCase):
         with self.assertRaises(ActionFailed) as ctx:
             runner.apply_runtime_patches()
 
-        self.assertEqual(ctx.exception.state, "RUNTIME_PATCH_FAILED")
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
         evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
             encoding="utf-8"
         )
         self.assertIn("FAILED", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
+
+    def test_a_timeout_is_recorded_as_an_install_failure(self):
+        runner = make_runner(_RaisingAdapter())
+
+        with self.assertRaises(ActionFailed) as ctx:
+            runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("TimeoutExpired", evidence)
         record = next(r for r in runner.records
                       if r["action"] == "apply_runtime_patches")
         self.assertFalse(record["ok"])
@@ -155,6 +176,49 @@ class PatchScriptSemanticsTest(unittest.TestCase):
 
         self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
         self.assertEqual(second.read_text(encoding="utf-8"), "unexpected\n")
+
+    def test_transaction_rolls_back_a_mid_commit_failure(self):
+        root = Path(tempfile.mkdtemp())
+        first = root / "first.py"
+        second = root / "second.py"
+        first.write_text("old first\n", encoding="utf-8")
+        second.write_text("old second\n", encoding="utf-8")
+        transaction = self.module.PatchTransaction()
+        transaction.stage(first, "new first\n")
+        transaction.stage(second, "new second\n")
+        original_write = Path.write_text
+
+        def fail_second(path, content, encoding=None):
+            if path == second and content == "new second\n":
+                raise OSError("disk full")
+            return original_write(path, content, encoding=encoding)
+
+        with mock.patch.object(Path, "write_text", new=fail_second):
+            with self.assertRaises(OSError):
+                transaction.commit()
+
+        self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "old second\n")
+
+    def test_main_does_not_write_when_a_late_anchor_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp) / "site-packages"
+            calls = 0
+
+            def late_mismatch(path, replacements, *, transaction):
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    return None
+                transaction.stage(path, f"staged change {calls}\n")
+                return True
+
+            with mock.patch.object(self.module, "SITE", site), \
+                    mock.patch.object(self.module, "patch", side_effect=late_mismatch):
+                result = self.module.main()
+
+            self.assertEqual(result, self.module.NOT_APPLICABLE)
+            self.assertFalse(site.exists())
 
 
 if __name__ == "__main__":

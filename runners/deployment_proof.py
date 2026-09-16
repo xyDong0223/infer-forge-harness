@@ -594,7 +594,15 @@ class DeploymentProofRunner:
                 f"{self.runtime.env_prefix()}; "
                 f"{push_snippet(script, remote)} && python3 {remote}"
             )
-            result = self.adapter.exec(self.pod or "", command, timeout=600)
+            try:
+                result = self.adapter.exec(self.pod or "", command, timeout=600)
+            except (subprocess.TimeoutExpired, OSError) as error:
+                failed.append(script.name)
+                output.append(
+                    f"$ {script.name}\n>>> {script.name}: FAILED — "
+                    f"{type(error).__name__}: {error}\n"
+                )
+                continue
             output.append(f"$ {script.name} (exit {result.returncode})\n"
                           f"{result.stdout}{result.stderr}")
             if result.returncode == PATCH_NOT_APPLICABLE:
@@ -615,7 +623,7 @@ class DeploymentProofRunner:
         if failed:
             detail = f"runtime patch execution failed: {', '.join(failed)}"
             self.record("apply_runtime_patches", False, detail)
-            raise ActionFailed("RUNTIME_PATCH_FAILED", detail)
+            raise ActionFailed("INSTALL_FAILED", detail)
         detail = f"replayed {len(scripts)} patch script(s)"
         if skipped:
             detail += (f", {len(skipped)} skipped (non-matching pair): "

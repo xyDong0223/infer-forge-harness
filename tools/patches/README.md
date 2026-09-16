@@ -16,8 +16,9 @@ Hard rules, from `AGENTS.md`:
   for the next reinstall, not a repair.
 - Patch order can matter; do not assume one step's anchor exists until a prior
   step created it.
-- Probe and stage the complete patch set before writing. Exit `2` means the
-  source shape is not applicable and may be skipped; other failures are fatal.
+- Probe and stage the complete patch set before writing, and roll back earlier
+  writes if a later write fails. Exit `2` means the source shape is not
+  applicable and may be skipped; other failures are fatal.
 - Prefer content/anchor compatibility over a commit allowlist. Commit identity
   is useful evidence, but equivalent cherry-picks and rebuilt wheels can share
   the same compatible source shape.
