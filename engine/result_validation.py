@@ -85,6 +85,13 @@ def validate_result(
                 errors.append(f"relative evidence.{key} requires run metadata.artifact_root")
                 continue
             path = Path(root) / path
+        workspace_output = task.input.get("workspace", {}).get("output")
+        if workspace_output and not path.resolve().is_relative_to(Path(workspace_output).resolve()):
+            errors.append(f"evidence.{key} must belong to the claimed attempt output")
+            continue
+        if path.is_symlink() or not path.is_file():
+            errors.append(f"evidence.{key} must be a regular non-symlink file")
+            continue
         try:
             content = path.read_bytes()
         except OSError as exc:

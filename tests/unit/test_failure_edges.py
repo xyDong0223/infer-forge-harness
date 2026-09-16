@@ -120,6 +120,7 @@ class WalkHarness(unittest.TestCase):
         journal = self.tmp / "journal.jsonl"
         argv = [
             "graph_runner",
+            "--workflow", str(self.workflow),
             "--subject", "failure-edge-subject",
             "--artifact-root", str(self.tmp / "artifacts"),
             "--journal", str(journal),
@@ -165,7 +166,11 @@ class FailureRoutingTest(WalkHarness):
         # The walk followed the failure edge and the successor completed
         # successfully (a terminal success edge emits no CONTINUE summary;
         # its durable proof is the successor's own state file).
-        handoff = self.tmp / "artifacts" / "mat-020-vendor-handoff" / "handoff_status.json"
+        fact = graph_runner.journal_module.latest(
+            self.tmp / "journal.jsonl", "VendorHandoff",
+            subject="failure-edge-subject", environment={"hardware": "P800"},
+        )
+        handoff = Path(fact["artifacts"]) / "handoff_status.json"
         self.assertEqual(
             json.loads(handoff.read_text(encoding="utf-8"))["state"],
             "HANDOFF_READY")
@@ -225,12 +230,11 @@ class FailureCycleTest(WalkHarness):
         self.assertIn("mat-006-failure-triage", terminal["message"])
         # Bounded: at most 3 visits per node before the guard fires, so at
         # most 6 executions total — and every one left its crash snapshot.
-        crash_dir = self.tmp / "artifacts" / "mat-006-failure-triage" / "crash"
-        triage_crashes = list(crash_dir.glob("mat-006-failure-triage.crash.log*"))
+        attempts = self.tmp / "artifacts" / "tasks"
+        triage_crashes = list((attempts / "mat-006-failure-triage").rglob("*.crash.log*"))
         self.assertGreaterEqual(len(triage_crashes), 3)
         self.assertLessEqual(len(triage_crashes), 3)
-        handoff_crashes = list((self.tmp / "artifacts" / "mat-020-vendor-handoff"
-                                / "crash").glob("*.crash.log*"))
+        handoff_crashes = list((attempts / "mat-020-vendor-handoff").rglob("*.crash.log*"))
         self.assertLessEqual(len(handoff_crashes), 3)
 
 
@@ -243,11 +247,14 @@ class FailureEvidenceSurvivalTest(WalkHarness):
         self.stub("vendor_handoff", "HANDOFF_READY", 0)
 
         self.walk("mat-006-failure-triage")
+        root = self.tmp / "artifacts" / "tasks" / "mat-006-failure-triage"
+        original = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
         self.walk("mat-006-failure-triage")
 
-        crash_dir = self.tmp / "artifacts" / "mat-006-failure-triage" / "crash"
-        crashes = list(crash_dir.glob("mat-006-failure-triage.crash.log*"))
+        crashes = list(root.rglob("*.crash.log*"))
         self.assertEqual(len(crashes), 2)
+        for path, content in original.items():
+            self.assertEqual(path.read_bytes(), content)
         # Each snapshot still carries its own attempt's content.
         for crash in crashes:
             self.assertIn("stub traceback: boom", crash.read_text(encoding="utf-8"))

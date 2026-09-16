@@ -11,10 +11,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.storage import ensure_external
 
 
 def empty_memory(task_id: str, subject: str) -> dict[str, Any]:
@@ -49,6 +56,7 @@ def load(path: Path, task_id: str, subject: str) -> dict[str, Any]:
 
 def save(path: Path, memory: dict[str, Any]) -> None:
     """Atomically replace memory so an interrupted Agent cannot leave bad JSON."""
+    path = ensure_external(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

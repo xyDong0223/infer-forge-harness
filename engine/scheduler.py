@@ -21,6 +21,7 @@ from typing import Any
 
 from .contracts import AdaptationRun, BugReport, DiagnosticTask, OperatorSpec, OperatorTask, TaskEvent
 from .result_validation import validate_result
+from core.storage import ArtifactStore, RunPaths, WritePolicyError, default_state_root, ensure_external, safe_component
 
 
 _STAGES = ("torch", "xpu", "integration")
@@ -39,7 +40,7 @@ class EventStore:
     """SQLite-backed store for runs, operators, tasks and append-only events."""
 
     def __init__(self, path: str | Path):
-        self.path = str(path)
+        self.path = ":memory:" if str(path) == ":memory:" else str(ensure_external(path))
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False)
@@ -233,6 +234,13 @@ class TaskScheduler:
         if mode == "real":
             run.metadata["environment_required"] = True
             run.status = "WAITING_FOR_ENVIRONMENT"
+            root = run.metadata.get("artifact_root") or (
+                (Path(self.store.path).parent if self.store.path != ":memory:" else default_state_root())
+                / "runs" / safe_component(run.run_id)
+            )
+            run.metadata["artifact_root"] = str(ensure_external(root))
+        elif run.metadata.get("artifact_root"):
+            run.metadata["artifact_root"] = str(ensure_external(run.metadata["artifact_root"]))
         saved = self.store.save_run(run)
         self._emit(saved.run_id, "run_created", {"model_id": saved.model_id})
         return saved
@@ -401,6 +409,29 @@ class TaskScheduler:
             token = secrets.token_urlsafe(18)
             cur = db.execute("UPDATE tasks SET status='running',attempt=attempt+1,lease_token=?,lease_worker=?,lease_expires=?,updated_at=? WHERE task_id=? AND status='pending'", (token, worker_id, now + lease_seconds, now, row["task_id"]))
             if cur.rowcount:
+                run = self.store.run(row["run_id"])
+                if run.metadata.get("evidence_mode", "real") == "real" and not run.metadata.get("artifact_root"):
+                    base = Path(self.store.path).parent if self.store.path != ":memory:" else default_state_root()
+                    run.metadata["artifact_root"] = str(ensure_external(base / "runs" / safe_component(run.run_id)))
+                    self.store.update_run(run)
+                    self._emit(run.run_id, "run_workspace_bound", {
+                        "artifact_root": run.metadata["artifact_root"],
+                    })
+                if run.metadata.get("artifact_root"):
+                    paths = RunPaths(run.metadata["artifact_root"], run.run_id).allocate_attempt(row["task_id"])
+                    payload = json.loads(row["input_json"])
+                    payload["workspace"] = {
+                        **paths.identity, "root": str(paths.root),
+                        "input": str(paths.input), "scratch": str(paths.scratch),
+                        "output": str(paths.output), "logs": str(paths.logs),
+                    }
+                    ArtifactStore(paths.input).write_json("task.json", {
+                        "task_id": row["task_id"], "run_id": row["run_id"],
+                        "stage": row["stage"], "attempt": row["attempt"] + 1,
+                        "input": payload,
+                    })
+                    db.execute("UPDATE tasks SET input_json=? WHERE task_id=?",
+                               (json.dumps(payload, sort_keys=True), row["task_id"]))
                 claimed.append(self.store._task(db.execute("SELECT * FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()))
                 claim_events.append((row["run_id"], "task_claimed", {
                     "worker_id": worker_id, "stage": row["stage"], "attempt": row["attempt"] + 1,
@@ -484,6 +515,14 @@ class TaskScheduler:
             )
         self._owned_lease(task_id, worker_id, lease_token)
         output = {**output, "_submission": {"worker": worker_id, "attempt": task.attempt}}
+        try:
+            self._record_attempt(task, output, "PASS")
+        except (OSError, WritePolicyError) as exc:
+            return self.fail(
+                task_id, worker_id=worker_id, lease_token=lease_token,
+                error={"reason": "artifact_registration_failed", "message": str(exc)},
+            )
+        self._owned_lease(task_id, worker_id, lease_token)
         now = time.time()
         self.store.db.execute("UPDATE tasks SET status='succeeded',output_json=?,lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? WHERE task_id=?", (json.dumps(output, sort_keys=True), now, task_id))
         task.output = output
@@ -503,6 +542,18 @@ class TaskScheduler:
             next_stage = _STAGES[_STAGES.index(task.stage) + 1]
             self._ensure_next(task, next_stage)
         return self.store.get_task(task_id)
+
+    def _record_attempt(self, task: OperatorTask, output: dict[str, Any], outcome: str) -> None:
+        workspace = task.input.get("workspace")
+        if workspace is None:
+            return
+        store = ArtifactStore(workspace["root"])
+        store.write_json("result.json", output, overwrite=True)
+        manifest = store.register(identity={
+            "run_id": task.run_id, "task_id": task.task_id, "stage": task.stage,
+            "attempt": task.attempt, "attempt_id": workspace["attempt_id"],
+        }, outcome=outcome, required=["input/task.json", "result.json"])
+        output["artifact_manifest"] = str(manifest)
 
     def _ensure_next(self, task: OperatorTask, stage: str) -> None:
         next_task = OperatorTask(task_id=f"{task.run_id}:{task.operator_key}:{stage}", run_id=task.run_id,
@@ -529,6 +580,12 @@ class TaskScheduler:
         if task.output:
             report.context.setdefault("task_output", task.output)
         failure_output = {"error": report.to_dict()}
+        try:
+            self._record_attempt(task, failure_output, "FAILED")
+        except (OSError, WritePolicyError) as exc:
+            report.metadata["artifact_registration_error"] = str(exc)
+            failure_output["error"] = report.to_dict()
+        self._owned_lease(task_id, worker_id, lease_token)
         self.store.db.execute("UPDATE tasks SET status='failed',output_json=?,lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? WHERE task_id=?", (json.dumps(failure_output, sort_keys=True), time.time(), task_id))
         if task.stage != _DIAGNOSIS_STAGE:
             self._ensure_diagnosis(task, report)

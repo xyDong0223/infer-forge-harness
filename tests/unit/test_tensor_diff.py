@@ -1,4 +1,5 @@
 import math
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -7,7 +8,34 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.tensor_diff import compare, grade  # noqa: E402
+from tools.tensor_diff import compare, grade, main  # noqa: E402
+from core.storage import WritePolicyError
+import pytest
+
+
+def test_cli_registers_only_report_and_refuses_overwrite(tmp_path, monkeypatch):
+    values = tmp_path / "values.json"
+    values.write_text("[1, 2]")
+    out = tmp_path / "report.json"
+    monkeypatch.setattr(sys, "argv", [
+        "tensor_diff", "--candidate", str(values), "--reference", str(values),
+        "--out", str(out), "--max-relative-l2", "0.01",
+    ])
+    assert main() == 0
+    manifest = json.loads((tmp_path / "report.json.manifest.json").read_text())
+    assert [item["path"] for item in manifest["artifacts"]] == ["report.json"]
+    with pytest.raises(WritePolicyError, match="already owned"):
+        main()
+
+
+def test_cli_rejects_source_report_before_reading_inputs(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "tensor_diff", "--candidate", "missing", "--reference", "missing",
+        "--out", str(ROOT / "forbidden-report.json"),
+    ])
+    with pytest.raises(WritePolicyError, match="source repository"):
+        main()
+    assert not (ROOT / "forbidden-report.json").exists()
 
 
 class TensorDiffTest(unittest.TestCase):

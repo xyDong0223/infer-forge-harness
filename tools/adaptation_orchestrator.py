@@ -21,6 +21,7 @@ from engine import (  # noqa: E402
     load_report,
     operator_specs_from_report,
 )
+from core.storage import RunPaths, default_state_root, safe_component  # noqa: E402
 
 
 def _scheduler(path: Path) -> TaskScheduler:
@@ -29,7 +30,8 @@ def _scheduler(path: Path) -> TaskScheduler:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state", type=Path, required=True, help="SQLite scheduler database")
+    parser.add_argument("--state", type=Path, default=default_state_root() / "state.sqlite",
+                        help="External SQLite scheduler database")
     sub = parser.add_subparsers(dest="command", required=True)
 
     create = sub.add_parser("create-run")
@@ -81,12 +83,17 @@ def main() -> int:
     scheduler = _scheduler(args.state)
 
     if args.command == "create-run":
+        existing = scheduler.store.run(args.run_id)
+        root = (existing.metadata.get("artifact_root") if existing else None) or (
+            args.state.resolve().parent / "runs" / safe_component(args.run_id)
+        )
+        paths = RunPaths(root, args.run_id).initialize()
         result = scheduler.create_run(
             AdaptationRun(
                 run_id=args.run_id, model_id=args.model, model_revision=args.model_revision,
                 plugin_revision=args.plugin_revision, backend=args.backend,
                 status="WAITING_FOR_ENVIRONMENT",
-                metadata={"environment_required": True},
+                metadata={"environment_required": True, "artifact_root": str(paths.root)},
             )
         ).to_dict()
     elif args.command == "discover":

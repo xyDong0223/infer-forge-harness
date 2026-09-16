@@ -7,6 +7,10 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -26,9 +30,210 @@ from runners.graph_runner import (  # noqa: E402
     record_fact,
 )
 from tools.journal import query, record  # noqa: E402
+from runners import graph_runner  # noqa: E402
+from core.storage import RunPaths, WritePolicyError  # noqa: E402
 
 WORKFLOW = ROOT / "workflows" / "model_adaptation.yaml"
 ENVIRONMENT = {"hardware": "P800", "stack_commit": "3ced109a"}
+
+
+def graph_fixture(tmp_path, monkeypatch, outcomes):
+    workflow = [{"id": "intake", "task": "fixture", "on_success": "DELIVERED",
+                 "on_failure": "REWORK"}]
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: workflow)
+    monkeypatch.setattr(graph_runner, "node_task_type", lambda _: "model_intake")
+    monkeypatch.setattr(graph_runner.skill_registry, "resolve_for_context",
+                        lambda *_: {"id": "fixture", "verification": [], "tools": []})
+    calls = []
+
+    def run(command, *, log_path, **kwargs):
+        calls.append(command)
+        out = Path(command[command.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        payload = outcomes.pop(0) if outcomes else {"state": "INTAKE_READY"}
+        (out / "intake_status.json").write_text(json.dumps(payload))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("fixture console")
+        return SimpleNamespace(returncode=0, crash_log=None)
+
+    monkeypatch.setattr(graph_runner.evidence, "run_logged", run)
+    argv = ["graph", "--subject", "demo", "--artifact-root", str(tmp_path / "run"),
+            "--env", "hardware=P800", "--set", "model_path=fixture",
+            "--watch-interval", "0", "--json"]
+    return argv, calls
+
+
+def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert graph_runner.main() == 0
+    root = tmp_path / "run"
+    first = next(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
+    old = first.read_bytes()
+    assert graph_runner.main() == 0
+    reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
+    assert len(reports) == 2
+    assert first.read_bytes() == old
+    assert all((p.parent.parent / "manifest.json").is_file() for p in reports)
+    monkeypatch.setattr(sys, "argv", argv + ["--execute", "--resume"])
+    assert graph_runner.main() == 0
+    assert len(calls) == 2
+    memory = json.loads((root / "task_memory.json").read_text())
+    assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
+    assert len(list(root.glob("tasks/intake/attempts/*"))) == 2
+
+
+def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv)
+    assert graph_runner.main() == 0
+    assert not (tmp_path / "run").exists()
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert graph_runner.main() == 0
+    files = {p: p.read_bytes() for p in (tmp_path / "run").rglob("*") if p.is_file()}
+    monkeypatch.setattr(sys, "argv", argv + ["--resume"])
+    assert graph_runner.main() == 0
+    assert files == {p: p.read_bytes() for p in (tmp_path / "run").rglob("*") if p.is_file()}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("extra", [
+    ["--artifact-root", str(ROOT / "runtime-test")],
+    ["--journal", str(ROOT / "journal-test.jsonl")],
+    ["--loop-state", str(ROOT / "memory-test.json")],
+    ["--set", "artifacts=/outside"],
+    ["--set", "malformed"],
+])
+def test_graph_write_violation_blocks_before_commands(tmp_path, monkeypatch, extra):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"] + extra)
+    assert graph_runner.main() == 2
+    assert calls == []
+    assert not (tmp_path / "run").exists()
+
+
+def test_graph_default_run_root_uses_explicit_identity(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    index = argv.index("--artifact-root")
+    del argv[index:index + 2]
+    monkeypatch.setenv("INFER_FORGE_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setattr(sys, "argv", argv + ["--run-id", "explicit", "--execute"])
+    assert graph_runner.main() == 0
+    root = tmp_path / "state" / "runs" / "explicit"
+    assert json.loads((root / "run.json").read_text())["run_id"] == "explicit"
+    assert len(calls) == 1
+
+
+def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [
+        {"state": "FAILED", "reason": "readiness timeout"},
+        {"state": "FAILED", "reason": "still not valid"},
+        {"state": "INTAKE_READY"},
+    ])
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--auto-recover", "--brain", "rule", "--recovery-budget", "2",
+    ])
+    assert graph_runner.main() == 0
+    root = tmp_path / "run"
+    reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
+    assert len(calls) == len(reports) == 3
+    assert json.loads(reports[0].read_text())["reason"] == "readiness timeout"
+    assert json.loads(reports[1].read_text())["state"] == "FAILED"
+    hit = reusable_fact(NODES["model_intake"], "demo", root / "journal.jsonl",
+                        {"hardware": "P800"})
+    assert hit["artifacts"] == str(reports[-1].parent)
+    memory = json.loads((root / "task_memory.json").read_text())
+    assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
+
+
+@pytest.mark.parametrize("payload", [
+    {"state": "UNKNOWN"}, {"state": "INTAKE_READY", "validator": {"passed": False}},
+])
+def test_recovery_exit_zero_without_valid_state_stays_blocked(tmp_path, monkeypatch, payload):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [
+        {"state": "FAILED", "reason": "readiness timeout"}, payload,
+    ])
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--auto-recover", "--brain", "rule", "--recovery-budget", "1",
+    ])
+    assert graph_runner.main() == 0
+    assert len(calls) == 2
+    outcome = next((tmp_path / "run").rglob("recovery_outcome.json"))
+    assert json.loads(outcome.read_text())["status"] == "BLOCKED"
+
+
+def test_retry_cannot_redirect_output_to_source(tmp_path, monkeypatch):
+    from engine.brain import Decision
+
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [
+        {"state": "FAILED", "reason": "readiness timeout"},
+    ])
+    brain = SimpleNamespace(decide=lambda _: Decision(
+        "RETRY_WITH_PARAMS", "redirect output", params={"artifacts": str(ROOT)},
+    ))
+    monkeypatch.setattr("engine.brain.brain_from_config", lambda *_: brain)
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--auto-recover", "--recovery-budget", "1",
+    ])
+    assert graph_runner.main() == 0
+    assert len(calls) == 1
+    assert len(list((tmp_path / "run").glob("tasks/intake/attempts/*"))) == 1
+
+
+@pytest.mark.parametrize("name,content", [
+    ("run.json", "[]"),
+    ("run.json", '{"schema_version":1,"run_id":"other"}'),
+    ("task_memory.json", "[]"),
+    ("task_memory.json", "{invalid"),
+])
+def test_malformed_existing_state_blocks_before_node(tmp_path, monkeypatch, name, content):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    root = tmp_path / "run"
+    root.mkdir()
+    (root / name).write_text(content)
+    monkeypatch.setattr(sys, "argv", argv + ["--execute", "--run-id", "expected"])
+    assert graph_runner.main() == 2
+    assert calls == []
+    assert not (root / "tasks").exists()
+
+
+def test_symlinked_journal_into_source_is_blocked(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    link = tmp_path / "source"
+    link.symlink_to(ROOT, target_is_directory=True)
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--journal", str(link / "runtime-journal.jsonl"),
+    ])
+    assert graph_runner.main() == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize("item", ["../escape", "/escape", ".", "", "nested/path"])
+def test_unsafe_fanout_is_rejected_before_execution(tmp_path, item):
+    spec = {"command": ["child", "{artifacts}"],
+            "fan_out": {"list": ["list"], "var": "item", "aggregate": ["aggregate"]}}
+    with patch.object(graph_runner.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0, stdout=json.dumps([item]))):
+        with pytest.raises(WritePolicyError):
+            graph_runner.fan_out_plan(spec, {"subject": "demo"},
+                                     tmp_path / "journal", {}, tmp_path / "out")
+
+
+def test_fanout_children_have_unique_outputs_and_logs(tmp_path):
+    spec = {"command": ["child", "{item}", "{artifacts}"],
+            "fan_out": {"list": ["list"], "var": "item",
+                        "aggregate": ["aggregate", "{artifacts}"]}}
+    planned = tmp_path / "run" / "{attempt-output}"
+    with patch.object(graph_runner.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0, stdout='["one","two"]')):
+        commands = graph_runner.fan_out_plan(
+            spec, {"subject": "demo"}, tmp_path / "journal", {}, planned,
+        )
+    attempt, commands = graph_runner.allocate_commands(
+        RunPaths(tmp_path / "run"), "fanout", planned, commands,
+    )
+    assert len({target for target, _ in commands}) == 3
+    assert len({graph_runner.command_logs(attempt, target) for target, _ in commands}) == 3
 
 
 def environment_bundle(bundle: Path) -> None:

@@ -2,6 +2,7 @@ import subprocess
 import json
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -19,6 +20,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class GraphTargetGateTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.artifact_root = Path(directory.name) / "run"
+
     def run_graph(self, target):
         return subprocess.run(
             [
@@ -26,7 +32,7 @@ class GraphTargetGateTests(unittest.TestCase):
                 "runners/graph_runner.py",
                 "--subject", "demo",
                 "--target", str(ROOT / target),
-                "--artifact-root", str(ROOT / "artifacts/test-target-gate"),
+                "--artifact-root", str(self.artifact_root),
             ],
             cwd=ROOT,
             text=True,
@@ -160,7 +166,7 @@ def test_legacy_task_runner_still_blocks_planned_runtime(tmp_path, monkeypatch, 
     cluster.assert_not_called()
 
 
-def test_base_model_execution_preserves_requested_subject_and_persists_validator(tmp_path, monkeypatch):
+def test_base_model_execution_preserves_requested_subject_and_persists_validator(tmp_path, monkeypatch, capsys):
     target = load_target(write_target(tmp_path / "target.yaml"))
     contract_path = write_contract(tmp_path / "contract.yaml", task_type="environment_proof",
                                    model="base-smoke")
@@ -186,7 +192,8 @@ def test_base_model_execution_preserves_requested_subject_and_persists_validator
         runner.return_value.run.return_value = status
         assert task_runner.execute(contract, contract_path, tmp_path, target=target) == 6
     assert contract["context"]["model"]["name"] == "base-smoke"
-    persisted = json.loads((tmp_path / "status.json").read_text())
+    printed = json.loads(capsys.readouterr().out)
+    persisted = json.loads((Path(printed["artifact_root"]) / "status.json").read_text())
     assert persisted["target"]["model"] == "demo"
     assert persisted["validator"]["passed"] is False
     assert persisted["validator"]["errors"]

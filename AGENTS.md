@@ -88,6 +88,39 @@ model/service path, not only an isolated unit test.
 
 ## Mandatory execution protocol
 
+### Runtime write ownership
+
+Repository files are versioned source, not a run workspace. Managed entry points
+reject runtime output, Journal, Task Memory, and SQLite paths inside this source
+checkout. Use `INFER_FORGE_STATE_ROOT` to select an external directory; the default
+is `$XDG_STATE_HOME/infer-forge`, or `~/.local/state/infer-forge`.
+
+Each run owns a directory identified by `run.json`. Each execution or retry owns
+a fresh `tasks/<task-id>/attempts/<attempt-id>/` directory. The scheduler's claim
+payload exposes its paths in `input.workspace`:
+
+- `input/`: the dispatched task snapshot and copied execution inputs.
+- `scratch/`: temporary investigations; excluded from the formal inventory.
+- `output/`: the current attempt's candidate results and formal evidence.
+- `logs/`: execution logs.
+
+Never reuse a previous attempt as a writable output directory. Worker evidence
+must reside in the claimed attempt's `output/`, not a previous attempt or an
+arbitrary external directory. The scheduler records `result.json` and
+`manifest.json`; a manifest inventories files and hashes but does not prove
+correctness or authorize promotion. Preserve previous attempts for diagnosis.
+
+Graph/deployment/performance runners allocate managed attempts automatically.
+Ordinary standalone `tools/* --out` commands retain their exact explicit output
+directory, but require it to be external and fresh. Read the returned
+`artifact_root` or task workspace instead of predicting output paths.
+
+These are cooperating-tool controls, not an OS sandbox. Arbitrary shell commands
+can still write elsewhere. Agent-authored experiments belong in `scratch/`;
+repository changes must be intentional source changes with task/evidence context.
+Do not invent a new repository directory for every runtime investigation.
+See [runtime write ownership](docs/migration/runtime-write-policy.zh-CN.md).
+
 ### 1. Start or resume an adaptation run
 
 Use a durable state database outside temporary source files. Never create a

@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.storage import ArtifactStore, ensure_external
+
 from .contracts import OperatorSpec, OperatorTask
 from .scheduler import TaskScheduler
 
@@ -25,9 +27,7 @@ class EvidenceError(ValueError):
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return str(path)
+    return str(ArtifactStore(path.parent).write_json(path.name, payload, overwrite=True))
 
 
 def _read_json(path: str | Path) -> dict[str, Any]:
@@ -163,12 +163,15 @@ class FakeAgentHarness:
 
     def __init__(self, scheduler: TaskScheduler, artifact_dir: str | Path):
         self.scheduler = scheduler
-        self.artifact_dir = Path(artifact_dir).resolve()
+        self.artifact_dir = ensure_external(artifact_dir)
         self.calls: list[FakeAgentCall] = []
 
     def _artifact(self, task: OperatorTask, name: str) -> Path:
+        workspace = task.input.get("workspace")
+        if workspace is not None:
+            return ArtifactStore(workspace["output"]).path(f"{name}.json")
         task_key = hashlib.sha256(task.task_id.encode()).hexdigest()[:16]
-        return self.artifact_dir / task_key / str(task.attempt) / f"{name}.json"
+        return ArtifactStore(self.artifact_dir).path(f"{task_key}/{task.attempt}/{name}.json")
 
     def _identity(self, task: OperatorTask) -> dict[str, Any]:
         run = self.scheduler.store.run(task.run_id)

@@ -24,6 +24,42 @@ def _run(state: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_default_external_state_and_run_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("INFER_FORGE_STATE_ROOT", str(tmp_path / "state"))
+    command = [sys.executable, str(SCRIPT), "create-run",
+               "--run-id", "owned", "--model", "model", "--backend", "device"]
+    created = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    assert created.returncode == 0, created.stdout + created.stderr
+    run = json.loads(created.stdout)["run"]
+    assert run["metadata"]["artifact_root"] == str(tmp_path / "state/runs/owned")
+    assert (tmp_path / "state/state.sqlite").is_file()
+    assert json.loads((tmp_path / "state/runs/owned/run.json").read_text())["run_id"] == "owned"
+    resumed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    assert json.loads(resumed.stdout)["run"] == run
+
+
+def test_existing_run_cannot_be_redirected_to_another_output(tmp_path):
+    state = tmp_path / "state.sqlite"
+    args = ("create-run", "--run-id", "owned", "--model", "model", "--backend", "device")
+    created = _run(state, *args, "--artifact-root", str(tmp_path / "one"))
+    assert created.returncode == 0, created.stdout
+    redirected = _run(state, *args, "--artifact-root", str(tmp_path / "two"))
+    assert redirected.returncode != 0
+    assert "different artifact_root" in redirected.stdout
+    assert not (tmp_path / "two").exists()
+
+
+def test_in_repository_runtime_output_is_rejected(tmp_path):
+    created = _run(
+        tmp_path / "state.sqlite", "create-run", "--run-id", "owned",
+        "--model", "model", "--backend", "device",
+        "--artifact-root", str(ROOT / "artifacts/forbidden-run"),
+    )
+    assert created.returncode != 0
+    assert "overlaps the source repository" in created.stdout
+    assert not (ROOT / "artifacts/forbidden-run").exists()
+
+
 def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
     state = tmp_path / "adaptation.db"
     report = tmp_path / "gaps.json"
@@ -184,7 +220,7 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
     from types import SimpleNamespace
     from tools.run_adaptation import _parser, _run as run_command
 
-    expected = ROOT / "artifacts" / "relative-proof"
+    expected = tmp_path / "artifacts" / "relative-proof" / "tasks" / "proof" / "attempts" / "000001" / "output"
     proof = {"state": "ENVIRONMENT_READY", "artifact_root": str(expected)}
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -196,6 +232,8 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
     observed = {}
 
     class Scheduler:
+        store = SimpleNamespace(run=lambda run_id: SimpleNamespace(metadata={}))
+
         def bind_environment(self, run_id, status, artifact_root):
             observed.update(root=artifact_root, status=status)
             return SimpleNamespace(to_dict=lambda: {"run_id": run_id})

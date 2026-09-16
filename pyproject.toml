@@ -22,6 +22,7 @@ run-adaptation = "tools.run_adaptation:main"
 
 [tool.setuptools]
 packages = [
+    "core",
     "adapters",
     "adapters.kunlun_p800",
     "runtimes",

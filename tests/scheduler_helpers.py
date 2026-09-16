@@ -85,7 +85,7 @@ def _write_stage_result(
         "environment_fingerprint": environment_fingerprint,
     }
     root = (
-        Path(root).resolve()
+        Path(task.input.get("workspace", {}).get("output", root)).resolve()
         / hashlib.sha256(task.task_id.encode()).hexdigest()[:16]
         / str(task.attempt)
     )

@@ -14,10 +14,13 @@ controller never marks anything recovered by itself.
 from __future__ import annotations
 
 import subprocess
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from core.storage import ArtifactStore, RunPaths, ensure_external
 from engine.brain import (
     Brain,
     Decision,
@@ -40,11 +43,15 @@ class RecoveryOutcome:
     attempts: list[dict[str, Any]] = field(default_factory=list)
     final_state: str = ""
     last_decision: Decision | None = None
+    final_artifacts: str = ""
+    recovery_artifacts: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status, "attempts": self.attempts,
             "final_state": self.final_state,
+            "final_artifacts": self.final_artifacts,
+            "recovery_artifacts": self.recovery_artifacts,
             "last_decision": self.last_decision.to_dict() if self.last_decision else None,
         }
 
@@ -132,38 +139,50 @@ def default_actions(repo_root: Path, context: dict[str, str],
     without an executor stops the loop instead of guessing.
     """
 
-    def _run(command: list[str]) -> dict[str, Any]:
-        result = subprocess.run(command, cwd=repo_root, text=True, capture_output=True)
-        return {"returncode": result.returncode,
+    paths = RunPaths(ensure_external(run_dir) / "actions")
+
+    def _run(command: list[str], action: str) -> dict[str, Any]:
+        attempt = paths.allocate_attempt(action)
+        command += ["--out", str(attempt.output)]
+        (attempt.input / "command.json").write_text(json.dumps(command), encoding="utf-8")
+        try:
+            result = subprocess.run(command, cwd=repo_root, text=True, capture_output=True,
+                                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        except OSError as error:
+            (attempt.logs / "error.txt").write_text(str(error), encoding="utf-8")
+            ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")
+            raise
+        (attempt.logs / "stdout.log").write_text(result.stdout, encoding="utf-8")
+        (attempt.logs / "stderr.log").write_text(result.stderr, encoding="utf-8")
+        ArtifactStore(attempt.root).register(
+            identity=attempt.identity, outcome="EXECUTED" if result.returncode == 0 else "REWORK",
+        )
+        return {"returncode": result.returncode, "artifacts": str(attempt.output),
                 "stdout_tail": result.stdout.strip()[-500:],
                 "stderr_tail": result.stderr.strip()[-500:]}
 
     def run_triage(decision: Decision) -> dict[str, Any]:
-        out = run_dir / "triage"
-        command = ["python3", "runners/triage_executor.py", "--out", str(out)]
+        command = ["python3", "runners/triage_executor.py"]
         pod = context.get("pod")
         if pod:
             command += ["--pod", pod]
-        return {"artifacts": str(out), **_run(command)}
+        return _run(command, "triage")
 
     def place_patch(decision: Decision) -> dict[str, Any]:
-        out = run_dir / "patch"
-        command = ["python3", "runners/patch_executor.py", "--out", str(out)]
+        command = ["python3", "runners/patch_executor.py"]
         pod = context.get("pod")
         if pod:
             command += ["--pod", pod]
-        return {"artifacts": str(out), **_run(command)}
+        return _run(command, "patch")
 
     def dispatch_operator_task(decision: Decision) -> dict[str, Any]:
-        out = run_dir / "operator_dispatch"
         command = ["python3", "tools/operator_lifecycle.py", "dispatch",
-                   "--subject", context.get("subject", ""), "--out", str(out)]
-        return {"artifacts": str(out), **_run(command)}
+                   "--subject", context.get("subject", "")]
+        return _run(command, "operator_dispatch")
 
     def rediscover(decision: Decision) -> dict[str, Any]:
-        out = run_dir / "rediscover"
-        command = ["python3", "tools/scan_model_support.py", "--out", str(out)]
-        return {"artifacts": str(out), **_run(command)}
+        command = ["python3", "tools/scan_model_support.py"]
+        return _run(command, "rediscover")
 
     return {
         "RUN_TRIAGE": run_triage,

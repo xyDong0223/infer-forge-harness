@@ -19,6 +19,7 @@ from typing import Any
 from adapters import SafetyViolation, get_hardware, push_snippet
 from runtimes import default_runtime
 from runners import evidence
+from core.storage import ArtifactStore, WritePolicyError, ensure_external, locate_attempt
 
 KunlunP800Adapter = get_hardware()
 
@@ -87,7 +88,18 @@ class DeploymentProofRunner:
         self.contract = contract
         self.adapter = adapter
         self.repo_root = repo_root
-        self.artifact_dir = artifact_dir
+        self.artifact_dir = ensure_external(artifact_dir, repo_root)
+        self.store = ArtifactStore(self.artifact_dir)
+        attempt = locate_attempt(self.artifact_dir)
+        if attempt is not None:
+            if self.artifact_dir != attempt.output and attempt.output not in self.artifact_dir.parents:
+                raise WritePolicyError("deployment output must reside inside its attempt output/")
+            if (attempt.root / "manifest.json").exists():
+                raise WritePolicyError("deployment attempt has a formal result; use a fresh attempt")
+        elif self.artifact_dir.exists() and any(self.artifact_dir.iterdir()):
+            raise WritePolicyError("unmanaged deployment output must be fresh and empty")
+        if self.store.path("status.json").exists() or self.store.path("manifest.json").exists():
+            raise WritePolicyError("deployment output already has a formal result; use a fresh directory")
         self.workdir = workdir
         self.image = image
         self.attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -114,9 +126,7 @@ class DeploymentProofRunner:
         self.records.append({"action": action, "ok": ok, "at": now(), "detail": detail[-4000:]})
 
     def write(self, name: str, content: str) -> Path:
-        path = self.artifact_dir / name
-        path.write_text(content, encoding="utf-8")
-        return path
+        return self.store.write_text(name, content, overwrite=True)
 
     def write_unique(self, name: str, content: str) -> Path:
         """Write evidence that no later attempt can overwrite.
@@ -125,7 +135,14 @@ class DeploymentProofRunner:
         rerun of this task must not destroy the previous attempt's proof while
         "recording" its own.
         """
-        return evidence.write_unique(self.artifact_dir / name, content)
+        path = self.store.path(name)
+        suffix = 0
+        while True:
+            candidate = path if suffix == 0 else path.with_name(f"{path.name}.{suffix}")
+            try:
+                return self.store.write_text(candidate.relative_to(self.artifact_dir), content)
+            except FileExistsError:
+                suffix += 1
 
     def append(self, name: str, line: str) -> Path:
         """Append one line to an append-only journal artifact.
@@ -134,7 +151,8 @@ class DeploymentProofRunner:
         only the last beat, which is precisely the evidence gap the watch
         exists to close.
         """
-        path = self.artifact_dir / name
+        path = self.store.path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         return path
@@ -714,14 +732,37 @@ class DeploymentProofRunner:
         if reason:
             status["reason"] = reason
             self.write("diagnosis.json", json.dumps({"state": state, "error": reason, "pod": self.pod, "next_action": "DIAGNOSE_RUNTIME"}, indent=2) + "\n")
-        self.write("status.json", json.dumps(status, indent=2, ensure_ascii=False) + "\n")
         self.write("execution_records.json", json.dumps(self.records, indent=2, ensure_ascii=False) + "\n")
-        # status.json is listed too, so refresh the artifact list once written.
-        status["artifacts"] = sorted(str(p.name) for p in self.artifact_dir.iterdir())
+        attempt = locate_attempt(self.artifact_dir)
+        inventory = ArtifactStore(attempt.root if attempt else self.artifact_dir)
+        identity = attempt.identity if attempt else {"task_id": status["task_id"], "attempt_id": self.attempt_id}
+        status["manifest_path"] = str(inventory.root / "manifest.json")
+        status["artifacts"] = sorted({
+            *(p.name for p in self.artifact_dir.iterdir()), "status.json",
+        })
+        self.store.write_json("status.json", status)
+        try:
+            declared_paths = [self.store.path(name) for name in status["artifacts"]]
+            inventory.register(
+                identity=identity, outcome=state,
+                required=[
+                    path.relative_to(inventory.root).as_posix()
+                    for path in declared_paths if not path.is_dir()
+                ],
+            )
+        except (ValueError, OSError) as error:
+            status.update(state="BLOCKED", reason=str(error), manifest_path=None)
+            try:
+                self.store.write_json("status.json", status, overwrite=True)
+            except (ValueError, OSError) as publication_error:
+                raise error from publication_error
+            raise
         return status
 
     # ---- main loop --------------------------------------------------------
     def run(self) -> dict[str, Any]:
+        if self.store.path("status.json").exists():
+            raise WritePolicyError("deployment output already has a formal result; use a fresh directory")
         try:
             if self.phase == "service" and not self.attach_pod:
                 # Checked before anything is created: preparing a fresh pod here

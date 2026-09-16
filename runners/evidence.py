@@ -21,10 +21,37 @@ file (``name.1``, ``name.2``, ...); an existing file is never replaced.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
+
+from core.storage import ensure_external
+
+
+def task_status(result: subprocess.CompletedProcess[str]) -> dict:
+    """Consume the task runner's actual output location, never its requested root."""
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError as error:
+        raise ValueError(f"task runner returned no JSON status: {result.stderr.strip()[-500:]}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("task runner status must be an object")
+    if payload.get("artifact_root"):
+        path = ensure_external(payload["artifact_root"]) / "status.json"
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        if persisted != payload:
+            raise ValueError(f"task runner status differs from persisted evidence: {path}")
+    elif result.returncode == 0:
+        raise ValueError("successful task runner result has no artifact_root")
+    if result.returncode != 0:
+        payload = {
+            **payload, "state": "BLOCKED",
+            "reason": payload.get("reason") or payload.get("message")
+            or result.stderr.strip()[-500:] or f"task runner exited {result.returncode}",
+        }
+    return payload
 
 
 def unique_path(path: Path) -> Path:
@@ -45,7 +72,7 @@ def write_unique(path: Path, content: str) -> Path:
     ``write`` replaces; this snapshots. Crash evidence named through here
     survives every rerun that writes the same base name again.
     """
-    target = unique_path(path)
+    target = unique_path(ensure_external(path))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return target
@@ -108,8 +135,9 @@ def run_logged(
     quiet, so "still running" is never a silent state.
     """
     command = list(command)
+    log_path = ensure_external(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    environment = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    environment = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     process = subprocess.Popen(
         command,
         cwd=str(cwd),

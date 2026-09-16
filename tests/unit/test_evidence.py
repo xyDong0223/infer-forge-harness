@@ -10,6 +10,7 @@ snapshotted before its log can be rewritten.
 from __future__ import annotations
 
 import subprocess
+import json
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from runners import evidence  # noqa: E402
 from runners.triage_executor import PodOps  # noqa: E402
+from runners.patch_executor import PatchOps  # noqa: E402
 
 
 class UniquePathTest(unittest.TestCase):
@@ -113,22 +115,47 @@ class TriageRerunPathSeparationTest(unittest.TestCase):
 
         def fake_run(command, cwd=None, text=None, capture_output=None):
             captured["command"] = list(command)
-
-            class Result:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-
-            return Result()
+            output = self.tmp / "service_rerun" / "tasks" / "proof" / "attempts" / "000001" / "output"
+            output.mkdir(parents=True)
+            payload = {"state": "DEPLOYMENT_READY", "artifact_root": str(output)}
+            (output / "status.json").write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
         with mock.patch.object(subprocess, "run", fake_run):
-            PodOps(adapter=None).rerun_service(
+            status = PodOps(adapter=None).rerun_service(
                 "pod-x", Path("/nonexistent/contract.yaml"), self.tmp / "service_rerun"
             )
+        self.assertEqual(status["state"], "DEPLOYMENT_READY")
+        self.assertNotEqual(Path(status["artifact_root"]), self.tmp / "service_rerun")
         command = captured["command"]
         flag = command.index("--server-log")
         self.assertTrue(command[flag + 1].startswith("/workspace/server.log.rerun-"))
         self.assertNotEqual(command[flag + 1], "/workspace/server.log")
+
+    def test_patch_rerun_consumes_actual_output_and_rejects_failed_exit(self):
+        output = self.tmp / "actual-output"
+        output.mkdir()
+        payload = {"state": "DEPLOYMENT_READY", "artifact_root": str(output)}
+        (output / "status.json").write_text(json.dumps(payload), encoding="utf-8")
+        for returncode, expected in ((0, "DEPLOYMENT_READY"), (6, "BLOCKED")):
+            result = subprocess.CompletedProcess([], returncode, json.dumps(payload), "failed validator")
+            with mock.patch.object(subprocess, "run", return_value=result):
+                status = PatchOps(adapter=None).rerun_service(
+                    "pod-x", Path("/nonexistent/contract.yaml"), self.tmp / "requested",
+                )
+            self.assertEqual(status["state"], expected)
+            self.assertEqual(status["artifact_root"], str(output))
+
+    def test_task_status_requires_persisted_matching_output(self):
+        for stdout in ("", "{}", "[]"):
+            with self.assertRaises(ValueError):
+                evidence.task_status(subprocess.CompletedProcess([], 0, stdout, ""))
+        output = self.tmp / "mismatch"
+        output.mkdir()
+        payload = {"state": "DEPLOYMENT_READY", "artifact_root": str(output)}
+        (output / "status.json").write_text('{"state":"BLOCKED"}', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            evidence.task_status(subprocess.CompletedProcess([], 0, json.dumps(payload), ""))
 
     def test_the_rerun_log_derives_from_the_contract_instance(self):
         contract = self.tmp / "kdp_instance.yaml"

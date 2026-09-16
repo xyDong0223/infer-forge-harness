@@ -18,11 +18,14 @@ brain must never translate into an unvalidated cluster action.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
+
+from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external
 
 # Aligned with the Diagnosis Agent contract in AGENTS.md. Each value maps to an
 # executor the recovery controller owns; a Brain cannot invent new ones.
@@ -115,15 +118,17 @@ class Decision:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Decision":
         """Parse and enforce the contract. Raises BrainError on violation."""
+        if not isinstance(payload, dict):
+            raise BrainError("decision must be an object")
         action = payload.get("next_action")
-        if action not in NEXT_ACTIONS:
+        if not isinstance(action, str) or action not in NEXT_ACTIONS:
             raise BrainError(
                 f"next_action {action!r} is not one of {sorted(NEXT_ACTIONS)}"
             )
         diagnosis = payload.get("diagnosis")
         if not isinstance(diagnosis, str) or not diagnosis.strip():
             raise BrainError("diagnosis must be a non-empty string")
-        params = payload.get("params") or {}
+        params = payload.get("params", {})
         if not isinstance(params, dict):
             raise BrainError("params must be an object")
         confidence = payload.get("confidence", 0.0)
@@ -168,27 +173,39 @@ class AgentBrain:
 
     def __init__(self, workdir: Path, command: list[str] | None = None,
                  poll_seconds: float = 2.0, timeout_seconds: float = 600.0):
-        self.workdir = Path(workdir)
+        self.workdir = ensure_external(workdir)
         self.command = command
         self.poll_seconds = poll_seconds
         self.timeout_seconds = timeout_seconds
 
     def decide(self, request: DecisionRequest) -> Decision:
-        self.workdir.mkdir(parents=True, exist_ok=True)
-        request_path = self.workdir / self.REQUEST_NAME
-        response_path = self.workdir / self.RESPONSE_NAME
+        paths = RunPaths(self.workdir)
         for attempt in range(2):
+            workspace = paths.allocate_attempt("decision")
+            request_path = workspace.input / self.REQUEST_NAME
+            response_path = workspace.output / self.RESPONSE_NAME
             request_path.write_text(
                 json.dumps(request.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            response_path.unlink(missing_ok=True)
+            store = ArtifactStore(workspace.root)
             if self.command:
-                result = subprocess.run(
-                    self.command + [str(request_path), str(response_path)],
-                    text=True, capture_output=True, timeout=self.timeout_seconds,
-                )
+                try:
+                    result = subprocess.run(
+                        self.command + [str(request_path), str(response_path)],
+                        text=True, capture_output=True, timeout=self.timeout_seconds,
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                    )
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    (workspace.logs / "error.txt").write_text(str(error), encoding="utf-8")
+                    store.register(identity=workspace.identity, outcome="BLOCKED")
+                    if attempt == 0:
+                        continue
+                    return Decision.blocked(f"decider command failed: {error}")
+                (workspace.logs / "stdout.log").write_text(result.stdout, encoding="utf-8")
+                (workspace.logs / "stderr.log").write_text(result.stderr, encoding="utf-8")
                 if result.returncode != 0:
+                    store.register(identity=workspace.identity, outcome="BLOCKED")
                     if attempt == 0:
                         continue
                     return Decision.blocked(
@@ -196,13 +213,20 @@ class AgentBrain:
                     )
             else:
                 if not self._await(response_path):
+                    store.register(identity=workspace.identity, outcome="BLOCKED")
                     return Decision.blocked(
                         f"no decision.json appeared within {self.timeout_seconds}s"
                     )
             try:
+                store.path(response_path.relative_to(workspace.root))
                 payload = json.loads(response_path.read_text(encoding="utf-8"))
-                return Decision.from_dict(payload)
+                decision = Decision.from_dict(payload)
+                store.register(identity=workspace.identity, outcome=decision.next_action)
+                return decision
+            except WritePolicyError:
+                raise
             except (OSError, ValueError, BrainError) as error:
+                store.register(identity=workspace.identity, outcome="BLOCKED")
                 if attempt == 0:
                     continue
                 return Decision.blocked(f"decider response rejected: {error}")

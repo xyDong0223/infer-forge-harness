@@ -15,10 +15,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -29,6 +32,7 @@ from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
 from core.facade import resolve_adapters  # noqa: E402
+from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external  # noqa: E402
 from core.target import (  # noqa: E402
     bind_subject, canonical_hardware, contract_target, load_target, require_supported,
     target_environment,
@@ -297,8 +301,17 @@ class Unresolved(RuntimeError):
 def load_workflow(path: Path) -> list[dict]:
     import yaml
 
-    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return workflow["spec"]["nodes"]
+    try:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        nodes = workflow["spec"]["nodes"]
+    except (yaml.YAMLError, KeyError, TypeError) as error:
+        raise ValueError("workflow must declare spec.nodes") from error
+    if (not isinstance(nodes, list) or not nodes or not all(
+        isinstance(node, dict) and isinstance(node.get("id"), str) and node["id"].strip()
+        for node in nodes
+    ) or len({node["id"] for node in nodes}) != len(nodes)):
+        raise ValueError("workflow nodes must have unique nonempty identities")
+    return nodes
 
 
 def node_task_type(node: dict) -> str | None:
@@ -359,14 +372,21 @@ def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -
     """
     command = resolve(spec, context, journal, environment,
                       command=spec["fan_out"]["list"], include_optional=False)
-    result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True)
+    result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True,
+                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     if result.returncode != 0:
         raise Unresolved(
             f"the fan-out list command failed: {' '.join(command)}: {result.stderr.strip()[-300:]}"
         )
     for line in reversed(result.stdout.strip().splitlines()):
         if line.startswith("["):
-            return json.loads(line)
+            items = json.loads(line)
+            if (not isinstance(items, list) or not all(
+                isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", item)
+                for item in items
+            ) or len(set(items)) != len(items)):
+                raise WritePolicyError("fan-out items must be unique safe directory names")
+            return items
     raise Unresolved(f"the fan-out list command printed no JSON array: {' '.join(command)}")
 
 
@@ -413,6 +433,55 @@ def read_status(artifacts: Path, spec: dict) -> dict:
 def read_state(artifacts: Path, spec: dict) -> str:
     state = read_status(artifacts, spec).get("state")
     return state if isinstance(state, str) else "UNKNOWN"
+
+
+def node_passed(artifacts: Path, spec: dict, returncode: int) -> bool:
+    payload = read_status(artifacts, spec)
+    validator = payload.get("validator")
+    return (
+        returncode == 0 and read_state(artifacts, spec) in SUCCESS_STATES
+        and (validator is None or isinstance(validator, dict)
+             and validator.get("passed") is True and not validator.get("errors"))
+    )
+
+
+def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
+                      commands: list[tuple[Path, list[str]]]):
+    """Bind a read-only plan to a fresh workspace only when it will execute."""
+    attempt = paths.allocate_attempt(node)
+    resolved = [
+        (attempt.output / target.relative_to(artifacts),
+         [part.replace(str(artifacts), str(attempt.output)).replace(
+             "{attempt-id}", attempt.identity["attempt_id"]) for part in command])
+        for target, command in commands
+    ]
+    (attempt.input / "commands.json").write_text(
+        json.dumps([command for _, command in resolved], indent=2), encoding="utf-8",
+    )
+    return attempt, resolved
+
+
+def command_logs(attempt, target: Path) -> Path:
+    relative = target.relative_to(attempt.output)
+    # The aggregate and every child have distinct log directories.
+    return attempt.logs / ("aggregate" if relative == Path(".") else "children") / relative
+
+
+def validate_run_identity(paths: RunPaths) -> None:
+    """Check existing ownership without turning a plan into a write."""
+    marker = paths.root / "run.json"
+    if marker.is_symlink():
+        raise WritePolicyError("run identity cannot be a symlink")
+    if not marker.exists():
+        return
+    try:
+        identity = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise WritePolicyError(f"cannot read run identity: {marker}") from error
+    if (not isinstance(identity, dict) or identity.get("schema_version") != 1
+            or not isinstance(identity.get("run_id"), str) or not identity["run_id"].strip()
+            or paths.run_id is not None and identity["run_id"] != paths.run_id):
+        raise WritePolicyError(f"run identity conflicts with {marker}")
 
 
 SUCCESS_STATES = {
@@ -581,6 +650,8 @@ def emit_summary(summary: dict, json_output: bool) -> None:
             f"[summary] {summary['status']} node={summary.get('node')} "
             f"next={summary.get('next_task') or '-'}"
         )
+        if summary.get("message"):
+            print(summary["message"])
 
 
 def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
@@ -603,8 +674,10 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     from engine.brain import DecisionRequest, FailureEvidence, brain_from_config
     from engine.recovery import RecoveryController, default_actions
 
-    run_dir = args.artifact_root / "recovery" / node
-    evidence = FailureEvidence(
+    paths = getattr(args, "run_paths", None) or RunPaths(args.artifact_root)
+    recovery_attempt = paths.allocate_attempt(f"{node}:recovery")
+    run_dir = recovery_attempt.output
+    failure_evidence = FailureEvidence(
         node=node, state=state,
         reason=_failure_reason(artifacts, spec, state),
         artifacts=[str(artifacts)], environment=dict(environment),
@@ -612,7 +685,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     request = DecisionRequest(
         model=args.subject,
         backend=environment.get("hardware", "p800"),
-        failure=evidence, attempts_remaining=args.recovery_budget,
+        failure=failure_evidence, attempts_remaining=args.recovery_budget,
         context={k: str(v) for k, v in context.items()},
     )
     brain = brain_from_config(
@@ -621,14 +694,26 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         run_dir,
     )
 
+    final_artifacts = ""
+
     def rerun(decision) -> tuple[bool, str]:
+        nonlocal final_artifacts
+        protected = {"artifacts", "attempt", "subject", "target_file", "contract_instance",
+                     "_environment_pod", "environment_text", "run_id", "journal", "loop_state"}
+        if any(key not in context or key in protected for key in decision.params):
+            return False, "BLOCKED: retry cannot override managed paths or undeclared context"
+        planned = paths.root / "{attempt-output}"
         merged = {**context, **{str(key): str(value)
-                                for key, value in decision.params.items()}}
+                                for key, value in decision.params.items()},
+                  "artifacts": str(planned), "attempt": "{attempt-id}"}
         try:
             if "fan_out" in spec:
-                commands = fan_out_plan(spec, merged, args.journal, environment, artifacts)
+                commands = fan_out_plan(spec, merged, args.journal, environment, planned)
             else:
-                commands = [(artifacts, resolve(spec, merged, args.journal, environment))]
+                commands = [(planned, resolve(spec, merged, args.journal, environment))]
+            attempt, commands = allocate_commands(paths, node, planned, commands)
+        except WritePolicyError:
+            raise
         except (Unresolved, KeyError, ValueError, OSError) as error:
             return False, f"UNRESOLVED: {error}"
         returncode = 0
@@ -638,32 +723,51 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             # Same crash-first contract as the main walk: a recovery rerun
             # writes the live node_console.log, and a dead child is snapshotted
             # before the next attempt can replace it.
-            watch = watch_module.LogWatch(
-                f"{node}:recovery", target / "node_console.log",
-                target / "watch_journal.jsonl", interval=30.0,
-            ).start()
-            result = evidence.run_logged(
-                command, cwd=REPO_ROOT, log_path=target / "node_console.log",
-                crash_tag=f"{node}:recovery", watch=watch,
-            )
-            watch.stop(f"exit {result.returncode}")
+            logs = command_logs(attempt, target)
+            watch = node_watch(args, node, logs)
+            try:
+                result = evidence.run_logged(
+                    command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
+                    crash_tag="recovery", watch=watch,
+                )
+            except (OSError, ValueError):
+                ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")
+                raise
+            finally:
+                if watch is not None:
+                    watch.stop("rerun finished")
             returncode = returncode or result.returncode
-        new_state = read_state(artifacts, spec)
-        return returncode == 0, new_state
+        new_state = read_state(attempt.output, spec)
+        passed = node_passed(attempt.output, spec, returncode)
+        ArtifactStore(attempt.root).register(
+            identity=attempt.identity, outcome=new_state,
+            required=(f"output/{spec['state_file']}",) if passed else (),
+        )
+        record_fact(args.journal, spec, args.subject, attempt.output, environment, returncode)
+        failure_evidence.artifacts.append(str(attempt.output))
+        if passed:
+            final_artifacts = str(attempt.output)
+        return passed, new_state
 
     actions = default_actions(
         REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir
     )
     controller = RecoveryController(brain, rerun, actions, budget=args.recovery_budget)
     outcome = controller.recover(request)
+    outcome.final_artifacts = final_artifacts
+    outcome.recovery_artifacts = str(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "recovery_outcome.json").write_text(
         json.dumps(outcome.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    ArtifactStore(recovery_attempt.root).register(
+        identity=recovery_attempt.identity, outcome=outcome.status,
+        required=("output/recovery_outcome.json",),
+    )
     return outcome
 
 
-def main() -> int:
+def _main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow", type=Path, default=REPO_ROOT / "workflows" / "model_adaptation.yaml")
     parser.add_argument("--subject", required=True, help="e.g. Qwen3-8B")
@@ -672,8 +776,10 @@ def main() -> int:
         type=Path,
         help="platform target YAML; applies the compatibility gate before planning",
     )
-    parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--journal", type=Path, default=journal_module.DEFAULT_JOURNAL)
+    parser.add_argument("--artifact-root", type=Path,
+                        help="external run root override; otherwise --run-id is required")
+    parser.add_argument("--run-id", help="explicit durable run identity")
+    parser.add_argument("--journal", type=Path)
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                         help="environment fingerprint; facts are only reused within it")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -709,8 +815,33 @@ def main() -> int:
                              "observable)")
     args = parser.parse_args()
 
-    environment = dict(pair.split("=", 1) for pair in args.env)
-    context = dict(pair.split("=", 1) for pair in args.set)
+    try:
+        if args.artifact_root is None and not args.run_id:
+            raise WritePolicyError("provide --run-id or an external --artifact-root")
+        args.run_paths = (RunPaths(args.artifact_root, args.run_id) if args.artifact_root
+                          else RunPaths.for_run(args.run_id))
+        validate_run_identity(args.run_paths)
+        args.artifact_root = args.run_paths.root
+        args.journal = ensure_external(args.journal or args.run_paths.journal)
+        args.loop_state = ensure_external(args.loop_state or args.run_paths.memory)
+        for path in (args.journal, args.loop_state):
+            if path.exists() and not path.is_file():
+                raise WritePolicyError(f"coordination state must be a file: {path}")
+            if path == args.artifact_root / "run.json":
+                raise WritePolicyError("coordination state cannot overwrite run identity")
+        if args.journal == args.loop_state:
+            raise WritePolicyError("Journal and Task Memory must have distinct paths")
+        environment = dict(pair.split("=", 1) for pair in args.env)
+        context = dict(pair.split("=", 1) for pair in args.set)
+        if any(key in context for key in ("artifacts", "attempt", "run_id", "journal",
+                                          "loop_state", "subject")):
+            raise WritePolicyError("--set cannot override managed identity or write paths")
+        if args.recovery_budget < 1:
+            raise ValueError("recovery budget must be at least 1")
+    except (ValueError, OSError) as error:
+        emit_summary({"status": "BLOCKED", "reason_code": "WRITE_POLICY",
+                      "message": str(error)}, args.json)
+        return 2
     try:
         requested_target = load_target(args.target) if args.target else None
         if requested_target is not None:
@@ -734,7 +865,7 @@ def main() -> int:
         emit_summary({"status": "BLOCKED", "reason_code": "TARGET_MISMATCH",
                       "message": str(error)}, args.json)
         return 2
-    context.update(subject=args.subject, attempt="graph",
+    context.update(subject=args.subject, attempt="{attempt-id}",
                    environment_text=",".join(f"{k}={v}" for k, v in sorted(environment.items())))
     try:
         bind_proven_environment(context, environment, args.journal)
@@ -743,7 +874,7 @@ def main() -> int:
                       "message": str(error)}, args.json)
         return 2
     context["environment_text"] = ",".join(f"{k}={v}" for k, v in sorted(environment.items()))
-    loop_state = args.loop_state or args.artifact_root / "task_memory.json"
+    loop_state = args.loop_state
     memory = task_memory.load(loop_state, args.workflow.stem, args.subject)
 
     nodes = load_workflow(args.workflow)
@@ -810,8 +941,8 @@ def main() -> int:
             )
             break
 
-        artifacts = args.artifact_root / current
-        context["artifacts"] = str(artifacts)
+        artifacts = args.artifact_root / "{attempt-output}"
+        context.update(artifacts=str(artifacts), attempt="{attempt-id}")
         prior = reusable_fact(spec, args.subject, args.journal, environment)
         if args.resume and prior:
             next_task = node.get("on_success")
@@ -830,7 +961,8 @@ def main() -> int:
                 artifacts=[prior["artifacts"]],
                 next_block={"sub_target": next_task},
             )
-            task_memory.save(loop_state, memory)
+            if args.execute:
+                task_memory.save(loop_state, memory)
             emit_summary(
                 {"status": "REUSED", "node": current, "next_task": next_task,
                  "reason_code": "SUCCESSFUL_FACT_REUSED",
@@ -847,6 +979,8 @@ def main() -> int:
                 commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
             else:
                 commands = [(artifacts, resolve(spec, context, args.journal, environment))]
+        except WritePolicyError:
+            raise
         except (Unresolved, KeyError, ValueError, OSError) as error:
             print(f"NEEDS_HUMAN: {current}: {error}")
             emit_summary(
@@ -859,6 +993,11 @@ def main() -> int:
         returncode = 0
         crash_logs: list[str] = []
         if args.execute:
+            attempt, commands = allocate_commands(
+                args.run_paths, current, artifacts, commands,
+            )
+            artifacts = attempt.output
+            context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
             task_memory.start_block(
                 memory,
                 block_id=f"{current}:{len(memory['completed_loop_blocks']) + 1}",
@@ -883,33 +1022,46 @@ def main() -> int:
                 # edge reruns anything into this directory. Before this, a
                 # crashing node's traceback scrolled past unrecorded (run
                 # glm52-int-w8a8-p800-001, 2026-09-14).
-                watch = node_watch(args, current, target)
-                result = evidence.run_logged(
-                    command, cwd=REPO_ROOT, log_path=target / "node_console.log",
-                    crash_tag=current, watch=watch,
-                )
-                if watch is not None:
-                    watch.stop(f"exit {result.returncode}")
+                logs = command_logs(attempt, target)
+                watch = node_watch(args, current, logs)
+                try:
+                    result = evidence.run_logged(
+                        command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
+                        crash_tag="node", watch=watch,
+                    )
+                except (OSError, ValueError):
+                    ArtifactStore(attempt.root).register(
+                        identity=attempt.identity, outcome="BLOCKED",
+                    )
+                    raise
+                finally:
+                    if watch is not None:
+                        watch.stop("node finished")
                 state = read_state(target, spec)
                 print(f"[state] {current}: {state} (exit {result.returncode})")
                 if result.crash_log:
                     print(f"[crash] {current}: evidence snapshotted to {result.crash_log}")
                     crash_logs.append(str(result.crash_log))
                 returncode = returncode or result.returncode
-            record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
             state = read_state(artifacts, spec)
+            passed = node_passed(artifacts, spec, returncode)
+            ArtifactStore(attempt.root).register(
+                identity=attempt.identity, outcome=state,
+                required=(f"output/{spec['state_file']}",) if passed else (),
+            )
+            record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
             task_memory.finish_block(
                 memory,
                 state,
                 artifacts=[str(artifacts)],
-                next_block={"sub_target": node.get("on_failure" if returncode else "on_success")},
+                next_block={"sub_target": node.get("on_success" if passed else "on_failure")},
             )
             task_memory.save(loop_state, memory)
             # Exit code 0 is not success either: the node's own state file
             # is the contract, and a state outside SUCCESS_STATES riding the
             # success edge would skip triage for a failure that already
             # happened — the failure edge must be selected by EITHER signal.
-            state_mismatch = returncode == 0 and state not in SUCCESS_STATES
+            state_mismatch = returncode == 0 and not passed
             if returncode != 0 or state_mismatch:
                 reason_code = "STATE_NOT_SUCCESS" if state_mismatch else "COMMAND_FAILED"
                 recovered = False
@@ -920,15 +1072,29 @@ def main() -> int:
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
+                        artifacts = Path(outcome.final_artifacts)
+                        context["artifacts"] = str(artifacts)
                         state = outcome.final_state or read_state(artifacts, spec)
                         record_fact(args.journal, spec, args.subject, artifacts, environment)
+                        task_memory.start_block(
+                            memory,
+                            block_id=f"{current}:recovered:{len(memory['completed_loop_blocks']) + 1}",
+                            sub_target=current,
+                            exit_condition={"success_states": sorted(SUCCESS_STATES)},
+                            routing={"mode": "recovery", "skill": skill["id"]},
+                        )
+                        task_memory.finish_block(
+                            memory, state, artifacts=[str(artifacts)],
+                            next_block={"sub_target": node.get("on_success")},
+                        )
+                        task_memory.save(loop_state, memory)
                         emit_summary(
                             {"status": "RECOVERED", "node": current,
                              "next_task": node.get("on_success"),
                              "reason_code": "AUTO_RECOVERY",
                              "state": state, "skill": skill["id"],
                              "artifacts": [str(artifacts)],
-                             "recovery": str(args.artifact_root / "recovery" / current)},
+                             "recovery": outcome.recovery_artifacts},
                             args.json,
                         )
                 if not recovered:
@@ -982,6 +1148,19 @@ def main() -> int:
             )
         current = nxt
     return 0
+
+
+def main() -> int:
+    try:
+        return _main()
+    except WritePolicyError as error:
+        emit_summary({"status": "BLOCKED", "reason_code": "WRITE_POLICY",
+                      "message": str(error)}, "--json" in sys.argv)
+        return 2
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        emit_summary({"status": "BLOCKED", "reason_code": "INVALID_INPUT",
+                      "message": str(error)}, "--json" in sys.argv)
+        return 2
 
 
 if __name__ == "__main__":

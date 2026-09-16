@@ -28,8 +28,12 @@ the existing `metrics` key), and keeps extracted profiler measurements
 separately under `trace_metrics`. Profiler output never replaces the benchmark
 measurements used to make the performance decision.
 
-The runner atomically persists `performance_report.json` in its artifact root,
-including workload, baseline, measurements, artifact references and gates.
+The runner requires an external run root and allocates a fresh attempt on every
+invocation. It atomically persists `output/performance_report.json` inside that
+attempt, including workload, baseline, measurements, artifact references and
+gates. Use the returned `report_path`, `artifact_root`, and `manifest_path` rather
+than joining a fixed filename to the constructor's root. Local adapter artifacts
+are copied into the attempt; remote references remain references.
 This report does not by itself establish target hardware execution or
 functional readiness. Platform adapters and the surrounding workflow must
 still provide the environment and execution evidence required above.

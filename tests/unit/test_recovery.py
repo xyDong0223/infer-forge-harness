@@ -12,6 +12,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -19,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from engine.brain import BrainError, Decision, DecisionRequest, FailureEvidence  # noqa: E402
 from engine.recovery import BLOCKED, RECOVERED, RecoveryController  # noqa: E402
+from engine.recovery import default_actions  # noqa: E402
 
 
 class ScriptedBrain:
@@ -161,6 +164,26 @@ class RecoveryLoopTest(unittest.TestCase):
             RecoveryController(BrokenBrain(), lambda d: (False, "x"), {}, budget=1).recover(
                 make_request()
             )
+
+
+def test_action_retries_preserve_previous_output_and_inventory(tmp_path):
+    import json
+
+    def run(command, **kwargs):
+        out = Path(command[command.index("--out") + 1])
+        (out / "report.json").write_text(json.dumps({"command": command}))
+        return SimpleNamespace(returncode=0, stdout="fixture output", stderr="")
+
+    actions = default_actions(ROOT, {"subject": "demo", "pod": "fixture"}, tmp_path / "recovery")
+    decision = Decision("RUN_TRIAGE", "capture")
+    with patch("engine.recovery.subprocess.run", side_effect=run):
+        first = actions["RUN_TRIAGE"](decision)
+        report = Path(first["artifacts"]) / "report.json"
+        original = report.read_bytes()
+        second = actions["RUN_TRIAGE"](decision)
+    assert first["artifacts"] != second["artifacts"]
+    assert report.read_bytes() == original
+    assert len(list(tmp_path.rglob("manifest.json"))) == 2
 
 
 if __name__ == "__main__":

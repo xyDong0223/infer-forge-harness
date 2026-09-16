@@ -29,6 +29,8 @@ if str(REPO_ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from adapters import get_hardware, push_snippet  # noqa: E402
+from runners.evidence import task_status  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
 
 KunlunP800Adapter = get_hardware()
 from validators.triage_validator import validate_triage  # noqa: E402
@@ -78,10 +80,7 @@ class PodOps:
         import subprocess
 
         result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True)
-        status_path = out / "status.json"
-        payload = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
-        payload.setdefault("reason", result.stderr.strip()[-500:])
-        return payload
+        return task_status(result)
 
     @staticmethod
     def rerun_server_log(contract_instance: Path | None) -> str:
@@ -243,4 +242,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

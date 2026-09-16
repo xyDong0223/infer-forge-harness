@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import journal as journal_module  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
 from validators.matrix_validator import validate_matrix_entry  # noqa: E402
 
 MATRIX = REPO_ROOT / "catalog" / "support_matrix.yaml"
@@ -132,4 +133,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

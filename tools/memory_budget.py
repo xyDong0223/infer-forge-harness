@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 from adapters import get_hardware  # noqa: E402
 KunlunP800Adapter = get_hardware()
 from validators.memory_validator import validate_memory_budget  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
 
 SPECS_PATH = REPO_ROOT / "catalog" / "xpu_specs.yaml"
 CONTRACT = REPO_ROOT / "tasks" / "mem-001-memory-budget" / "task.yaml"
@@ -426,7 +427,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))
     except BudgetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

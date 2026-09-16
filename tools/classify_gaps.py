@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validators.gap_validator import validate_gap_classification  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-004-gap-classification" / "task.yaml"
 
@@ -173,4 +174,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

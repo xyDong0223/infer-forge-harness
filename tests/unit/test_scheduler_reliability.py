@@ -23,14 +23,61 @@ def spec():
     )
 
 
-def claimed(tmp_path):
+def claimed(tmp_path, *, managed=False):
     scheduler = TaskScheduler(tmp_path / "state.db")
     scheduler.create_run(
         run_id="run", model_id="model", backend="device",
-        metadata={"evidence_mode": "simulation"},
+        metadata={"evidence_mode": "simulation", **(
+            {"artifact_root": str(tmp_path / "run")} if managed else {}
+        )},
     )
     scheduler.discover_operator("run", spec())
     return scheduler, scheduler.claim_ready("worker")[0]
+
+
+def test_managed_claims_isolate_retry_and_register_result(tmp_path):
+    scheduler, first = claimed(tmp_path, managed=True)
+    first_output = Path(first.input["workspace"]["output"])
+    (first_output / "interrupted.txt").write_text("preserve this attempt")
+    scheduler.recover(force=True)
+    second = scheduler.claim_ready("worker")[0]
+    assert second.input["workspace"]["root"] != first.input["workspace"]["root"]
+    assert (first_output / "interrupted.txt").read_text() == "preserve this attempt"
+    workspace = second.input["workspace"]
+    assert json.loads((Path(workspace["input"]) / "task.json").read_text())["attempt"] == 2
+    result = stage_result(tmp_path / "unused", second)
+    outcome = scheduler.complete(second.task_id, "worker", result, second.lease_token)
+    assert outcome.status == "succeeded"
+    manifest = json.loads(Path(outcome.output["artifact_manifest"]).read_text())
+    assert manifest["identity"]["attempt"] == 2
+    assert manifest["outcome"] == "PASS"
+    assert "result.json" in {item["path"] for item in manifest["artifacts"]}
+
+
+def test_managed_evidence_cannot_reference_unowned_output(tmp_path):
+    scheduler, task = claimed(tmp_path, managed=True)
+    result = stage_result(tmp_path / "unused", task)
+    source = Path(result["evidence"]["reference_artifact"])
+    outside = tmp_path / "unowned.json"
+    outside.write_bytes(source.read_bytes())
+    result["evidence"]["reference_artifact"] = str(outside)
+    outcome = scheduler.complete(task.task_id, "worker", result, task.lease_token)
+    assert outcome.status == "failed"
+    assert any("claimed attempt output" in error for error in
+               outcome.output["error"]["metadata"]["validation_errors"])
+    assert json.loads(Path(outcome.output["artifact_manifest"]).read_text())["outcome"] == "FAILED"
+
+
+def test_inventory_error_is_recorded_as_diagnosis_not_success(tmp_path):
+    scheduler, task = claimed(tmp_path, managed=True)
+    result = stage_result(tmp_path / "unused", task)
+    output = Path(task.input["workspace"]["output"])
+    (output / "linked.json").symlink_to(result["evidence"]["reference_artifact"])
+    outcome = scheduler.complete(task.task_id, "worker", result, task.lease_token)
+    assert outcome.status == "failed"
+    assert outcome.output["error"]["metadata"]["reason"] == "artifact_registration_failed"
+    assert "artifact_registration_error" in outcome.output["error"]["metadata"]
+    assert scheduler.diagnosis_for(task.task_id) is not None
 
 
 @pytest.mark.parametrize("result", [{}, {"status": "PASS"}, {"status": "UNKNOWN"}, {"ok": True}])

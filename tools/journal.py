@@ -24,7 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_JOURNAL = Path("/ssd1/dongxinyu03/kunlun-agent-artifacts/journal.jsonl")
+from core.storage import default_state_root, ensure_external
+
+DEFAULT_JOURNAL = default_state_root() / "journal.jsonl"
 # Which produced fact each task_type contributes, mirroring the contracts'
 # `spec.produces`.
 KINDS = {
@@ -60,6 +62,7 @@ def record(
     environment: dict[str, str],
     extra: dict | None = None,
 ) -> dict:
+    journal = ensure_external(journal)
     entry = {
         "kind": kind,
         "subject": subject,

@@ -113,10 +113,30 @@ class AgentBrainFileProtocolTest(unittest.TestCase):
         command = ["python3", "-c", "import sys; sys.exit(1)"]
         brain = AgentBrain(self.tmp, command=command)
         brain.decide(request("dummy"))
-        written = json.loads(
-            (self.tmp / AgentBrain.REQUEST_NAME).read_text(encoding="utf-8")
-        )
+        requests = sorted(self.tmp.glob("tasks/decision/attempts/*/input/decision_request.json"))
+        self.assertEqual(len(requests), 2)
+        written = json.loads(requests[0].read_text(encoding="utf-8"))
         self.assertEqual(written["model"], "Qwen3-8B")
+
+    def test_requests_and_responses_survive_reasks_and_new_invocations(self):
+        command = ["python3", "-c", "import sys,pathlib;"
+                   "pathlib.Path(sys.argv[2]).write_text('[]')"]
+        brain = AgentBrain(self.tmp, command=command)
+        self.assertEqual(brain.decide(request("first")).next_action, "BLOCKED")
+        original = {path: path.read_bytes() for path in self.tmp.rglob("*.json")}
+        self.assertEqual(brain.decide(request("second")).next_action, "BLOCKED")
+        self.assertEqual(len(list(self.tmp.rglob(AgentBrain.REQUEST_NAME))), 4)
+        for path, content in original.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_source_workdir_is_rejected_before_decider(self):
+        from unittest.mock import patch
+        from core.storage import WritePolicyError
+
+        with patch("engine.brain.subprocess.run") as run:
+            with self.assertRaises(WritePolicyError):
+                AgentBrain(ROOT / "runtime-brain", command=["never"])
+        run.assert_not_called()
 
 
 class RuleBrainTest(unittest.TestCase):

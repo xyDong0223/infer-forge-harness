@@ -23,6 +23,10 @@ from validators.deployment_validator import (
 )
 from core.contracts import TargetContext
 from core.target import bind_subject, contract_target, load_target, require_supported
+from core.storage import (
+    ArtifactStore, RunPaths, WritePolicyError, default_state_root,
+    ensure_external, locate_attempt, safe_component,
+)
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -57,8 +61,87 @@ def execute(
     attach_pod: str | None = None,
     phase: str = "all",
     target: TargetContext | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
+    task_id = contract["metadata"]["name"]
+    try:
+        requested = artifact_dir or (contract.get("artifacts") or {}).get("directory")
+        root = ensure_external(
+            requested if requested is not None
+            else default_state_root() / "runs" / safe_component(run_id or task_id)
+        )
+        attempt = locate_attempt(root)
+        if attempt is not None:
+            if root != attempt.output and attempt.output not in root.parents:
+                raise WritePolicyError("task output must reside inside its attempt output/")
+            if run_id is not None and run_id != attempt.identity["run_id"]:
+                raise WritePolicyError("requested run_id does not own the attempt")
+            if (attempt.root / "manifest.json").exists():
+                raise WritePolicyError("attempt already has a formal result; allocate a fresh attempt")
+            target_dir = root
+        else:
+            attempt = RunPaths(root, run_id).initialize().allocate_attempt(task_id)
+            target_dir = attempt.output
+        store = ArtifactStore(target_dir)
+        if store.path("status.json").exists() or store.path("manifest.json").exists():
+            raise WritePolicyError("task output already contains a formal result; allocate a fresh attempt")
+    except (ValueError, OSError) as error:
+        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
+        return 2
+
+    inventory = ArtifactStore(attempt.root)
+
+    def finish(status: dict[str, Any], code: int) -> int:
+        status["artifact_root"] = str(target_dir)
+        status["manifest_path"] = str(attempt.root / "manifest.json")
+        status["workspace_identity"] = attempt.identity
+        required = ["status.json", *status.get("artifacts", [])]
+        try:
+            declared_paths = [store.path(name) for name in required]
+            required_paths = [
+                path.relative_to(attempt.root).as_posix()
+                for path in declared_paths if not path.is_dir()
+            ]
+            store.write_json("status.json", status, overwrite=True)
+            outcome = status.get("state", status.get("status", "BLOCKED"))
+            if status.get("validator", {}).get("passed") is False:
+                outcome = "REWORK"
+            inventory.register(
+                identity=attempt.identity, outcome=outcome,
+                required=required_paths,
+            )
+        except (ValueError, OSError) as error:
+            code = 2
+            if status.get("message") or status.get("reason"):
+                status["execution_error"] = status.get("message") or status["reason"]
+            status.update(state="BLOCKED", status="BLOCKED", message=str(error))
+            status["validator"] = {"passed": False, "errors": [str(error)]}
+            try:
+                inventory.path("manifest.json").unlink(missing_ok=True)
+                store.write_json("status.json", status, overwrite=True)
+                inventory.register(
+                    identity=attempt.identity, outcome="BLOCKED",
+                    required=[store.path("status.json").relative_to(attempt.root).as_posix()],
+                )
+            except (ValueError, OSError) as publication_error:
+                status["manifest_error"] = str(publication_error)
+                status["manifest_path"] = None
+                try:
+                    store.write_json("status.json", status, overwrite=True)
+                except (ValueError, OSError) as status_error:
+                    status["status_error"] = str(status_error)
+        print(json.dumps(status, indent=2, ensure_ascii=False))
+        return code
+
+    try:
+        ArtifactStore(attempt.input).write_json("task_contract.json", contract)
+        return _execute(contract, target_dir, attach_pod, phase, target, finish)
+    except (ValueError, OSError, RuntimeError) as error:
+        return finish({"status": "BLOCKED", "message": str(error), "task_id": task_id}, 2)
+
+
+def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     from adapters import ClusterConfig
     from core.facade import resolve_adapters
 
@@ -69,15 +152,13 @@ def execute(
     # proof: the same executor, stopped at a different exit criterion.
     phase = {"environment_proof": "environment", "service_proof": "service"}.get(task_type, phase)
     if task_type not in ("deployment_proof", "environment_proof", "service_proof"):
-        print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "message": "no executor for this task_type"}, indent=2))
-        return 4
+        return finish({"status": "EXECUTION_NOT_CONFIGURED", "message": "no executor for this task_type"}, 4)
 
     try:
         target_context = contract_target(contract, target)
         bundle = resolve_adapters(target_context, require_supported=True)
     except ValueError as error:
-        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
-        return 2
+        return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
     repo_root = Path(__file__).resolve().parents[1]
     if task_type == "environment_proof":
@@ -87,11 +168,9 @@ def execute(
         cluster = profile.get("cluster", {})
         user_id = os.environ.get("USER_ID", "").strip()
         if not user_id:
-            print(json.dumps({"status": "INPUT_REQUIRED", "paths": ["$env.USER_ID"]}, indent=2))
-            return 3
+            return finish({"status": "INPUT_REQUIRED", "paths": ["$env.USER_ID"]}, 3)
         if not base.get("required") or not base.get("path"):
-            print(json.dumps({"status": "CONTRACT_INVALID", "message": "base model is not configured"}, indent=2))
-            return 2
+            return finish({"status": "CONTRACT_INVALID", "message": "base model is not configured"}, 2)
         contract["context"]["model"] = {"name": base["name"], "path": base["path"], "pvc": deployment["model_pvc"]}
         contract["context"]["server"] = {"host": "0.0.0.0", "port": 8356, **base}
         contract["context"]["target"] = {"hardware": "Kunlunxin-3-P800", "device_count": deployment["xpu_count"], "namespace": cluster["namespace"], "volcano_queue": deployment["queue"], "dedicated_pool": deployment["node_pool"]}
@@ -115,22 +194,13 @@ def execute(
     }
     errors = validate_executable(contract)
     if errors:
-        print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
-        return 2
+        return finish({"status": "CONTRACT_INVALID", "errors": errors}, 2)
     config = ClusterConfig.load()
     if contract["execution"]["namespace"] != config.namespace:
-        print(
-            json.dumps(
-                {
-                    "status": "NEEDS_HUMAN",
-                    "message": "contract namespace does not match the harness config",
-                },
-                indent=2,
-            )
-        )
-        return 5
-    artifacts = contract.get("artifacts") or {}
-    target_dir = artifact_dir or Path(artifacts.get("directory", repo_root / "artifacts"))
+        return finish({
+            "status": "NEEDS_HUMAN",
+            "message": "contract namespace does not match the harness config",
+        }, 5)
     runner = DeploymentProofRunner(
         contract=contract,
         adapter=bundle.hardware(config),
@@ -148,11 +218,7 @@ def execute(
     )
     status["validator"] = {"passed": not gate, "errors": gate}
     status["target"] = contract["context"]["resolved_target"]
-    (target_dir / "status.json").write_text(
-        json.dumps(status, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    print(json.dumps(status, indent=2, ensure_ascii=False))
-    return 0 if not gate else 6
+    return finish(status, 0 if not gate else 6)
 
 
 def main() -> int:
@@ -162,7 +228,8 @@ def main() -> int:
     parser.add_argument("--subject", help="Bind the model identity of an unbound --target")
     parser.add_argument("--execute", action="store_true", help="Run against the real cluster")
     parser.add_argument("--output", type=Path, help="Where to write the plan (plan mode)")
-    parser.add_argument("--artifact-dir", type=Path, help="Override the contract artifact directory")
+    parser.add_argument("--artifact-dir", type=Path, help="External run root, or allocated attempt output/")
+    parser.add_argument("--run-id", help="Durable run identity for allocated attempts")
     parser.add_argument(
         "--phase",
         choices=["all", "environment", "service"],
@@ -203,12 +270,17 @@ def main() -> int:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3
     if args.execute:
-        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase, target)
+        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase, target, args.run_id)
 
     plan = build_plan(contract, target)
     rendered = json.dumps(plan, indent=2)
     if args.output:
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+        try:
+            output = ensure_external(args.output)
+            ArtifactStore(output.parent).write_text(output.name, rendered + "\n")
+        except (ValueError, OSError) as error:
+            print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
+            return 2
     print(rendered)
     return 0
 

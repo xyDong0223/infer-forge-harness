@@ -11,6 +11,8 @@
   structured.
 - [`migration/`](migration/): moving an existing script-based workflow into the
   harness.
+- [`migration/runtime-write-policy.zh-CN.md`](migration/runtime-write-policy.zh-CN.md):
+  external run directories, per-attempt write ownership, and artifact inventories.
 - [`assets/`](assets/): diagrams, including editable sources.
 
 Repository rules are authoritative in the root `AGENTS.md`; this directory

@@ -30,11 +30,14 @@ def _spec() -> OperatorSpec:
     )
 
 
-def test_fake_agents_call_independent_validator_and_fake_xpu(tmp_path: Path):
+@pytest.mark.parametrize("managed", [False, True])
+def test_fake_agents_call_independent_validator_and_fake_xpu(tmp_path: Path, managed: bool):
     scheduler = TaskScheduler(EventStore(tmp_path / "state.db"))
     run = scheduler.create_run(AdaptationRun(
         run_id="r", model_id="DeepSeek-V4.1", backend="kunlun-p800",
-        metadata={"evidence_mode": "simulation"},
+        metadata={"evidence_mode": "simulation", **(
+            {"artifact_root": str(tmp_path / "run")} if managed else {}
+        )},
     ))
     result = FakeAgentHarness(scheduler, tmp_path / "artifacts").run("r", _spec())
 
@@ -50,6 +53,8 @@ def test_fake_agents_call_independent_validator_and_fake_xpu(tmp_path: Path):
     assert all(item["status"] == "succeeded" for item in result["tasks"])
     for task in scheduler.store.tasks("r"):
         output = task.output
+        if managed:
+            assert Path(output["artifact_manifest"]).is_file()
         worker = output["_submission"]["worker"]
         assert validate_result(task, run, output, worker) == []
         assert output["schema_version"] == 1

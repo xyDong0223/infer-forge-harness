@@ -25,6 +25,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.memory_budget import load_device_spec  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
+from core.storage import default_state_root, ensure_external, safe_component  # noqa: E402
 from validators.plan_validator import validate_deployment_plan  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-005-deployment-plan" / "task.yaml"
@@ -172,7 +174,9 @@ def _cluster_profile() -> dict:
     }
 
 
-def render_instance(report: dict, request: dict) -> str:
+def render_instance(
+    report: dict, request: dict, runtime_artifact_root: str | Path | None = None,
+) -> str:
     import os
 
     import yaml
@@ -182,6 +186,10 @@ def render_instance(report: dict, request: dict) -> str:
     profile = _cluster_profile()
     user_id = os.environ.get("USER_ID", "").strip()
     subject = str(report["subject"])
+    artifact_root = ensure_external(
+        runtime_artifact_root if runtime_artifact_root is not None
+        else default_state_root() / "runs" / safe_component(f"kdp-001-{subject.lower()}")
+    )
     # Weight-proportional patience: 215 GiB measured ~45 min wall-to-health on
     # MiniMax, so give ~5 s/GiB with a floor. A timeout before that is a
     # finding, not a property of the model.
@@ -264,7 +272,7 @@ def render_instance(report: dict, request: dict) -> str:
             "backend": {"expected": "kunlun", "reject_unexpected_fallback": True},
         },
         "artifacts": {
-            "directory": str(Path(REPO_ROOT) / "artifacts" / f"kdp-001-{subject.lower()}"),
+            "directory": str(artifact_root),
             "collect": ["deployment_manifest", "task_contract", "pod_spec", "server_log",
                         "health_result", "chat_result", "reproduce_command"],
         },
@@ -290,6 +298,10 @@ def main() -> int:
     parser.add_argument("--placed-patch", help="mat-007 placement report, if one exists")
     parser.add_argument("--device", default="p800")
     parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--runtime-artifact-root", type=Path,
+        help="external run root for downstream service attempts (not the planner output)",
+    )
     args = parser.parse_args()
 
     request = yaml.safe_load(Path(args.model_request).read_text(encoding="utf-8"))
@@ -303,7 +315,10 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     report = plan(request, classification, load_device_spec(args.device), patch)
     (out / "deployment_plan.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    (out / "kdp_instance.yaml").write_text(render_instance(report, request), encoding="utf-8")
+    (out / "kdp_instance.yaml").write_text(
+        render_instance(report, request, runtime_artifact_root=args.runtime_artifact_root),
+        encoding="utf-8",
+    )
 
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     gate = validate_deployment_plan(report, contract, request)
@@ -322,4 +337,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

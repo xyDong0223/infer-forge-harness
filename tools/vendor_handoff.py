@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from validators.handoff_validator import validate_handoff  # noqa: E402
 from validators.handoff_validator import validate_handoff_package  # noqa: E402
+from tools.common import run_managed_tool  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-020-vendor-handoff" / "task.yaml"
 BINARY_LAYERS = {"kunlun_ops_vendor", "torch_xmlir_vendor"}
@@ -276,4 +277,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))

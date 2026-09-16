@@ -45,6 +45,10 @@ Every result records:
 
 Evidence paths are absolute, or relative to `run.metadata.artifact_root`.
 They are never implicitly relative to the worker's current directory.
+New managed claims expose `input.workspace`; submitted evidence must resolve
+inside that attempt's `output/`. Reclaiming work allocates a new directory and
+does not reuse the previous attempt's files. See
+[runtime write ownership](runtime-write-policy.zh-CN.md) for layout and migration.
 
 | Stage | Required evidence roles |
 | --- | --- |

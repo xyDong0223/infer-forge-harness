@@ -33,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from engine import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
+from core.storage import RunPaths, default_state_root, ensure_external, safe_component  # noqa: E402
 
 
 def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
@@ -48,7 +49,8 @@ def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
 
 
 def _environment_command(
-    contract: Path, artifact_dir: Path | None, attach_pod: str | None
+    contract: Path, artifact_dir: Path | None, attach_pod: str | None,
+    run_id: str | None = None,
 ) -> list[str]:
     """The task_runner invocation behind `environment --contract`.
 
@@ -67,13 +69,16 @@ def _environment_command(
         command += ["--artifact-dir", str(artifact_dir)]
     if attach_pod:
         command += ["--attach-pod", attach_pod]
+    if run_id:
+        command += ["--run-id", run_id]
     return command
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--state", type=Path, required=True, help="SQLite scheduler database path"
+        "--state", type=Path, default=default_state_root() / "state.sqlite",
+        help="External SQLite scheduler database (defaults under the state root)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -87,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--plugin-revision", default="unknown")
     create.add_argument("--environment", type=Path)
     create.add_argument("--metadata", type=Path)
+    create.add_argument("--artifact-root", type=Path, help="External run directory")
 
     environment = sub.add_parser(
         "environment",
@@ -156,6 +162,20 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
     if args.command in {"create", "create-run"}:
         metadata = _json_file(args.metadata, field="metadata")
         metadata.setdefault("environment_required", True)
+        artifact_root = args.artifact_root or metadata.get("artifact_root")
+        explicit_root = artifact_root is not None
+        if artifact_root is None:
+            artifact_root = args.state.resolve().parent / "runs" / safe_component(args.run_id)
+        metadata["artifact_root"] = str(ensure_external(artifact_root))
+        existing = scheduler.store.run(args.run_id)
+        if existing is not None:
+            saved_root = existing.metadata.get("artifact_root")
+            if explicit_root and saved_root and (
+                ensure_external(saved_root) != ensure_external(artifact_root)
+            ):
+                raise ValueError("existing run has a different artifact_root; resume its recorded directory")
+            return {"command": "create", "run": existing.to_dict()}
+        RunPaths(metadata["artifact_root"], args.run_id).initialize()
         run = scheduler.create_run(
             AdaptationRun(
                 run_id=args.run_id,
@@ -174,9 +194,17 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         if args.status:
             proof = _json_file(args.status, field="environment status")
         else:
-            command = _environment_command(args.contract, args.artifact_dir, args.attach_pod)
+            existing = scheduler.store.run(args.run_id)
+            if existing is None:
+                raise ValueError(f"unknown run: {args.run_id}")
+            artifact_root = args.artifact_dir or existing.metadata.get("artifact_root")
+            if artifact_root is not None:
+                artifact_root = ensure_external(artifact_root)
+            command = _environment_command(
+                args.contract, artifact_root, args.attach_pod, run_id=args.run_id,
+            )
             completed = subprocess.run(
-                command, cwd=REPO_ROOT, text=True, capture_output=True, check=False
+                command, cwd=REPO_ROOT, text=True, capture_output=True, check=False,
             )
             try:
                 proof = json.loads(completed.stdout)

@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from adapters import SafetyViolation, get_hardware, push_snippet  # noqa: E402
 KunlunP800Adapter = get_hardware()
-from tools.common import ToolFailed  # noqa: E402
+from tools.common import ToolFailed, run_managed_tool  # noqa: E402
 from runners.deployment_proof import render_manifest  # noqa: E402
 from validators.intake_validator import validate_model_request  # noqa: E402
 
@@ -234,7 +234,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))
     except IntakeFailed as failure:
         print(f"{failure.state}: {failure.reason}", file=sys.stderr)
         raise SystemExit(1) from failure

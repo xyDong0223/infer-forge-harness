@@ -6,6 +6,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -48,6 +50,10 @@ ENVIRONMENT_STATUS = {
 
 
 class PhaseSelectionTest(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def external_workspace(self, tmp_path):
+        self.artifact_dir = tmp_path / "proof"
+
     class StubAdapter:
         """Only what collect_artifacts touches; no cluster is reachable here."""
 
@@ -59,7 +65,7 @@ class PhaseSelectionTest(unittest.TestCase):
             contract={"metadata": {"name": "t"}, "execution": {}},
             adapter=self.StubAdapter(),
             repo_root=ROOT,
-            artifact_dir=Path("/tmp/kdp-phase-test"),
+            artifact_dir=self.artifact_dir,
             **kwargs,
         )
 

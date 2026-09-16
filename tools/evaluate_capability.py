@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 from adapters import get_hardware, push_snippet  # noqa: E402
 from runtimes import default_runtime  # noqa: E402
 KunlunP800Adapter = get_hardware()
-from tools.common import ToolFailed  # noqa: E402
+from tools.common import ToolFailed, run_managed_tool  # noqa: E402
 from validators.evaluation_validator import validate_evaluation  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-008-capability-evaluation" / "task.yaml"
@@ -376,7 +376,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(run_managed_tool(main, task_id=CONTRACT.parent.name))
     except EvaluationFailed as failure:
         print(f"{failure.state}: {failure.reason}", file=sys.stderr)
         raise SystemExit(1) from failure
