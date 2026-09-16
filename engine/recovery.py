@@ -86,6 +86,7 @@ class RecoveryController:
                     model=request.model, backend=request.backend,
                     failure=request.failure, history=list(history),
                     attempts_remaining=remaining, context=request.context,
+                    skill=request.skill,
                 ),
             )
             outcome.last_decision = decision
@@ -129,7 +130,7 @@ class RecoveryController:
 
 
 def default_actions(repo_root: Path, context: dict[str, str],
-                    run_dir: Path) -> dict[str, Action]:
+                    run_dir: Path, skill: dict[str, Any] | None = None) -> dict[str, Action]:
     """Executors for the actions that are self-contained commands.
 
     Injected context (subject, pod, artifact paths) is formatted into each
@@ -145,9 +146,16 @@ def default_actions(repo_root: Path, context: dict[str, str],
         attempt = paths.allocate_attempt(action)
         command += ["--out", str(attempt.output)]
         (attempt.input / "command.json").write_text(json.dumps(command), encoding="utf-8")
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        if skill is not None:
+            skill_path = attempt.input / "skill.json"
+            skill_path.write_text(
+                json.dumps(skill, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            environment["INFER_FORGE_SKILL_CONTRACT"] = str(skill_path)
         try:
             result = subprocess.run(command, cwd=repo_root, text=True, capture_output=True,
-                                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                                    env=environment)
         except OSError as error:
             (attempt.logs / "error.txt").write_text(str(error), encoding="utf-8")
             ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")

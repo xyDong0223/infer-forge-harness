@@ -1,6 +1,6 @@
 api_version: infer.kunlun/v1alpha1
 kind: Skill
 id: kernel-correctness
-task_types: [failure_triage, accuracy_differential, patch_placement]
+task_types: [failure_triage, accuracy_differential, patch_placement, capability_evaluation]
 catalog: catalog/skill_catalog.yaml
 method_document: skills/kernel_correctness/SKILL.md

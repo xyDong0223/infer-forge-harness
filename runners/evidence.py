@@ -118,6 +118,7 @@ def run_logged(
     crash_tag: str | None = None,
     echo: Callable[[str], None] = print,
     watch=None,
+    env_overrides: dict[str, str] | None = None,
 ) -> LoggedResult:
     """Run a node command with its output teed live to console and file.
 
@@ -138,6 +139,7 @@ def run_logged(
     log_path = ensure_external(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     environment = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    environment.update(env_overrides or {})
     process = subprocess.Popen(
         command,
         cwd=str(cwd),

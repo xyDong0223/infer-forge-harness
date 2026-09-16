@@ -80,6 +80,9 @@ class DecisionRequest:
     # Current node context (launch parameters, pod name, paths). A decider
     # prescribing RETRY_WITH_PARAMS can only vary what is actually here.
     context: dict[str, str] = field(default_factory=dict)
+    # Exact Skill method selected for this node. This is separate from context
+    # so a retry decision cannot replace or mutate the execution method.
+    skill: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +91,7 @@ class DecisionRequest:
             "available_actions": list(self.available_actions),
             "attempts_remaining": self.attempts_remaining,
             "context": dict(self.context),
+            "skill": dict(self.skill),
         }
 
 

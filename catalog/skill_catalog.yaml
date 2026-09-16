@@ -23,6 +23,7 @@ entries:
       - require owned resources in the shared namespace
   - id: model-scanner
     task_types: [model_scan]
+    method_package: model-scanner
     purpose: inspect the pinned model and installed runtime registration
     tools: [model_scan]
     verification: scan_validator
@@ -49,6 +50,7 @@ entries:
       - never infer support from a module name alone
   - id: gap-triage
     task_types: [gap_classification, failure_triage]
+    method_package: runtime-diagnosis
     purpose: attribute a failure before selecting a patch or handoff
     tools: [gap_classification, instrument_kernel_trace]
     verification: triage_validator
@@ -72,6 +74,7 @@ entries:
       - an unimplemented dimension is partial, never an implicit pass
   - id: runtime-drift-gate
     task_types: [runtime_drift_scan]
+    method_package: runtime-diagnosis
     purpose: prove the installed plugin still imports against the installed engine before anything is deployed
     tools: [runtime_drift_scan]
     verification: drift_validator
@@ -184,6 +187,7 @@ entries:
       - checkpoint tensor keys may carry a model.language_model. prefix that the loaders flatten; map keys by both spellings before calling a module missing
   - id: memory-budget
     task_types: [memory_budget]
+    method_package: memory-budget
     purpose: reconcile P800 HBM usage against the serving process
     tools: [memory_budget]
     verification: memory_validator
@@ -223,6 +227,7 @@ entries:
       - include reproduction, ownership, evidence, and stopping point
   - id: cache-layout-validation
     task_types: [capability_evaluation, failure_triage, patch_placement]
+    method_package: kernel-correctness
     when: {issue: cache_layout}
     purpose: validate cache pair axes, block layout, and read-back semantics
     tools: [instrument_kernel_trace]
@@ -234,6 +239,7 @@ entries:
       - test both key and value halves and include a read-back check
   - id: quantization-differential
     task_types: [capability_evaluation, accuracy_differential]
+    method_package: kernel-correctness
     when: {dimension: quantization}
     purpose: isolate scale, clamp, dtype, and activation quantization errors
     tools: [capability_evaluation, accuracy_differential]
@@ -245,6 +251,7 @@ entries:
       - negative controls must distinguish scale and dtype mistakes
   - id: dispatch-verification
     task_types: [model_scan, capability_match, failure_triage]
+    method_package: runtime-diagnosis
     when: {issue: dispatch}
     purpose: verify the implementation actually selected by the serving runtime
     tools: [model_scan, instrument_kernel_trace]
@@ -256,6 +263,7 @@ entries:
       - record the selected variant and actual call site
   - id: runtime-state-triage
     task_types: [failure_triage]
+    method_package: runtime-diagnosis
     when: {issue: runtime_state}
     purpose: separate warmup, empty metadata, cache lifetime, and steady-state failures
     tools: [instrument_kernel_trace]
@@ -267,6 +275,7 @@ entries:
       - never interpret an empty cache without checking its shape
   - id: p800-fallback-selection
     task_types: [failure_triage, patch_placement, deployment_plan]
+    method_package: torch-fallback
     when: {issue: p800_kernel}
     purpose: select the fastest correct P800 implementation when a kernel cannot launch
     tools: [instrument_kernel_trace, apply_torch_decode_patch]
@@ -278,6 +287,7 @@ entries:
       - prefer a correct torch fallback over repeated futile Triton tuning
   - id: model-bringup-loop
     task_types: [model_bringup_loop]
+    method_package: model-bringup-loop
     purpose: drive model bring-up through the cheapest evidence-backed correction loop
     tools: [deployment_proof, instrument_kernel_trace, apply_torch_decode_patch]
     verification: deployment_validator
@@ -294,6 +304,7 @@ entries:
   - id: kernel-grade
     task_types: [platform_kernel_correctness, end_to_end_accuracy,
                  long_context_sparse_correctness]
+    method_package: kernel-grade
     purpose: grade an operator or served distribution against an independent reference
     tools: [capability_evaluation, accuracy_differential]
     verification: correctness_validator
@@ -303,3 +314,15 @@ entries:
       - require relative L2, elementwise error, and NaN/Inf counts
       - require reference provenance and a negative control that misses the gate
       - report AMBIGUOUS when the tested geometry cannot distinguish conventions
+  - id: fallback-validation
+    task_types: [patch_placement, capability_evaluation]
+    when: {strategy: torch_fallback}
+    method_package: fallback-validation
+    purpose: validate a temporary torch fallback without hiding unsupported cases
+    tools: [capability_evaluation, apply_torch_decode_patch]
+    verification: patch_validator
+    preconditions: [FailureTriage]
+    exit_conditions: [FALLBACK_VALIDATED, FALLBACK_REJECTED, NEEDS_HUMAN]
+    rules:
+      - compare against an independent reference and a discriminating control
+      - prove real service dispatch and record unsupported inputs explicitly

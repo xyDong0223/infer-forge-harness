@@ -321,21 +321,34 @@ def node_task_type(node: dict) -> str | None:
     return contract["metadata"]["task_type"]
 
 
-def resolve(spec: dict, context: dict, journal: Path, environment: dict,
-            command: list[str] | None = None, include_optional: bool = True) -> list[str]:
+def resolve(
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    command: list[str] | None = None,
+    include_optional: bool = True,
+    verify_input_skills: bool = False,
+) -> list[str]:
     if spec.get("needs") and not environment:
         raise Unresolved("a nonempty environment is required to reuse Journal inputs; "
                          "provide --target/--env and a current environment proof")
     if "contract_instance" not in context:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
-        plan = input_fact(journal, "DeploymentPlan", context["subject"], environment)
+        plan = input_fact(
+            journal, "DeploymentPlan", context["subject"], environment, context=context,
+            verify_skill=verify_input_skills,
+        )
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
     command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
-        hit = input_fact(journal, kind, context["subject"], environment)
+        hit = input_fact(
+            journal, kind, context["subject"], environment, context=context,
+            verify_skill=verify_input_skills,
+        )
         if not hit:
             raise Unresolved(
                 f"{kind} for {context['subject']} is not in the Journal for this environment; "
@@ -345,7 +358,10 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
     if include_optional:
         for flag, reference in (spec.get("optional") or {}).items():
             _, kind, filename = reference.split(":", 2)
-            hit = input_fact(journal, kind, context["subject"], environment)
+            hit = input_fact(
+                journal, kind, context["subject"], environment, context=context,
+                verify_skill=verify_input_skills,
+            )
             if hit:
                 command += [flag, str(Path(hit["artifacts"]) / filename)]
     if spec.get("produces") == "TorchShimRegistry" and context.get("shim_registry"):
@@ -365,16 +381,34 @@ def resolve(spec: dict, context: dict, journal: Path, environment: dict,
     return command
 
 
-def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -> list[str]:
+def fan_out_items(
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    verify_input_skills: bool = False,
+    *,
+    skill_contract: Path | None = None,
+) -> list[str]:
     """Ask the node's own tool how wide it is.
 
     Run even under --plan. The list command reads a recorded artifact and touches
     nothing, and a plan that cannot say how many children will run is not a plan.
     """
-    command = resolve(spec, context, journal, environment,
-                      command=spec["fan_out"]["list"], include_optional=False)
+    command = resolve(
+        spec,
+        context,
+        journal,
+        environment,
+        command=spec["fan_out"]["list"],
+        include_optional=False,
+        verify_input_skills=verify_input_skills,
+    )
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    if skill_contract is not None:
+        env["INFER_FORGE_SKILL_CONTRACT"] = str(skill_contract)
     result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True,
-                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                            env=env)
     if result.returncode != 0:
         raise Unresolved(
             f"the fan-out list command failed: {' '.join(command)}: {result.stderr.strip()[-300:]}"
@@ -391,8 +425,16 @@ def fan_out_items(spec: dict, context: dict, journal: Path, environment: dict) -
     raise Unresolved(f"the fan-out list command printed no JSON array: {' '.join(command)}")
 
 
-def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
-                 artifacts: Path) -> list[tuple[Path, list[str]]]:
+def fan_out_plan(
+    spec: dict,
+    context: dict,
+    journal: Path,
+    environment: dict,
+    artifacts: Path,
+    verify_input_skills: bool = False,
+    *,
+    skill_contract: Path | None = None,
+) -> list[tuple[Path, list[str]]]:
     """One child command per item, then the fan-in.
 
     Each child writes into its own subdirectory so the aggregate can point at the
@@ -400,7 +442,14 @@ def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
     the node's tool provides, not something the executor computes, so the artifact
     format stays owned by the Task.
     """
-    items = fan_out_items(spec, context, journal, environment)
+    items = fan_out_items(
+        spec,
+        context,
+        journal,
+        environment,
+        verify_input_skills=verify_input_skills,
+        skill_contract=skill_contract,
+    )
     if not items:
         raise Unresolved(
             "the fan-out list is empty: this model demands none of the dimensions this node "
@@ -413,7 +462,11 @@ def fan_out_plan(spec: dict, context: dict, journal: Path, environment: dict,
         child = artifacts / str(item)
         children.append(child)
         child_context = {**context, variable: item, "artifacts": str(child)}
-        plan.append((child, resolve(spec, child_context, journal, environment)))
+        plan.append((
+            child, resolve(
+                spec, child_context, journal, environment, verify_input_skills=verify_input_skills
+            ),
+        ))
     aggregate = [part.format(**{**context, "artifacts": str(artifacts)})
                  for part in spec["fan_out"]["aggregate"]]
     for child in children:
@@ -446,10 +499,17 @@ def node_passed(artifacts: Path, spec: dict, returncode: int) -> bool:
     )
 
 
+def write_skill_contract(attempt, skill: dict) -> Path:
+    packet = attempt.input / "skill.json"
+    packet.write_text(json.dumps(skill, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return packet
+
+
 def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
-                      commands: list[tuple[Path, list[str]]]):
+                      commands: list[tuple[Path, list[str]]],
+                      skill: dict | None = None, attempt=None):
     """Bind a read-only plan to a fresh workspace only when it will execute."""
-    attempt = paths.allocate_attempt(node)
+    attempt = attempt or paths.allocate_attempt(node)
     resolved = [
         (attempt.output / target.relative_to(artifacts),
          [part.replace(str(artifacts), str(attempt.output)).replace(
@@ -459,7 +519,76 @@ def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
     (attempt.input / "commands.json").write_text(
         json.dumps([command for _, command in resolved], indent=2), encoding="utf-8",
     )
+    if skill is not None:
+        write_skill_contract(attempt, skill)
     return attempt, resolved
+
+
+def command_skill_contract_path(
+    attempt, target: Path, output_root: Path, spec: dict, task_type: str | None, context: dict,
+    base_skill: dict | None, cache: dict[str, Path],
+) -> str:
+    packet = attempt.input / "skill.json"
+    if base_skill is None or "fan_out" not in spec or task_type is None:
+        return str(packet)
+    try:
+        relative = target.relative_to(output_root)
+    except ValueError:
+        return str(packet)
+    if relative == Path("."):
+        return str(packet)
+    variable = spec["fan_out"].get("var")
+    if not isinstance(variable, str) or not variable:
+        return str(packet)
+    dimension = relative.parts[0]
+    cached = cache.get(dimension)
+    if cached is not None:
+        return str(cached)
+    resolved = skill_registry.resolve_for_context(task_type, {**context, variable: dimension})
+    contract = skill_registry.execution_contract(resolved, task_type)
+    child_packet = attempt.input / "skill-contracts" / f"{safe_component(dimension)}.json"
+    child_packet.parent.mkdir(parents=True, exist_ok=True)
+    child_packet.write_text(
+        json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    cache[dimension] = child_packet
+    return str(child_packet)
+
+
+def fan_out_skill_bindings(
+    spec: dict, contracts: dict[str, Path],
+) -> list[dict]:
+    """Summarize the exact contextual Skills used by fan-out children."""
+    variable = (spec.get("fan_out") or {}).get("var")
+    if not isinstance(variable, str) or not variable:
+        return []
+    bindings = []
+    for value, path in sorted(contracts.items()):
+        contract = json.loads(path.read_text(encoding="utf-8"))
+        method = contract.get("method")
+        bindings.append({
+            "context": {variable: value},
+            "id": contract["id"],
+            "method_sha256": method["sha256"] if method else None,
+        })
+    return bindings
+
+
+def skill_routing(skill: dict, **extra) -> dict:
+    """Keep Task Memory correlated with the immutable method snapshot."""
+    routing = {
+        "skill": skill["id"],
+        "verification": skill["verification"],
+        "tools": skill["tools"],
+    }
+    method = skill.get("method")
+    if method:
+        routing["method_package"] = method["package_id"]
+        routing["method_document"] = method["document"]
+        routing["method_sha256"] = method["sha256"]
+    routing.update(extra)
+    return routing
 
 
 def command_logs(attempt, target: Path) -> Path:
@@ -517,7 +646,8 @@ SUCCESS_STATES = {
 
 
 def reusable_fact(
-    spec: dict, subject: str, journal: Path, environment: dict
+    spec: dict, subject: str, journal: Path, environment: dict,
+    skill: dict | None = None, context: dict | None = None,
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
     kind = spec.get("produces")
@@ -539,6 +669,38 @@ def reusable_fact(
     ):
         return None
     detail = hit.get("detail") or {}
+    if skill is not None:
+        method = skill.get("method")
+        recorded = detail.get("skill")
+        expected_base = {
+            "id": skill["id"],
+            "method_sha256": method["sha256"] if method else None,
+        }
+        if not isinstance(recorded, dict) or any(
+            recorded.get(key) != value for key, value in expected_base.items()
+        ):
+            return None
+        for child in recorded.get("children", []):
+            if (
+                not isinstance(child, dict)
+                or not isinstance(child.get("context"), dict)
+                or not skill.get("task_type")
+            ):
+                return None
+            try:
+                selected = skill_registry.resolve_for_context(
+                    skill["task_type"], {**(context or {}), **child["context"]},
+                )
+                current = skill_registry.execution_contract(
+                    selected, skill["task_type"],
+                )
+            except (OSError, skill_registry.SkillResolutionError):
+                return None
+            current_method = current.get("method")
+            if child.get("id") != current["id"] or child.get("method_sha256") != (
+                current_method["sha256"] if current_method else None
+            ):
+                return None
     if detail.get("returncode", 0) != 0:
         return None
     if detail.get("status_sha256") and detail["status_sha256"] != file_digest(
@@ -568,6 +730,85 @@ def reusable_fact(
     return hit
 
 
+def _fact_index(journal: Path, fact: dict) -> int:
+    """Return the append-order position of an exact Journal fact."""
+    entries = journal_module.load(journal)
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index] == fact:
+            return index
+    return -1
+
+
+def _input_kinds(spec: dict, context: dict) -> tuple[set[str], set[str]]:
+    """Return required and optional fact kinds used to produce this node."""
+    required = {
+        reference.split(":", 2)[1]
+        for reference in (spec.get("needs") or {}).values()
+    }
+    optional = {
+        reference.split(":", 2)[1]
+        for reference in (spec.get("optional") or {}).values()
+    }
+    if "contract_instance" not in context and (
+        "cli/deployment/proof.py" in spec.get("command", [])
+        or "--contract-instance" in spec.get("command", [])
+    ):
+        # A rendered plan supplies the contract when available; environment
+        # proof can instead receive the original contract from run context.
+        optional.add("DeploymentPlan")
+    return required, optional
+
+
+def reusable_inputs_current(
+    spec: dict,
+    fact: dict,
+    subject: str,
+    journal: Path,
+    environment: dict,
+    context: dict,
+    _seen: set[str] | None = None,
+    *,
+    require_order: bool = True,
+) -> bool:
+    """Require consumed facts to be Skill-current and, for reuse, not newer."""
+    produced = spec.get("produces")
+    seen = set(_seen or ())
+    if produced:
+        if produced in seen:
+            return False
+        seen.add(produced)
+    current_index = _fact_index(journal, fact)
+    if current_index < 0:
+        return False
+    required, optional = _input_kinds(spec, context)
+    for kind in sorted(required | optional):
+        raw = input_fact(journal, kind, subject, environment, context=context)
+        verified = input_fact(
+            journal, kind, subject, environment, context=context, verify_skill=True,
+        )
+        if kind in required and verified is None:
+            return False
+        if kind in optional and raw is not None and verified is None:
+            return False
+        if (
+            require_order
+            and verified is not None
+            and _fact_index(journal, verified) >= current_index
+        ):
+            return False
+        producer = next(
+            (candidate for candidate in NODES.values()
+             if candidate.get("produces") == kind),
+            None,
+        )
+        if verified is not None and producer is not None and not reusable_inputs_current(
+            producer, verified, subject, journal, environment, context, seen,
+            require_order=require_order,
+        ):
+            return False
+    return True
+
+
 def fact_environment(kind: str, environment: dict) -> dict:
     # Intake is model identity, and the proof establishes the runtime scope.
     # Neither depends on a fingerprint that is only produced by that proof.
@@ -577,11 +818,33 @@ def fact_environment(kind: str, environment: dict) -> dict:
     return environment
 
 
-def input_fact(journal: Path, kind: str, subject: str, environment: dict) -> dict | None:
-    spec = next((spec for spec in NODES.values() if spec.get("produces") == kind), None)
-    if spec is None:
+def input_fact(
+    journal: Path,
+    kind: str,
+    subject: str,
+    environment: dict,
+    *,
+    context: dict | None = None,
+    verify_skill: bool = False,
+) -> dict | None:
+    producer = next(((name, spec) for name, spec in NODES.items() if spec.get("produces") == kind), None)
+    if producer is None:
         return None
-    return reusable_fact(spec, subject, journal, environment)
+    producer_name, spec = producer
+    producer_task_types = (context or {}).get("_producer_task_types")
+    producer_task_type = (
+        producer_task_types.get(kind) if isinstance(producer_task_types, dict) else producer_name
+    )
+    skill = None
+    if verify_skill:
+        try:
+            selected = skill_registry.resolve_for_context(producer_task_type, context or {})
+            skill = skill_registry.execution_contract(selected, producer_task_type)
+        except (OSError, skill_registry.SkillResolutionError):
+            return None
+    return reusable_fact(
+        spec, subject, journal, environment, skill=skill, context=context,
+    )
 
 
 def file_digest(path: Path) -> str | None:
@@ -620,9 +883,19 @@ def bind_proven_environment(context: dict, environment: dict, journal: Path) -> 
 
 
 def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
-                environment: dict, returncode: int = 0) -> dict:
+                environment: dict, returncode: int = 0,
+                skill: dict | None = None,
+                child_skills: list[dict] | None = None) -> dict:
     detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
               "returncode": returncode}
+    if skill is not None:
+        method = skill.get("method")
+        detail["skill"] = {
+            "id": skill["id"],
+            "method_sha256": method["sha256"] if method else None,
+        }
+        if child_skills:
+            detail["skill"]["children"] = child_skills
     if spec["produces"] == "EnvironmentProof":
         detail["environment_fingerprint"] = proof_fingerprint(artifacts)
     return journal_module.record(
@@ -688,7 +961,8 @@ def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
 
 
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
-                     environment: dict, state: str, bridge=None) -> object:
+                     environment: dict, state: str, task_type: str | None,
+                     skill: dict, bridge=None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -711,6 +985,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         backend=environment.get("hardware", "p800"),
         failure=failure_evidence, attempts_remaining=args.recovery_budget,
         context={k: str(v) for k, v in context.items()},
+        skill=skill,
     )
     brain = brain_from_config(
         {"brain": args.brain, "decide_command": args.decide_command,
@@ -731,12 +1006,22 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         merged = {**context, **{str(key): str(value)
                                 for key, value in decision.params.items()},
                   "artifacts": str(planned), "attempt": "{attempt-id}"}
+        attempt = None
+        skill_contract = None
         try:
+            if "fan_out" in spec and skill is not None:
+                attempt = paths.allocate_attempt(node)
+                skill_contract = write_skill_contract(attempt, skill)
             if "fan_out" in spec:
-                commands = fan_out_plan(spec, merged, args.journal, environment, planned)
+                commands = fan_out_plan(
+                    spec, merged, args.journal, environment, planned,
+                    skill_contract=skill_contract,
+                )
             else:
                 commands = [(planned, resolve(spec, merged, args.journal, environment))]
-            attempt, commands = allocate_commands(paths, node, planned, commands)
+            attempt, commands = allocate_commands(
+                paths, node, planned, commands, skill=skill, attempt=attempt,
+            )
             prepare_regression_attempt(
                 bridge, spec, attempt, args.journal, args.subject, environment,
             )
@@ -745,9 +1030,17 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         except (Unresolved, KeyError, ValueError, OSError) as error:
             return False, f"UNRESOLVED: {error}"
         returncode = 0
+        command_skill_cache: dict[str, Path] = {}
         for target, command in commands:
             print(f"[rerun ] {node}: {' '.join(command)}")
             target.mkdir(parents=True, exist_ok=True)
+            try:
+                skill_contract = command_skill_contract_path(
+                    attempt, target, attempt.output, spec, task_type,
+                    merged, skill, command_skill_cache,
+                )
+            except (OSError, skill_registry.SkillResolutionError) as error:
+                return False, f"UNRESOLVED: task_type={task_type}: {error}"
             # Same crash-first contract as the main walk: a recovery rerun
             # writes the live node_console.log, and a dead child is snapshotted
             # before the next attempt can replace it.
@@ -757,6 +1050,9 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                 result = evidence.run_logged(
                     command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                     crash_tag="recovery", watch=watch,
+                    env_overrides={
+                        "INFER_FORGE_SKILL_CONTRACT": skill_contract,
+                    },
                 )
             except (OSError, ValueError):
                 ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")
@@ -771,14 +1067,19 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             identity=attempt.identity, outcome=new_state,
             required=(f"output/{spec['state_file']}",) if passed else (),
         )
-        record_fact(args.journal, spec, args.subject, attempt.output, environment, returncode)
+        record_fact(
+            args.journal, spec, args.subject, attempt.output, environment,
+            returncode, skill=skill,
+            child_skills=fan_out_skill_bindings(spec, command_skill_cache),
+        )
         failure_evidence.artifacts.append(str(attempt.output))
         if passed:
             final_artifacts = str(attempt.output)
         return passed, new_state
 
     actions = default_actions(
-        REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir
+        REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir,
+        skill=skill,
     )
     controller = RecoveryController(brain, rerun, actions, budget=args.recovery_budget)
     outcome = controller.recover(request)
@@ -808,11 +1109,17 @@ def scheduled_spec(spec: dict, context: dict) -> dict:
     return {**spec, "command": command}
 
 
-def finish_scheduled_graph(bridge, args, environment: dict) -> int:
+def finish_scheduled_graph(bridge, args, environment: dict, context: dict) -> int:
     facts = {}
     for spec in NODES.values():
-        fact = input_fact(args.journal, spec["produces"], args.subject, environment)
-        if fact is not None:
+        fact = input_fact(
+            args.journal, spec["produces"], args.subject, environment,
+            context=context, verify_skill=True,
+        )
+        if fact is not None and reusable_inputs_current(
+            spec, fact, args.subject, args.journal, environment, context,
+            require_order=False,
+        ):
             facts[spec["produces"]] = Path(fact["artifacts"])
     try:
         result = bridge.finalize(facts)
@@ -885,6 +1192,14 @@ def _run(args, resources: ExitStack) -> int:
                       "message": str(error)}, args.json)
         return 2
     try:
+        method_errors = skill_registry.validate_method_references()
+        if method_errors:
+            emit_summary(
+                {"status": "BLOCKED", "reason_code": "METHOD_DOC_INVALID",
+                 "message": "; ".join(method_errors)},
+                args.json,
+            )
+            return 2
         requested_target = load_target(args.target) if args.target else None
         if requested_target is not None:
             resolve_adapters(requested_target, require_supported=True)
@@ -934,10 +1249,17 @@ def _run(args, resources: ExitStack) -> int:
             context["_environment_pod"] = bound["pod"]
             if args.execute:
                 bridge.bind_environment(Path(bound["artifact_root"]))
-                if input_fact(args.journal, "EnvironmentProof", args.subject, environment) is None:
+                environment_skill = skill_registry.execution_contract(
+                    skill_registry.resolve_for_context("environment_proof", context),
+                    "environment_proof",
+                )
+                if reusable_fact(
+                    NODES["environment_proof"], args.subject, args.journal,
+                    environment, skill=environment_skill,
+                ) is None:
                     record_fact(
                         args.journal, NODES["environment_proof"], args.subject,
-                        Path(bound["artifact_root"]), environment,
+                        Path(bound["artifact_root"]), environment, skill=environment_skill,
                     )
     try:
         bind_proven_environment(context, environment, args.journal)
@@ -957,6 +1279,13 @@ def _run(args, resources: ExitStack) -> int:
     order = [node["id"] for node in nodes]
     start = order.index(args.from_node) if args.from_node else 0
     by_id = {node["id"]: node for node in nodes}
+    context["_producer_task_types"] = {
+        spec["produces"]: task_type
+        for node in nodes
+        for task_type in [node_task_type(node)]
+        for spec in [NODES.get(task_type or "")]
+        if task_type and spec and spec.get("produces")
+    }
 
     current = order[start]
     visits: dict[str, int] = {}
@@ -986,14 +1315,14 @@ def _run(args, resources: ExitStack) -> int:
             break
         task_type = node_task_type(node)
         try:
-            skill = (
-                skill_registry.resolve_for_context(task_type, context)
-                if task_type else None
-            )
-        except skill_registry.SkillResolutionError:
+            skill = skill_registry.resolve_for_context(task_type, context) if task_type else None
+            if skill is not None:
+                skill = skill_registry.execution_contract(skill, task_type)
+        except (OSError, skill_registry.SkillResolutionError) as error:
             emit_summary(
                 {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
-                 "reason_code": "SKILL_UNRESOLVED", "message": f"task_type={task_type}"},
+                 "reason_code": "SKILL_UNRESOLVED",
+                 "message": f"task_type={task_type}: {error}"},
                 args.json,
             )
             break
@@ -1020,7 +1349,18 @@ def _run(args, resources: ExitStack) -> int:
 
         artifacts = args.artifact_root / "{attempt-output}"
         context.update(artifacts=str(artifacts), attempt="{attempt-id}")
-        prior = reusable_fact(spec, args.subject, args.journal, environment)
+        prior = reusable_fact(
+            spec, args.subject, args.journal, environment, skill=skill, context=context,
+        )
+        if "fan_out" in spec:
+            # Child methods are selected after fan-out discovery. Until their
+            # complete contract set is bound to the aggregate, execute the node
+            # again rather than skipping it from a base-Skill comparison.
+            prior = None
+        elif prior is not None and not reusable_inputs_current(
+            spec, prior, args.subject, args.journal, environment, context,
+        ):
+            prior = None
         if bridge and spec["produces"] in (
             "OperatorTaskDispatch", "OperatorIntegration", "TorchShimRegistry",
         ):
@@ -1039,8 +1379,7 @@ def _run(args, resources: ExitStack) -> int:
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
                  "success_states": sorted(SUCCESS_STATES)},
-                routing={"mode": "reuse_journal_fact", "skill": skill["id"],
-                         "verification": skill["verification"]},
+                routing=skill_routing(skill, mode="reuse_journal_fact"),
             )
             task_memory.finish_block(
                 memory,
@@ -1060,14 +1399,36 @@ def _run(args, resources: ExitStack) -> int:
             if args.until_node and current == args.until_node:
                 return 0
             if bridge and args.execute and next_task == "DELIVERED":
-                return finish_scheduled_graph(bridge, args, environment)
+                return finish_scheduled_graph(bridge, args, environment, context)
             current = next_task if next_task in by_id else None
             continue
+        attempt = None
+        skill_contract = None
         try:
+            if args.execute and "fan_out" in spec and skill is not None:
+                attempt = args.run_paths.allocate_attempt(current)
+                skill_contract = write_skill_contract(attempt, skill)
             if "fan_out" in spec:
-                commands = fan_out_plan(spec, context, args.journal, environment, artifacts)
+                commands = fan_out_plan(
+                    spec,
+                    context,
+                    args.journal,
+                    environment,
+                    artifacts,
+                    verify_input_skills=args.from_node is not None,
+                    skill_contract=skill_contract,
+                )
             else:
-                commands = [(artifacts, resolve(spec, context, args.journal, environment))]
+                commands = [(
+                    artifacts,
+                    resolve(
+                        spec,
+                        context,
+                        args.journal,
+                        environment,
+                        verify_input_skills=args.from_node is not None,
+                    ),
+                )]
         except WritePolicyError:
             raise
         except (Unresolved, KeyError, ValueError, OSError) as error:
@@ -1083,7 +1444,7 @@ def _run(args, resources: ExitStack) -> int:
         crash_logs: list[str] = []
         if args.execute:
             attempt, commands = allocate_commands(
-                args.run_paths, current, artifacts, commands,
+                args.run_paths, current, artifacts, commands, skill=skill, attempt=attempt,
             )
             artifacts = attempt.output
             context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
@@ -1096,17 +1457,30 @@ def _run(args, resources: ExitStack) -> int:
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
                                 "success_states": sorted(SUCCESS_STATES)},
-                routing={"skill": skill["id"], "verification": skill["verification"],
-                         "tools": skill["tools"]},
+                routing=skill_routing(skill),
             )
             task_memory.save(loop_state, memory)
         if not args.execute:
             for _, command in commands:
                 print(f"[plan] {current}: {' '.join(command)}")
         else:
+            command_skill_cache: dict[str, Path] = {}
             for target, command in commands:
                 print(f"[run ] {current}: {' '.join(command)}")
                 target.mkdir(parents=True, exist_ok=True)
+                try:
+                    skill_contract = command_skill_contract_path(
+                        attempt, target, attempt.output, spec, task_type, context, skill,
+                        command_skill_cache,
+                    )
+                except (OSError, skill_registry.SkillResolutionError) as error:
+                    emit_summary(
+                        {"status": "NEEDS_HUMAN", "node": current, "next_task": current,
+                         "reason_code": "SKILL_UNRESOLVED",
+                         "message": f"task_type={task_type}: {error}"},
+                        args.json,
+                    )
+                    return 2
                 # A node's console output is evidence, not noise: it is teed
                 # live to the terminal (a long bring-up must show progress) and
                 # to node_console.log, and a non-zero exit is snapshotted to a
@@ -1120,6 +1494,9 @@ def _run(args, resources: ExitStack) -> int:
                     result = evidence.run_logged(
                         command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                         crash_tag="node", watch=watch,
+                        env_overrides={
+                            "INFER_FORGE_SKILL_CONTRACT": skill_contract,
+                        },
                     )
                 except (OSError, ValueError):
                     ArtifactStore(attempt.root).register(
@@ -1141,7 +1518,14 @@ def _run(args, resources: ExitStack) -> int:
                 identity=attempt.identity, outcome=state,
                 required=(f"output/{spec['state_file']}",) if passed else (),
             )
-            record_fact(args.journal, spec, args.subject, artifacts, environment, returncode)
+            record_fact(
+                args.journal, spec, args.subject, artifacts, environment,
+                returncode, skill=skill,
+                child_skills=fan_out_skill_bindings(spec, command_skill_cache),
+            )
+            child_skills = fan_out_skill_bindings(spec, command_skill_cache)
+            if child_skills:
+                memory["current_loop_block"]["routing"]["child_skills"] = child_skills
             next_block = node.get("on_success" if passed else "on_failure")
             if bridge and not passed and spec["produces"] in (
                 "OperatorTaskDispatch", "OperatorIntegration",
@@ -1203,20 +1587,32 @@ def _run(args, resources: ExitStack) -> int:
                 if args.auto_recover:
                     outcome = attempt_recovery(
                         args, node=current, spec=spec, context=context,
-                        artifacts=artifacts, environment=environment, state=state, bridge=bridge,
+                        artifacts=artifacts, environment=environment, state=state,
+                        task_type=task_type, skill=skill, bridge=bridge,
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
                         artifacts = Path(outcome.final_artifacts)
                         context["artifacts"] = str(artifacts)
                         state = outcome.final_state or read_state(artifacts, spec)
-                        record_fact(args.journal, spec, args.subject, artifacts, environment)
+                        recovered_fact = reusable_fact(
+                            spec, args.subject, args.journal, environment,
+                            skill=skill, context=context,
+                        )
+                        recovered_children = (
+                            ((recovered_fact or {}).get("detail") or {})
+                            .get("skill", {})
+                            .get("children", [])
+                        )
+                        routing = skill_routing(skill, mode="recovery")
+                        if recovered_children:
+                            routing["child_skills"] = recovered_children
                         task_memory.start_block(
                             memory,
                             block_id=f"{current}:recovered:{len(memory['completed_loop_blocks']) + 1}",
                             sub_target=current,
                             exit_condition={"success_states": sorted(SUCCESS_STATES)},
-                            routing={"mode": "recovery", "skill": skill["id"]},
+                            routing=routing,
                         )
                         task_memory.finish_block(
                             memory, state, artifacts=[str(artifacts)],
@@ -1275,7 +1671,7 @@ def _run(args, resources: ExitStack) -> int:
         if nxt not in by_id:
             print(f"[edge] {current} --> {nxt}")
             if bridge and args.execute and nxt == "DELIVERED":
-                return finish_scheduled_graph(bridge, args, environment)
+                return finish_scheduled_graph(bridge, args, environment, context)
             break
         if args.execute:
             emit_summary(

@@ -34,6 +34,7 @@ def request(reason: str = "Check 0 == ret failed") -> DecisionRequest:
         failure=FailureEvidence(node="service_proof", state="DEPLOYMENT_FAILED",
                                 reason=reason),
         attempts_remaining=3,
+        skill={"id": "environment-proof", "method": {"sha256": "abc"}},
     )
 
 
@@ -68,6 +69,7 @@ class DecisionContractTest(unittest.TestCase):
         self.assertEqual(payload["attempts_remaining"], 3)
         self.assertIn("RETRY", payload["available_actions"])
         self.assertIn("BLOCKED", payload["available_actions"])
+        self.assertEqual(payload["skill"]["id"], "environment-proof")
 
 
 class AgentBrainFileProtocolTest(unittest.TestCase):

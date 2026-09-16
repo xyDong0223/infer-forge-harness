@@ -25,6 +25,7 @@ from runners.graph_runner import (  # noqa: E402
     node_task_type,
     resolve,
     reusable_fact,
+    reusable_inputs_current,
     bind_proven_environment,
     fact_environment,
     record_fact,
@@ -48,7 +49,7 @@ def graph_fixture(tmp_path, monkeypatch, outcomes):
     calls = []
 
     def run(command, *, log_path, **kwargs):
-        calls.append(command)
+        calls.append({"command": command, "kwargs": kwargs})
         out = Path(command[command.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         payload = outcomes.pop(0) if outcomes else {"state": "INTAKE_READY"}
@@ -82,6 +83,88 @@ def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_pat
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
     assert len(list(root.glob("tasks/intake/attempts/*"))) == 2
+
+
+def test_graph_snapshots_selected_skill_in_attempt_and_task_memory(tmp_path, monkeypatch):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert _graph_runner_cli.main() == 0
+    root = tmp_path / "run"
+    packet_path = next(root.glob("tasks/intake/attempts/*/input/skill.json"))
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    assert packet["id"] == "fixture"
+    assert packet["task_type"] == "model_intake"
+    memory = json.loads((root / "task_memory.json").read_text(encoding="utf-8"))
+    assert memory["completed_loop_blocks"][0]["routing"]["skill"] == "fixture"
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["env_overrides"]["INFER_FORGE_SKILL_CONTRACT"] == str(
+        packet_path
+    )
+
+
+def test_graph_fanout_children_use_contextual_skill_packets(tmp_path, monkeypatch):
+    workflow = [{"id": "fanout", "task": "fixture", "on_success": "DELIVERED",
+                 "on_failure": "REWORK"}]
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: workflow)
+    monkeypatch.setattr(graph_runner, "node_task_type", lambda _: "fixture_fanout")
+    monkeypatch.setitem(graph_runner.NODES, "fixture_fanout", {
+        "produces": "CapabilityEvaluation",
+        "fan_out": {
+            "var": "dimension",
+            "list": ["list"],
+            "aggregate": ["aggregate", "--out", "{artifacts}"],
+        },
+        "command": ["child", "--dimension", "{dimension}", "--out", "{artifacts}"],
+        "state_file": "status.json",
+    })
+    monkeypatch.setattr(
+        graph_runner.subprocess,
+        "run",
+        lambda *_, **__: SimpleNamespace(
+            returncode=0, stdout='["quantization","moe"]', stderr=""
+        ),
+    )
+
+    child_method = {"sha256": "old"}
+
+    def resolve_for_context(_, context=None):
+        context = context or {}
+        selected = {"id": context.get("dimension", "base"), "verification": [], "tools": []}
+        if "dimension" in context:
+            selected["method"] = dict(child_method)
+        return selected
+
+    monkeypatch.setattr(graph_runner.skill_registry, "resolve_for_context", resolve_for_context)
+    monkeypatch.setattr(
+        graph_runner.skill_registry,
+        "execution_contract",
+        lambda selected, task_type, **_: {**selected, "task_type": task_type},
+    )
+
+    observed: list[str] = []
+
+    def run(command, *, log_path, **kwargs):
+        packet = Path(kwargs["env_overrides"]["INFER_FORGE_SKILL_CONTRACT"])
+        observed.append(json.loads(packet.read_text(encoding="utf-8"))["id"])
+        out = Path(command[command.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "status.json").write_text('{"state":"EVALUATION_PASS"}', encoding="utf-8")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("fixture console")
+        return SimpleNamespace(returncode=0, crash_log=None)
+
+    monkeypatch.setattr(graph_runner.evidence, "run_logged", run)
+    monkeypatch.setattr(sys, "argv", [
+        "graph", "--subject", "demo", "--artifact-root", str(tmp_path / "run"),
+        "--env", "hardware=P800", "--set", "model_path=fixture", "--watch-interval", "0",
+        "--execute",
+    ])
+    assert _graph_runner_cli.main() == 0
+    assert observed == ["quantization", "moe", "base"]
+    child_method["sha256"] = "new"
+    sys.argv.append("--resume")
+    assert _graph_runner_cli.main() == 0
+    assert observed == ["quantization", "moe", "base", "quantization", "moe", "base"]
 
 
 def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
@@ -138,6 +221,7 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     root = tmp_path / "run"
     reports = sorted(root.glob("tasks/intake/attempts/*/output/intake_status.json"))
     assert len(calls) == len(reports) == 3
+    assert len(list(root.glob("tasks/intake/attempts/*/input/skill.json"))) == 3
     assert json.loads(reports[0].read_text())["reason"] == "readiness timeout"
     assert json.loads(reports[1].read_text())["state"] == "FAILED"
     hit = reusable_fact(NODES["model_intake"], "demo", root / "journal.jsonl",
@@ -145,6 +229,11 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     assert hit["artifacts"] == str(reports[-1].parent)
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
+    facts = [
+        json.loads(line)
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(facts) == 3
 
 
 @pytest.mark.parametrize("payload", [
@@ -235,6 +324,22 @@ def test_fanout_children_have_unique_outputs_and_logs(tmp_path):
     )
     assert len({target for target, _ in commands}) == 3
     assert len({graph_runner.command_logs(attempt, target) for target, _ in commands}) == 3
+
+
+def test_fanout_skill_contract_path_falls_back_for_non_child_target(tmp_path):
+    attempt = SimpleNamespace(input=tmp_path / "input")
+    attempt.input.mkdir(parents=True, exist_ok=True)
+    path = graph_runner.command_skill_contract_path(
+        attempt,
+        tmp_path / "outside" / "quantization",
+        tmp_path / "output",
+        {"fan_out": {"var": "dimension"}},
+        "capability_evaluation",
+        {"subject": "demo"},
+        {"id": "base"},
+        {},
+    )
+    assert path == str(attempt.input / "skill.json")
 
 
 def environment_bundle(bundle: Path) -> None:
@@ -468,6 +573,197 @@ class FactReliabilityTest(unittest.TestCase):
             record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT)
             status.write_text('{"state":"SCAN_READY","revision":"new"}')
             self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, ENVIRONMENT))
+
+    def test_resume_rejects_evidence_from_a_different_skill_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            old = {
+                "id": "model-scanner",
+                "method": {"sha256": "old"},
+            }
+            new = {
+                "id": "model-scanner",
+                "method": {"sha256": "new"},
+            }
+            record_fact(
+                journal, NODES["model_scan"], "demo", root, ENVIRONMENT, skill=old
+            )
+            self.assertIsNotNone(
+                reusable_fact(
+                    NODES["model_scan"], "demo", journal, ENVIRONMENT, skill=old
+                )
+            )
+            self.assertIsNone(
+                reusable_fact(
+                    NODES["model_scan"], "demo", journal, ENVIRONMENT, skill=new
+                )
+            )
+
+    def test_fan_out_fact_remains_available_as_a_downstream_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            spec = NODES["capability_evaluation"]
+            (root / spec["state_file"]).write_text('{"state":"EVALUATION_PASS"}')
+            skill = {"id": "capability-evaluator", "method": None}
+            record_fact(journal, spec, "demo", root, ENVIRONMENT, skill=skill)
+            self.assertIsNotNone(
+                reusable_fact(spec, "demo", journal, ENVIRONMENT, skill=skill)
+            )
+
+    def test_fan_out_fact_rejects_a_changed_child_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            spec = NODES["capability_evaluation"]
+            (root / spec["state_file"]).write_text('{"state":"EVALUATION_PASS"}')
+            base = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context(
+                    "capability_evaluation", {}
+                ),
+                "capability_evaluation",
+            )
+            contextual = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context(
+                    "capability_evaluation", {"dimension": "quantization"}
+                ),
+                "capability_evaluation",
+            )
+            binding = {
+                "context": {"dimension": "quantization"},
+                "id": contextual["id"],
+                "method_sha256": "stale",
+            }
+            record_fact(
+                journal, spec, "demo", root, ENVIRONMENT, skill=base,
+                child_skills=[binding],
+            )
+            self.assertIsNone(
+                reusable_fact(
+                    spec, "demo", journal, ENVIRONMENT, skill=base, context={},
+                )
+            )
+            method = contextual.get("method")
+            binding["method_sha256"] = method["sha256"] if method else None
+            record_fact(
+                journal, spec, "demo", root, ENVIRONMENT, skill=base,
+                child_skills=[binding],
+            )
+            self.assertIsNotNone(
+                reusable_fact(
+                    spec, "demo", journal, ENVIRONMENT, skill=base, context={},
+                )
+            )
+
+    def test_reuse_rejects_a_consumer_older_than_its_latest_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            support = root / "support"
+            match = root / "match"
+            newer_support = root / "newer-support"
+            intake = root / "intake"
+            environment_root = root / "environment"
+            for bundle, status, state in (
+                (intake, "intake_status.json", "INTAKE_READY"),
+                (support, "scan_status.json", "SCAN_READY"),
+                (match, "match_status.json", "MATCH_READY"),
+                (newer_support, "scan_status.json", "SCAN_READY"),
+            ):
+                bundle.mkdir()
+                (bundle / status).write_text(json.dumps({"state": state}))
+            environment_bundle(environment_root)
+            skills = {}
+            for task_type in (
+                "model_intake", "environment_proof", "model_scan", "capability_match",
+            ):
+                skills[task_type] = graph_runner.skill_registry.execution_contract(
+                    graph_runner.skill_registry.resolve_for_context(task_type, {}),
+                    task_type,
+                )
+            record_fact(
+                journal, NODES["model_intake"], "demo", intake, ENVIRONMENT,
+                skill=skills["model_intake"],
+            )
+            record_fact(
+                journal, NODES["environment_proof"], "demo", environment_root,
+                ENVIRONMENT, skill=skills["environment_proof"],
+            )
+            scan_skill = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("model_scan", {}),
+                "model_scan",
+            )
+            match_skill = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("capability_match", {}),
+                "capability_match",
+            )
+            record_fact(
+                journal, NODES["model_scan"], "demo", support, ENVIRONMENT,
+                skill=scan_skill,
+            )
+            match_fact = record_fact(
+                journal, NODES["capability_match"], "demo", match, ENVIRONMENT,
+                skill=match_skill,
+            )
+            context = {
+                "subject": "demo",
+                "_producer_task_types": {
+                    "ModelRequest": "model_intake",
+                    "EnvironmentProof": "environment_proof",
+                    "ModelSupportCard": "model_scan",
+                    "CapabilityMatch": "capability_match",
+                },
+            }
+            self.assertTrue(
+                reusable_inputs_current(
+                    NODES["capability_match"], match_fact, "demo", journal,
+                    ENVIRONMENT, context,
+                )
+            )
+            record_fact(
+                journal, NODES["model_scan"], "demo", newer_support, ENVIRONMENT,
+                skill=scan_skill,
+            )
+            self.assertFalse(
+                reusable_inputs_current(
+                    NODES["capability_match"], match_fact, "demo", journal,
+                    ENVIRONMENT, context,
+                )
+            )
+
+    def test_from_node_resolution_rejects_inputs_from_a_different_skill_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            (root / "scan_status.json").write_text('{"state":"SCAN_READY"}')
+            (root / "model_support.json").write_text("{}")
+            selected = graph_runner.skill_registry.execution_contract(
+                graph_runner.skill_registry.resolve_for_context("model_scan", {"subject": "demo"}),
+                "model_scan",
+            )
+            stale = {
+                "id": selected["id"],
+                "method": {"sha256": "stale-method"},
+            }
+            record_fact(journal, NODES["model_scan"], "demo", root, ENVIRONMENT, skill=stale)
+            spec = {
+                "command": ["probe"],
+                "needs": {"--support-card": "fact:ModelSupportCard:model_support.json"},
+            }
+            self.assertEqual(
+                resolve(spec, {"subject": "demo"}, journal, ENVIRONMENT),
+                ["probe", "--support-card", str(root / "model_support.json")],
+            )
+            with self.assertRaises(Unresolved):
+                resolve(
+                    spec,
+                    {"subject": "demo"},
+                    journal,
+                    ENVIRONMENT,
+                    verify_input_skills=True,
+                )
 
     def test_failed_command_cannot_reuse_a_leftover_success_status(self):
         with tempfile.TemporaryDirectory() as tmp:
