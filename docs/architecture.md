@@ -1,5 +1,9 @@
 # Architecture
 
+> The phase-based implementation notes below predate commit `d9f8554`.
+> For the current target types, adapter wiring, and remaining migration boundaries,
+> see the [technical implementation guide (Chinese)](architecture/implementation-layers.zh-CN.md).
+
 ## Layers
 
 The platform has explicit boundaries:
