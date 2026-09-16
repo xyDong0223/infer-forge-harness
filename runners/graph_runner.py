@@ -631,6 +631,8 @@ def reusable_fact(
     skill: dict | None = None,
 ) -> dict | None:
     """Return a prior successful fact whose artifact state is still valid."""
+    if "fan_out" in spec:
+        return None
     kind = spec.get("produces")
     if not kind or not environment:
         return None

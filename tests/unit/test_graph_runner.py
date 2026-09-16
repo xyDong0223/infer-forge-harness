@@ -586,6 +586,18 @@ class FactReliabilityTest(unittest.TestCase):
                 )
             )
 
+    def test_resume_does_not_reuse_fan_out_aggregate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            spec = NODES["capability_evaluation"]
+            (root / spec["state_file"]).write_text('{"state":"EVALUATION_PASS"}')
+            skill = {"id": "capability-evaluator", "method": None}
+            record_fact(journal, spec, "demo", root, ENVIRONMENT, skill=skill)
+            self.assertIsNone(
+                reusable_fact(spec, "demo", journal, ENVIRONMENT, skill=skill)
+            )
+
     def test_from_node_resolution_rejects_inputs_from_a_different_skill_method(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
