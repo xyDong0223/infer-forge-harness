@@ -1,0 +1,27 @@
+api_version: infer.forge/v1alpha1
+kind: Workflow
+metadata:
+  name: performance_analysis
+  version: 0.1.0
+description: Shared-core performance workflow; platform actions come from adapters.
+stages:
+  - id: environment_proof
+    task: environment_proof
+  - id: runtime_prepare
+    task: runtime_prepare
+  - id: model_intake
+    task: model_intake
+  - id: workload_prepare
+    task: workload_prepare
+  - id: benchmark
+    task: benchmark
+  - id: profiler_collect
+    task: profiler_collect
+  - id: metric_extract
+    task: metric_extract
+  - id: baseline_compare
+    task: baseline_compare
+  - id: performance_gate
+    task: performance_gate
+  - id: report
+    task: report

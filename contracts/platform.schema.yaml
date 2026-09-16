@@ -1,0 +1,21 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: Infer Forge platform target
+type: object
+required: [target]
+properties:
+  target:
+    type: object
+    required: [model, hardware, runtime]
+    properties:
+      model: {type: string}
+      hardware: {type: string}
+      runtime:
+        type: object
+        required: [engine, backend]
+        properties:
+          engine: {type: string}
+          backend: {type: string}
+          plugin: {type: [string, "null"]}
+          revisions: {type: object, additionalProperties: {type: string}}
+    additionalProperties: false
+additionalProperties: false

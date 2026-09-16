@@ -1,0 +1,8 @@
+target:
+  model: <model-id>
+  hardware: kunlun/p800
+  runtime:
+    engine: vllm
+    backend: kunlun
+    plugin: vllm-kunlun
+capability: model_adaptation

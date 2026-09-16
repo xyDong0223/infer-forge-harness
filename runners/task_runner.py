@@ -54,9 +54,9 @@ def execute(
     phase: str = "all",
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
-    from adapters import ClusterConfig, get_hardware
-
-    KunlunP800Adapter = get_hardware()
+    from adapters import ClusterConfig
+    from core.contracts import TargetContext
+    from core.facade import resolve_adapters
 
     from runners.deployment_proof import DeploymentProofRunner
 
@@ -86,9 +86,39 @@ def execute(
         contract["context"]["target"] = {"hardware": "Kunlunxin-3-P800", "device_count": deployment["xpu_count"], "namespace": cluster["namespace"], "volcano_queue": deployment["queue"], "dedicated_pool": deployment["node_pool"]}
         contract["context"]["software"] = {"image": deployment["image"]}
         common_setup = profile.get("runtime", {}).get("common_setup", [])
-        optional = f" --max-num-batched-tokens {base['max_num_batched_tokens']} --block-size {base['block_size']} --gpu-memory-utilization {base['gpu_memory_utilization']}" if base.get("max_num_batched_tokens") else ""
-        contract["execution"] = {"mode": "execute", "namespace": cluster["namespace"], "resource_name": f"{user_id}-environment-base", "manifest": deployment["base_manifest"], "startup_timeout_seconds": 1800, "health_interval_seconds": 10, "health_successes_required": 3, "retain_on_failure": True, "commands": {"install": ["bash /workspace/install_vllm_kunlun.sh"], "setup": common_setup, "serve": [f"python -m vllm.entrypoints.openai.api_server --host 0.0.0.0 --port 8356 --model {base['path']} --trust-remote-code --max-model-len {base['max_model_len']} --max-num-seqs {base['max_num_seqs']} --tensor-parallel-size {base['tensor_parallel_size']} --dtype {base['dtype']} --served-model-name {base['served_model_name']}{optional}"]}}
+        serve_config = {
+            "port": 8356,
+            "path": base["path"],
+            **base,
+        }
+        runtime_spec = contract.get("context", {}).get("runtime", {})
+        target_context = TargetContext(
+            model=base["name"],
+            hardware="kunlun/p800",
+            engine=runtime_spec.get("engine", "vllm"),
+            backend=runtime_spec.get("backend", "kunlun"),
+            plugin=runtime_spec.get("plugin", "vllm-kunlun"),
+        )
+        bundle = resolve_adapters(target_context, require_supported=True)
+        contract["execution"] = {"mode": "execute", "namespace": cluster["namespace"], "resource_name": f"{user_id}-environment-base", "manifest": deployment["base_manifest"], "startup_timeout_seconds": 1800, "health_interval_seconds": 10, "health_successes_required": 3, "retain_on_failure": True, "commands": {"install": ["bash /workspace/install_vllm_kunlun.sh"], "setup": common_setup, "serve": [bundle.runtime.build_serve_command(serve_config)]}}
         contract["checks"] = {"health": {"path": "/health", "expected_status": 200}, "chat": {"path": "/v1/chat/completions", "method": "POST", "expected_non_empty_text": True, "payload": {"model": base["served_model_name"], "messages": [{"role": "user", "content": "Say hello in one short sentence."}], "max_tokens": 16}}, "backend": {"expected": "kunlun", "reject_unexpected_fallback": True}}
+    target = contract.get("context", {}).get("target", {})
+    runtime_spec = contract.get("context", {}).get("runtime", {})
+    target_context = TargetContext(
+        model=contract.get("context", {}).get("model", {}).get("name", "<unspecified>"),
+        hardware=target.get("hardware", "kunlun/p800"),
+        engine=runtime_spec.get("engine", "vllm"),
+        backend=runtime_spec.get("backend", "kunlun"),
+        plugin=runtime_spec.get("plugin", "vllm-kunlun"),
+    )
+    bundle = resolve_adapters(target_context, require_supported=True)
+    contract.setdefault("context", {})["resolved_target"] = {
+        "hardware": target_context.hardware,
+        "engine": target_context.engine,
+        "backend": target_context.backend,
+        "plugin": target_context.plugin,
+        "compatibility": bundle.compatibility,
+    }
     errors = validate_executable(contract)
     if errors:
         print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
@@ -109,11 +139,12 @@ def execute(
     target_dir = artifact_dir or Path(artifacts.get("directory", repo_root / "artifacts"))
     runner = DeploymentProofRunner(
         contract=contract,
-        adapter=KunlunP800Adapter(config),
+        adapter=bundle.hardware(config),
         repo_root=repo_root,
         artifact_dir=target_dir,
         attach_pod=attach_pod,
         phase=phase,
+        runtime=bundle.runtime,
     )
     status = runner.run()
     gate = (

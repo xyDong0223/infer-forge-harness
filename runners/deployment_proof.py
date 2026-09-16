@@ -24,7 +24,10 @@ KunlunP800Adapter = get_hardware()
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
-FALLBACK_MARKERS = ("falling back to", "fallback to cpu", "using cuda backend")
+# Legacy default for callers that inject no runtime. CUDA names stay out:
+# Kunlun exposes the XPU through the torch.cuda API, so a cuda-sounding log
+# line is the native path, not a fallback (see VllmKunlunRuntime.fallback_markers).
+FALLBACK_MARKERS = ("falling back to", "fallback to cpu")
 
 
 def now() -> str:
@@ -79,6 +82,7 @@ class DeploymentProofRunner:
         image: str = "",
         attach_pod: str | None = None,
         phase: str = "all",
+        runtime: object | None = None,
     ) -> None:
         self.contract = contract
         self.adapter = adapter
@@ -94,6 +98,7 @@ class DeploymentProofRunner:
         if phase not in ("all", "environment", "service"):
             raise ActionFailed("CONTRACT_INVALID", f"unknown phase {phase!r}")
         self.phase = phase
+        self.runtime = runtime or default_runtime()
         self.pod: str | None = None
         self.records: list[dict[str, Any]] = []
         self.checks: dict[str, Any] = {}
@@ -319,17 +324,18 @@ class DeploymentProofRunner:
         pod = self.pod or ""
         probe = self.adapter.exec(
             pod,
-            f"{default_runtime().env_prefix()}; "
-            'python3 -c "import torch, vllm, vllm_kunlun" && '
-            f"test -f {shlex.quote(self.workdir)}/vLLM-Kunlun/setup_env.sh",
+            f"{self.runtime.env_prefix()}; "
+            f"{self.runtime.import_check_command()} && "
+            f"{self.runtime.worktree_check_command(shlex.quote(self.workdir))}",
             timeout=300,
         )
         return probe.returncode == 0
 
     def install_runtime(self, execution: dict[str, Any]) -> None:
         pod = self.pod or ""
-        script = self.repo_root / "tools" / "install_vllm_kunlun.sh"
-        copied = self.adapter.copy_into(pod, script, f"{self.workdir}/install_vllm_kunlun.sh")
+        script = self.runtime.installer_path(self.repo_root)
+        installer_name = self.runtime.installer_name()
+        copied = self.adapter.copy_into(pod, script, f"{self.workdir}/{installer_name}")
         if copied.returncode != 0:
             raise ActionFailed("INSTALL_FAILED", f"cannot copy installer: {copied.stderr.strip()}")
         for command in execution.get("commands", {}).get("install", []):
@@ -341,9 +347,9 @@ class DeploymentProofRunner:
             self.record("install", True, command)
         versions = self.adapter.exec(
             pod,
-            f"{default_runtime().env_prefix()}; "
-            "uv pip list | grep -iE '^(vllm|vllm-kunlun|torch|kunlun-ops|xspeedgate-ops) '; "
-            f"cd {self.workdir}/vLLM-Kunlun && git rev-parse HEAD",
+            f"{self.runtime.env_prefix()}; "
+            f"{self.runtime.package_query_command()}; "
+            f"{self.runtime.worktree_revision_command(self.workdir)}",
         )
         self.write("environment_versions.txt", versions.stdout + versions.stderr)
         self.record("environment_versions", versions.returncode == 0)
@@ -407,7 +413,7 @@ class DeploymentProofRunner:
         launch = (
             evidence.archive_before_truncate(self.server_log_path())
             + f"( cd {self.workdir} && "
-            f"{default_runtime().env_prefix()} && "
+            f"{self.runtime.env_prefix()} && "
             f"{setup + ' && ' if setup else ''}"
             f"{serve} ) < /dev/null > {self.server_log_path()} 2>&1 & echo started $!"
         )
@@ -565,7 +571,7 @@ class DeploymentProofRunner:
         for script in scripts:
             remote = f"/tmp/{script.name}"
             command = (
-                f"{default_runtime().env_prefix()}; "
+                f"{self.runtime.env_prefix()}; "
                 f"{push_snippet(script, remote)} && python3 {remote}"
             )
             result = self.adapter.exec(self.pod or "", command, timeout=600)
@@ -605,7 +611,7 @@ class DeploymentProofRunner:
         model_path = self.contract.get("context", {}).get("model", {}).get("path")
         model_config = f"{model_path}/config.json" if model_path else ""
         script = (
-            f"{default_runtime().env_prefix()}; "
+            f"{self.runtime.env_prefix()}; "
             + push_snippet(probe, "/tmp/kdp_drift_precheck.py")
             + " && python3 /tmp/kdp_drift_precheck.py"
             + (f" --model-config {shlex.quote(model_config)}" if model_config else "")
@@ -660,12 +666,15 @@ class DeploymentProofRunner:
     def verify_backend(self, prefix: str = "") -> None:
         pod = self.pod or ""
         backend = self.contract["checks"].get("backend", {})
-        expected = backend.get("expected", "kunlun")
+        runtime = self.contract.get("context", {}).get("runtime", {})
+        expected = backend.get("expected") or runtime.get("backend") or "kunlun"
         log = self.adapter.exec(pod, f"cat {self.server_log_path()}", timeout=120).stdout
         self.write(f"{prefix}server_log.txt" if prefix else "server_log.txt", log)
         lowered = log.lower()
         self.checks["expected_backend"] = expected if expected in lowered else "unknown"
-        fallbacks = [marker for marker in FALLBACK_MARKERS if marker in lowered]
+        runtime = getattr(self, "runtime", None)
+        markers = getattr(runtime, "fallback_markers", lambda: FALLBACK_MARKERS)()
+        fallbacks = [marker for marker in markers if marker in lowered]
         self.checks["unexpected_fallback"] = bool(fallbacks)
         if backend.get("reject_unexpected_fallback", True) and fallbacks:
             self.record("verify_backend", False, f"fallback markers: {fallbacks}")
@@ -808,10 +817,8 @@ class DeploymentProofRunner:
         """
         pod = self.pod or ""
         script = (
-            f"{default_runtime().env_prefix()}; "
-            'python3 -c "import json, torch, vllm, vllm_kunlun; '
-            "print(json.dumps({'torch': torch.__version__, 'vllm': vllm.__version__, "
-            "'vllm_kunlun': getattr(vllm_kunlun, '__version__', 'unknown')}))\""
+            f"{self.runtime.env_prefix()}; "
+            f"{self.runtime.import_version_command()}"
         )
         result = self.adapter.exec(pod, script, timeout=600)
         self.write("runtime_import.txt", result.stdout + result.stderr)
@@ -872,12 +879,9 @@ class DeploymentProofRunner:
         """
         pod = self.pod or ""
         script = (
-            f"{default_runtime().env_prefix()}; "
-            "echo '## packages'; uv pip list | grep -iE "
-            "'^(vllm|vllm-kunlun|torch|torch-xmlir|kunlun-ops|xspeedgate-ops|triton) '; "
-            f"echo '## vllm-kunlun commit'; (cd {self.workdir}/vLLM-Kunlun && git rev-parse HEAD); "
+            f"{self.runtime.env_prefix()}; "
+            f"{self.runtime.environment_fingerprint_command(self.workdir)}; "
             "echo '## driver'; xpu_smi | sed -n '3p'; "
-            "echo '## device'; xpu_smi -m | head -1; "
             "echo '## os'; . /etc/os-release && echo \"$PRETTY_NAME\"; gcc --version | head -1"
         )
         result = self.adapter.exec(pod, script, timeout=300)

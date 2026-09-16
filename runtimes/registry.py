@@ -61,3 +61,8 @@ def default_runtime() -> object:
     if _DEFAULT is None:
         _DEFAULT = get_runtime()
     return _DEFAULT
+
+
+def resolve_runtime(name: str) -> object:
+    """Facade-friendly runtime resolver with no implicit fallback."""
+    return get_runtime(name)

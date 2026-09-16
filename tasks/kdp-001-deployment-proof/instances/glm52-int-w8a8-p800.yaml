@@ -20,6 +20,10 @@ context:
     namespace: pd-test
     volcano_queue: aihcq-8vcrxly8ieyn
     dedicated_pool: aihcq-sirzhpwo0g1u
+  runtime:
+    engine: vllm
+    backend: kunlun
+    plugin: vllm-kunlun
   repository:
     vllm_kunlun_ref: v0.25.1-dev
   software:

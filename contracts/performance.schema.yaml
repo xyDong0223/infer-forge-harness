@@ -1,0 +1,26 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: Infer Forge performance request
+type: object
+required: [target, workload]
+properties:
+  target:
+    type: object
+    required: [hardware, runtime]
+    properties:
+      hardware: {type: string}
+      runtime: {type: string}
+      model: {type: string}
+      revisions: {type: object, additionalProperties: {type: string}}
+  workload:
+    type: object
+    required: [name]
+    properties:
+      name: {type: string}
+      input_lengths: {type: array, items: {type: integer, minimum: 1}}
+      output_lengths: {type: array, items: {type: integer, minimum: 1}}
+      concurrency: {type: array, items: {type: integer, minimum: 1}}
+      request_rate: {type: array, items: {type: number, exclusiveMinimum: 0}}
+  gates:
+    type: object
+    additionalProperties: {type: number}
+additionalProperties: false

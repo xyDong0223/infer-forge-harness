@@ -1,0 +1,27 @@
+version: 1
+entries:
+  - id: p800-vllm-kunlun
+    hardware: kunlun/p800
+    engine: vllm
+    backend: kunlun
+    plugin: vllm-kunlun
+    status: supported
+  - id: p800-sglang-kunlun
+    hardware: kunlun/p800
+    engine: sglang
+    backend: kunlun
+    plugin: sglang-kunlun
+    status: planned
+  - id: b200-sglang
+    hardware: nvidia/b200
+    engine: sglang
+    backend: cuda
+    plugin: null
+    status: planned
+  - id: b200-vllm
+    hardware: nvidia/b200
+    engine: vllm
+    backend: cuda
+    plugin: null
+    status: unsupported
+    reason: "B200 当前范围只做 SGLang"

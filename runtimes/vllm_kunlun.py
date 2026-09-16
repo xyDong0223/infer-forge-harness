@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shlex
 
 DEFAULT_PROFILE = (
     Path(__file__).resolve().parents[1] / "config" / "profiles" / "p800-vllm-kunlun.yaml"
@@ -77,3 +78,80 @@ class VllmKunlunRuntime:
     @property
     def engine_module(self) -> str:
         return self.profile.engine_module
+
+    def installer_name(self) -> str:
+        return "install_vllm_kunlun.sh"
+
+    def installer_path(self, repo_root: Path) -> Path:
+        return repo_root / "tools" / self.installer_name()
+
+    def import_check_command(self) -> str:
+        return 'python3 -c "import torch, vllm, vllm_kunlun"'
+
+    def import_version_command(self) -> str:
+        return (
+            'python3 -c "import json, torch, vllm, vllm_kunlun; '
+            "print(json.dumps({'torch': torch.__version__, "
+            "'vllm': vllm.__version__, "
+            "'vllm_kunlun': getattr(vllm_kunlun, '__version__', 'unknown')}))\""
+        )
+
+    def package_query_command(self) -> str:
+        return "uv pip list | grep -iE '^(vllm|vllm-kunlun|torch|kunlun-ops|xspeedgate-ops) '"
+
+    def worktree_check_command(self, workdir: str) -> str:
+        return f"test -f {workdir}/vLLM-Kunlun/setup_env.sh"
+
+    def worktree_revision_command(self, workdir: str) -> str:
+        return f"cd {workdir}/vLLM-Kunlun && git rev-parse HEAD"
+
+    def fallback_markers(self) -> tuple[str, ...]:
+        """Log signals that mean the service left the vendor device path.
+
+        CUDA names are deliberately absent. On Kunlun the XPU is exposed
+        through the torch.cuda API (torch_xmlir maps it end to end, which is
+        why `is_cuda_alike()` must answer True), so a cuda-sounding line in a
+        healthy P800 server log is the native path, not a fallback. Treating
+        it as one failed correct deployments with UNEXPECTED_FALLBACK. Only
+        host/CPU escapes count here.
+        """
+        return ("falling back to", "fallback to cpu")
+
+    def environment_fingerprint_command(self, workdir: str) -> str:
+        return (
+            f"{self.package_query_command()}; "
+            f"echo '## {self.profile.framework} commit'; "
+            f"{self.worktree_revision_command(workdir)}; "
+            "echo '## device'; xpu_smi -L"
+        )
+
+    def build_serve_command(self, server: dict) -> str:
+        """Build the legacy-compatible vLLM OpenAI server command."""
+        required = (
+            "port", "path", "max_model_len", "max_num_seqs",
+            "tensor_parallel_size", "dtype", "served_model_name",
+        )
+        missing = [key for key in required if server.get(key) in (None, "")]
+        if missing:
+            raise ValueError(f"server configuration is missing: {', '.join(missing)}")
+        values = [
+            "python -m vllm.entrypoints.openai.api_server",
+            "--host 0.0.0.0",
+            f"--port {shlex.quote(str(server['port']))}",
+            f"--model {shlex.quote(str(server['path']))}",
+            "--trust-remote-code",
+            f"--max-model-len {shlex.quote(str(server['max_model_len']))}",
+            f"--max-num-seqs {shlex.quote(str(server['max_num_seqs']))}",
+            f"--tensor-parallel-size {shlex.quote(str(server['tensor_parallel_size']))}",
+            f"--dtype {shlex.quote(str(server['dtype']))}",
+            f"--served-model-name {shlex.quote(str(server['served_model_name']))}",
+        ]
+        optional = (
+            ("max_num_batched_tokens", "--max-num-batched-tokens"),
+            ("block_size", "--block-size"),
+            ("gpu_memory_utilization", "--gpu-memory-utilization"),
+        )
+        for key, flag in optional:
+            if server.get(key) not in (None, ""):
+                values.append(f"{flag} {shlex.quote(str(server[key]))}")
+        return " ".join(values)

@@ -52,3 +52,29 @@ entries:
         torch.ops._C.silu_and_mul_per_block_quant, which this stack does not
         register; shape-dynamic MLA decode spans therefore require
         --enforce-eager (observed 2026-09-14, run glm52-int-w8a8-p800-001).
+    api_surface:
+      # Stated by the platform owner on 2026-09-16 and already relied on
+      # elsewhere in this repository: the drift precheck requires
+      # is_cuda_alike() to answer True for the OOT PlatformEnum, and the
+      # replayable drift patch injects exactly that contract.
+      device_api: cuda
+      device_module: torch.cuda
+      note: >-
+        All torch operations on P800 are the CUDA variants: torch_xmlir maps
+        the XPU onto the torch.cuda API end to end. Device code here uses
+        torch.cuda.* (including memory queries and synchronize) rather than a
+        separate XPU-only surface.
+      consequence: >-
+        A cuda-sounding string in a P800 server log is the native device path,
+        never evidence of an accelerator-to-host fallback. Fallback detection
+        must match host/CPU escapes only; matching "cuda" failed correct
+        deployments with UNEXPECTED_FALLBACK.
+      evidence:
+        - >-
+          tools/probe/engine_core_drift_precheck.py: an OOT PlatformEnum whose
+          real contract is CUDA-alike is landmine 11, and is_cuda_alike() must
+          answer truthily.
+        - >-
+          tools/patches/patch_vllm_kunlun_drift.py: the replayable repair
+          injects "torch_xmlir maps the XPU onto the torch.cuda API end to
+          end" as the justification for that answer.

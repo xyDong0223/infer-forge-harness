@@ -27,6 +27,8 @@ from runners import watch as watch_module  # noqa: E402
 from tools import journal as journal_module  # noqa: E402
 from tools import skill_registry  # noqa: E402
 from tools import task_memory  # noqa: E402
+from core.facade import resolve_adapters  # noqa: E402
+from core.target import load_target  # noqa: E402
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
 # node's own output directory; `fact:<Kind>:<file>` resolves through the Journal.
@@ -490,7 +492,8 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         artifacts=[str(artifacts)], environment=dict(environment),
     )
     request = DecisionRequest(
-        model=args.subject, backend=environment.get("hardware", "p800"),
+        model=args.subject,
+        backend=environment.get("hardware", "p800"),
         failure=evidence, attempts_remaining=args.recovery_budget,
         context={k: str(v) for k, v in context.items()},
     )
@@ -546,6 +549,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow", type=Path, default=REPO_ROOT / "workflows" / "model_adaptation.yaml")
     parser.add_argument("--subject", required=True, help="e.g. Qwen3-8B")
+    parser.add_argument(
+        "--target",
+        type=Path,
+        help="platform target YAML; applies the compatibility gate before planning",
+    )
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--journal", type=Path, default=journal_module.DEFAULT_JOURNAL)
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
@@ -585,6 +593,24 @@ def main() -> int:
 
     environment = dict(pair.split("=", 1) for pair in args.env)
     context = dict(pair.split("=", 1) for pair in args.set)
+    target = load_target(args.target) if args.target else None
+    if target is not None:
+        compatibility = resolve_adapters(target).compatibility
+        environment.update(
+            hardware=target.hardware,
+            engine=target.engine,
+            backend=target.backend,
+            plugin=target.plugin or "",
+            compatibility_status=compatibility["status"],
+        )
+        if compatibility["status"] != "supported":
+            reason = compatibility.get("reason") or "target is not executable"
+            print(
+                f"blocked: target {target.hardware} + {target.engine} + "
+                f"{target.plugin or target.backend} is "
+                f"{compatibility['status']}: {reason}"
+            )
+            return 2
     context.update(subject=args.subject, attempt="graph",
                    environment_text=",".join(f"{k}={v}" for k, v in sorted(environment.items())))
     loop_state = args.loop_state or args.artifact_root / "task_memory.json"

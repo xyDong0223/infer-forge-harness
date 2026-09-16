@@ -1,0 +1,12 @@
+target:
+  model: <model-id>
+  hardware: nvidia/b200
+  runtime: sglang
+  revisions:
+    engine: <sglang-revision>
+workload:
+  name: decode-throughput
+  input_lengths: [2048, 8192]
+  output_lengths: [128]
+  concurrency: [1, 8, 32]
+capability: performance_analysis

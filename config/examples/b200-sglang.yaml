@@ -1,0 +1,8 @@
+target:
+  model: <model-id>
+  hardware: nvidia/b200
+  runtime:
+    engine: sglang
+    backend: cuda
+    plugin: null
+capability: performance_analysis

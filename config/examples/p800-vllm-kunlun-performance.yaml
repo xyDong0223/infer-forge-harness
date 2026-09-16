@@ -1,0 +1,13 @@
+target:
+  model: <model-id>
+  hardware: kunlun/p800
+  runtime: vllm-kunlun
+  revisions:
+    engine: <vllm-revision>
+    plugin: <vllm-kunlun-revision>
+workload:
+  name: serving-baseline
+  input_lengths: [1024, 4096]
+  output_lengths: [128]
+  concurrency: [1, 8]
+capability: performance_analysis

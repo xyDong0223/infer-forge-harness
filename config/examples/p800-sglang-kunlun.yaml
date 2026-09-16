@@ -1,0 +1,8 @@
+target:
+  model: <model-id>
+  hardware: kunlun/p800
+  runtime:
+    engine: sglang
+    backend: kunlun
+    plugin: sglang-kunlun
+capability: performance_analysis
