@@ -124,9 +124,14 @@ def test_graph_fanout_children_use_contextual_skill_packets(tmp_path, monkeypatc
         ),
     )
 
+    child_method = {"sha256": "old"}
+
     def resolve_for_context(_, context=None):
         context = context or {}
-        return {"id": context.get("dimension", "base"), "verification": [], "tools": []}
+        selected = {"id": context.get("dimension", "base"), "verification": [], "tools": []}
+        if "dimension" in context:
+            selected["method"] = dict(child_method)
+        return selected
 
     monkeypatch.setattr(graph_runner.skill_registry, "resolve_for_context", resolve_for_context)
     monkeypatch.setattr(
@@ -155,6 +160,10 @@ def test_graph_fanout_children_use_contextual_skill_packets(tmp_path, monkeypatc
     ])
     assert _graph_runner_cli.main() == 0
     assert observed == ["quantization", "moe", "base"]
+    child_method["sha256"] = "new"
+    sys.argv.append("--resume")
+    assert _graph_runner_cli.main() == 0
+    assert observed == ["quantization", "moe", "base", "quantization", "moe", "base"]
 
 
 def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):

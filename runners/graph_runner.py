@@ -1220,6 +1220,8 @@ def _run(args, resources: ExitStack) -> int:
         prior = reusable_fact(
             spec, args.subject, args.journal, environment, skill=skill,
         )
+        if "fan_out" in spec:
+            prior = None
         if bridge and spec["produces"] in (
             "OperatorTaskDispatch", "OperatorIntegration", "TorchShimRegistry",
         ):
