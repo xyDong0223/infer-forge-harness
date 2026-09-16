@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runners.deployment_proof import DeploymentProofRunner  # noqa: E402
+from runners.deployment_proof import ActionFailed, DeploymentProofRunner  # noqa: E402
 
 
 class _RecordingAdapter:
@@ -76,20 +76,20 @@ class RuntimePatchReplayTest(unittest.TestCase):
                             for r in runner.records))
 
     def test_a_non_matching_replay_is_skipped_not_fatal(self):
-        # Exit code 1 = anchors no longer match: this install is a different
+        # Exit code 2 = anchors no longer match: this install is a different
         # engine/plugin pair than the one the patch set repairs. The replay
         # records SKIPPED with full evidence and the run continues — the
         # drift precheck decides whether this environment actually needs
         # repair. Failing the whole run here is what blocked cross-version
         # adaptation.
-        adapter = _RecordingAdapter([1])
+        adapter = _RecordingAdapter([2])
         runner = make_runner(adapter)
 
         runner.apply_runtime_patches()  # must not raise
 
         artifact = runner.artifact_dir / "runtime_patches.txt"
         evidence = artifact.read_text(encoding="utf-8")
-        self.assertIn("exit 1", evidence)
+        self.assertIn("exit 2", evidence)
         self.assertIn("SKIPPED", evidence)
         self.assertIn("patch_vllm_kunlun_drift.py", evidence)
         record = next(r for r in runner.records
@@ -97,6 +97,22 @@ class RuntimePatchReplayTest(unittest.TestCase):
         self.assertTrue(record["ok"])
         self.assertIn("skipped (non-matching pair)", record["detail"])
         self.assertIn("patch_vllm_kunlun_drift.py", record["detail"])
+
+    def test_an_execution_failure_is_not_mislabeled_as_version_mismatch(self):
+        adapter = _RecordingAdapter([1])
+        runner = make_runner(adapter)
+
+        with self.assertRaises(ActionFailed) as ctx:
+            runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "RUNTIME_PATCH_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FAILED", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
 
 
 class PatchScriptSemanticsTest(unittest.TestCase):
@@ -122,6 +138,23 @@ class PatchScriptSemanticsTest(unittest.TestCase):
         self.assertIsNone(self.module.patch(tmp, [("absent anchor", "x")]))
         # A failed patch leaves the file untouched — no partial writes.
         self.assertEqual(tmp.read_text(encoding="utf-8"), "new line\n")
+
+    def test_transaction_does_not_write_until_committed(self):
+        first = Path(tempfile.mkdtemp()) / "first.py"
+        second = first.with_name("second.py")
+        first.write_text("old first\n", encoding="utf-8")
+        second.write_text("unexpected\n", encoding="utf-8")
+        transaction = self.module.PatchTransaction()
+
+        self.assertTrue(self.module.patch(
+            first, [("old first", "new first")], transaction=transaction
+        ))
+        self.assertIsNone(self.module.patch(
+            second, [("old second", "new second")], transaction=transaction
+        ))
+
+        self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "unexpected\n")
 
 
 if __name__ == "__main__":

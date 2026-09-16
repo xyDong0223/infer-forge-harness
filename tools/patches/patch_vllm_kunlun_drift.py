@@ -24,8 +24,18 @@ Repairs (each documented in openwiki/harness/vllm-0251-drift-map.md):
 Idempotent: every edit matches its exact old text and skips when already
 applied, so re-running after a reinstall is safe.
 
+Applicability is content-based rather than commit-based. A commit allowlist
+would reject equivalent cherry-picks and rebuilt wheels, while version strings
+are already known to be unreliable for this stack. All anchors are checked and
+staged first; no file is written unless the complete patch set matches.
+
 Usage (inside the prepared pod):
     python3 patch_vllm_kunlun_drift.py
+
+Exit codes:
+    0  applied or already applied
+    1  execution failure
+    2  not applicable to this engine/plugin source pair
 """
 
 from __future__ import annotations
@@ -34,10 +44,45 @@ import sys
 from pathlib import Path
 
 SITE = Path("/opt/vllm_kunlun/lib/python3.10/site-packages")
+NOT_APPLICABLE = 2
 
 
-def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
-    text = path.read_text(encoding="utf-8")
+class PatchTransaction:
+    """Stage a complete patch set before changing runtime files."""
+
+    def __init__(self) -> None:
+        self._staged: dict[Path, str] = {}
+
+    def read(self, path: Path) -> str:
+        if path in self._staged:
+            return self._staged[path]
+        return path.read_text(encoding="utf-8")
+
+    def stage(self, path: Path, content: str) -> bool:
+        current = self.read(path) if path.exists() or path in self._staged else None
+        if current == content:
+            return False
+        self._staged[path] = content
+        return True
+
+    def commit(self) -> list[Path]:
+        for path, content in self._staged.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return list(self._staged)
+
+
+def patch(
+    path: Path,
+    replacements: list[tuple[str, str]],
+    *,
+    transaction: PatchTransaction | None = None,
+) -> bool | None:
+    try:
+        text = transaction.read(path) if transaction else path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"FAIL {path}: target file not found")
+        return None
     changed = False
     for old, new in replacements:
         if new in text:
@@ -56,8 +101,12 @@ def patch(path: Path, replacements: list[tuple[str, str]]) -> bool:
         text = text.replace(old, new)
         changed = True
     if changed:
-        path.write_text(text, encoding="utf-8")
-    print(f"{'PATCHED' if changed else 'SKIP'} {path}")
+        if transaction:
+            transaction.stage(path, text)
+        else:
+            path.write_text(text, encoding="utf-8")
+    if transaction is None:
+        print(f"{'PATCHED' if changed else 'SKIP'} {path}")
     return changed
 
 
@@ -131,17 +180,14 @@ class XPUMLAPrefillStub(MLAPrefillBackend):
 
 
 def main() -> int:
+    transaction = PatchTransaction()
     deploy_ported = (
         SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "flashmla_sparse.py"
     )
     ported = Path(__file__).parent / "vllm_kunlun_flashmla_sparse.py"
     if ported.exists():
         content = ported.read_text(encoding="utf-8")
-        if not deploy_ported.exists() or deploy_ported.read_text(encoding="utf-8") != content:
-            deploy_ported.write_text(content, encoding="utf-8")
-            print(f"DEPLOYED {deploy_ported}")
-        else:
-            print(f"SKIP {deploy_ported}")
+        transaction.stage(deploy_ported, content)
     else:
         print(f"WARN {ported} not found; flashmla_sparse port not deployed")
     deepseek_v2 = SITE / "vllm_kunlun" / "models" / "deepseek_v2.py"
@@ -348,7 +394,7 @@ def main() -> int:
             "            num_redundant_experts=self.num_redundant_experts,\n"
             "        )\n",
         ),
-    ])
+    ], transaction=transaction)
     indexer = SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "indexer.py"
     ok2 = patch(indexer, [
         # -- import block: engine symbols that moved ------------------------
@@ -469,7 +515,7 @@ def main() -> int:
             "            for reqs_start, reqs_end in chunk_seq_ids\n",
             "            for req_slice, _query_slice in chunk_seq_ids\n",
         ),
-    ])
+    ], transaction=transaction)
 
     #  5. The engine removed VLLM_ATTENTION_BACKEND from vllm.envs entirely;
     #     the platform's FlashMLA default check died with AttributeError at
@@ -489,12 +535,7 @@ def main() -> int:
         SITE / "vllm_kunlun" / "v1" / "attention" / "backends" / "mla" / "prefill_xpu.py"
     )
     ok4 = True
-    if not prefill_stub.exists() or prefill_stub.read_text(encoding="utf-8") != PREFILL_STUB:
-        prefill_stub.parent.mkdir(parents=True, exist_ok=True)
-        prefill_stub.write_text(PREFILL_STUB, encoding="utf-8")
-        print(f"CREATED {prefill_stub}")
-    else:
-        print(f"SKIP {prefill_stub}")
+    transaction.stage(prefill_stub, PREFILL_STUB)
     ok5 = patch(plugin_init, [
         (
             "    # 7. Add torch_xmlir's missing memory-info API.\n"
@@ -518,7 +559,7 @@ def main() -> int:
             "        \"XPUMLAPrefillStub\",\n"
             "    )\n",
         ),
-    ])
+    ], transaction=transaction)
     ok3 = patch(kunlun_platform, [
         # 13. Per the drift map's P800 landmine note: KunlunPlatform is
         #     PlatformEnum.OOT, so is_cuda_alike() (gated on
@@ -618,15 +659,17 @@ def main() -> int:
             "\n"
             "        from vllm.config import CUDAGraphMode\n",
         ),
-    ])
+    ], transaction=transaction)
 
     results = [ok1, ok2, ok3, ok5]
     if any(result is None for result in results):
-        print("PATCH REPLAY FAILED: the plugin tree does not match the "
-              "expected anchors — the engine/plugin pair moved; the patch "
-              "set must be re-derived, not ignored")
-        return 1
-    if not any(results):
+        print("PATCH NOT APPLICABLE: the plugin tree does not match the "
+              "expected anchors; no runtime files were changed")
+        return NOT_APPLICABLE
+    changed_paths = transaction.commit()
+    for path in changed_paths:
+        print(f"PATCHED {path}")
+    if not changed_paths:
         print("nothing to do: all repairs already applied")
     return 0
 
