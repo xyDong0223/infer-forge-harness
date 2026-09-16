@@ -20,12 +20,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runners.deployment_proof import DeploymentProofRunner  # noqa: E402
+from runners.deployment_proof import ActionFailed, DeploymentProofRunner  # noqa: E402
 
 
 class _RecordingAdapter:
@@ -40,6 +41,11 @@ class _RecordingAdapter:
             args=[], returncode=code,
             stdout=f"PATCHED something (exit {code})\n", stderr=""
         )
+
+
+class _RaisingAdapter:
+    def exec(self, pod, script, timeout=None):  # noqa: ANN001
+        raise subprocess.TimeoutExpired(script, timeout)
 
 
 def make_runner(adapter) -> DeploymentProofRunner:
@@ -76,20 +82,20 @@ class RuntimePatchReplayTest(unittest.TestCase):
                             for r in runner.records))
 
     def test_a_non_matching_replay_is_skipped_not_fatal(self):
-        # Exit code 1 = anchors no longer match: this install is a different
+        # Exit code 2 = anchors no longer match: this install is a different
         # engine/plugin pair than the one the patch set repairs. The replay
         # records SKIPPED with full evidence and the run continues — the
         # drift precheck decides whether this environment actually needs
         # repair. Failing the whole run here is what blocked cross-version
         # adaptation.
-        adapter = _RecordingAdapter([1])
+        adapter = _RecordingAdapter([2])
         runner = make_runner(adapter)
 
         runner.apply_runtime_patches()  # must not raise
 
         artifact = runner.artifact_dir / "runtime_patches.txt"
         evidence = artifact.read_text(encoding="utf-8")
-        self.assertIn("exit 1", evidence)
+        self.assertIn("exit 2", evidence)
         self.assertIn("SKIPPED", evidence)
         self.assertIn("patch_vllm_kunlun_drift.py", evidence)
         record = next(r for r in runner.records
@@ -97,6 +103,37 @@ class RuntimePatchReplayTest(unittest.TestCase):
         self.assertTrue(record["ok"])
         self.assertIn("skipped (non-matching pair)", record["detail"])
         self.assertIn("patch_vllm_kunlun_drift.py", record["detail"])
+
+    def test_an_execution_failure_is_not_mislabeled_as_version_mismatch(self):
+        adapter = _RecordingAdapter([1])
+        runner = make_runner(adapter)
+
+        with self.assertRaises(ActionFailed) as ctx:
+            runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FAILED", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
+
+    def test_a_timeout_is_recorded_as_an_install_failure(self):
+        runner = make_runner(_RaisingAdapter())
+
+        with self.assertRaises(ActionFailed) as ctx:
+            runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("TimeoutExpired", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
 
 
 class PatchScriptSemanticsTest(unittest.TestCase):
@@ -122,6 +159,91 @@ class PatchScriptSemanticsTest(unittest.TestCase):
         self.assertIsNone(self.module.patch(tmp, [("absent anchor", "x")]))
         # A failed patch leaves the file untouched — no partial writes.
         self.assertEqual(tmp.read_text(encoding="utf-8"), "new line\n")
+
+    def test_transaction_does_not_write_until_committed(self):
+        first = Path(tempfile.mkdtemp()) / "first.py"
+        second = first.with_name("second.py")
+        first.write_text("old first\n", encoding="utf-8")
+        second.write_text("unexpected\n", encoding="utf-8")
+        transaction = self.module.PatchTransaction()
+
+        self.assertTrue(self.module.patch(
+            first, [("old first", "new first")], transaction=transaction
+        ))
+        self.assertIsNone(self.module.patch(
+            second, [("old second", "new second")], transaction=transaction
+        ))
+
+        self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "unexpected\n")
+
+    def test_missing_target_is_an_execution_failure_not_an_anchor_mismatch(self):
+        missing = Path(tempfile.mkdtemp()) / "missing.py"
+
+        with self.assertRaises(FileNotFoundError):
+            self.module.patch(missing, [("old", "new")])
+
+    def test_transaction_rolls_back_a_mid_commit_failure(self):
+        root = Path(tempfile.mkdtemp())
+        first = root / "first.py"
+        second = root / "second.py"
+        first.write_text("old first\n", encoding="utf-8")
+        second.write_text("old second\n", encoding="utf-8")
+        transaction = self.module.PatchTransaction()
+        transaction.stage(first, "new first\n")
+        transaction.stage(second, "new second\n")
+        original_write = Path.write_text
+
+        def fail_second(path, content, encoding=None):
+            if path == second and content == "new second\n":
+                raise OSError("disk full")
+            return original_write(path, content, encoding=encoding)
+
+        with mock.patch.object(Path, "write_text", new=fail_second):
+            with self.assertRaises(OSError):
+                transaction.commit()
+
+        self.assertEqual(first.read_text(encoding="utf-8"), "old first\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "old second\n")
+
+    def test_main_does_not_write_when_a_late_anchor_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp) / "site-packages"
+            calls = 0
+
+            def late_mismatch(path, replacements, *, transaction):
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    return None
+                transaction.stage(path, f"staged change {calls}\n")
+                return True
+
+            with mock.patch.object(self.module, "SITE", site), \
+                    mock.patch.object(self.module, "patch", side_effect=late_mismatch):
+                result = self.module.main()
+
+            self.assertEqual(result, self.module.NOT_APPLICABLE)
+            self.assertFalse(site.exists())
+
+    def test_local_patch_packaging_failure_is_recorded(self):
+        runner = make_runner(_RecordingAdapter([]))
+
+        with mock.patch(
+            "runners.deployment_proof.push_snippet",
+            side_effect=OSError("patch file unreadable"),
+        ):
+            with self.assertRaises(ActionFailed) as ctx:
+                runner.apply_runtime_patches()
+
+        self.assertEqual(ctx.exception.state, "INSTALL_FAILED")
+        evidence = (runner.artifact_dir / "runtime_patches.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OSError: patch file unreadable", evidence)
+        record = next(r for r in runner.records
+                      if r["action"] == "apply_runtime_patches")
+        self.assertFalse(record["ok"])
 
 
 if __name__ == "__main__":

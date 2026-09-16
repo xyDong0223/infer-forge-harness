@@ -29,6 +29,7 @@ _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 # Kunlun exposes the XPU through the torch.cuda API, so a cuda-sounding log
 # line is the native path, not a fallback (see VllmKunlunRuntime.fallback_markers).
 FALLBACK_MARKERS = ("falling back to", "fallback to cpu")
+PATCH_NOT_APPLICABLE = 2
 
 
 def now() -> str:
@@ -571,12 +572,12 @@ class DeploymentProofRunner:
         thirteen drift repairs lived only in one pod's site-packages and
         evaporated on the next pod).
 
-        A patch script is an exact-anchor repair for ONE engine/plugin
-        version pair. On a different pair (an older model stack, an updated
-        plugin) its anchors miss and it exits non-zero: that is recorded as
-        SKIPPED and the run continues — a version-specific repair must not
-        block cross-version adaptation. The drift precheck that follows is
-        the verdict on what this environment actually needs.
+        A patch script is an exact-anchor repair for one engine/plugin source
+        shape. On a different pair its anchors miss and it exits 2: that is
+        recorded as SKIPPED and the run continues. Other non-zero exits are
+        real execution failures and must not be mislabeled as incompatibility.
+        The drift precheck that follows is the verdict on what an unmatched
+        environment actually needs.
         """
         patches_dir = self.repo_root / "tools" / "patches"
         scripts = sorted(patches_dir.glob("patch_*.py")) if patches_dir.exists() else []
@@ -586,24 +587,43 @@ class DeploymentProofRunner:
             return
         output: list[str] = []
         skipped: list[str] = []
+        failed: list[str] = []
         for script in scripts:
             remote = f"/tmp/{script.name}"
-            command = (
-                f"{self.runtime.env_prefix()}; "
-                f"{push_snippet(script, remote)} && python3 {remote}"
-            )
-            result = self.adapter.exec(self.pod or "", command, timeout=600)
+            try:
+                command = (
+                    f"{self.runtime.env_prefix()}; "
+                    f"{push_snippet(script, remote)} && python3 {remote}"
+                )
+                result = self.adapter.exec(self.pod or "", command, timeout=600)
+            except (subprocess.TimeoutExpired, OSError) as error:
+                failed.append(script.name)
+                output.append(
+                    f"$ {script.name}\n>>> {script.name}: FAILED — "
+                    f"{type(error).__name__}: {error}\n"
+                )
+                continue
             output.append(f"$ {script.name} (exit {result.returncode})\n"
                           f"{result.stdout}{result.stderr}")
-            if result.returncode != 0:
+            if result.returncode == PATCH_NOT_APPLICABLE:
                 skipped.append(script.name)
                 output.append(
                     f">>> {script.name}: SKIPPED — the patch set is anchored to "
-                    "one engine/plugin version pair and does not match this "
+                    "one engine/plugin source shape and does not match this "
                     "install. Not fatal; the drift precheck below reports "
                     "what this environment actually needs.\n"
                 )
+            elif result.returncode != 0:
+                failed.append(script.name)
+                output.append(
+                    f">>> {script.name}: FAILED — exit {result.returncode} is "
+                    "not the explicit not-applicable result.\n"
+                )
         self.write("runtime_patches.txt", "\n".join(output))
+        if failed:
+            detail = f"runtime patch execution failed: {', '.join(failed)}"
+            self.record("apply_runtime_patches", False, detail)
+            raise ActionFailed("INSTALL_FAILED", detail)
         detail = f"replayed {len(scripts)} patch script(s)"
         if skipped:
             detail += (f", {len(skipped)} skipped (non-matching pair): "

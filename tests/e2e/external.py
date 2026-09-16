@@ -399,7 +399,7 @@ class SimulatedCluster(KunlunP800Adapter):
         if filename.startswith("patch_") and (
             REPO_ROOT / "tools/patches" / filename
         ).is_file():
-            return {"returncode": 1, "stdout": "SIMULATION: patch anchors absent; not applied\n"}
+            return {"returncode": 2, "stdout": "SIMULATION: patch anchors absent; not applied\n"}
         if filename == "kdp_drift_precheck.py":
             return {"state": "DRIFT_CLEAR", "checks": [{
                 "id": "simulation-import", "verdict": "OK", "scope": "path",
