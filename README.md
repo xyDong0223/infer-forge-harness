@@ -10,8 +10,16 @@ Infer-Forge 不实现推理引擎，也不重新实现已经存在的模型网�
 
 当前第一套完整能力是 **vLLM-Kunlun + Kunlun P800 的模型适配**。项目同时提供不依赖集群和 Torch 的本地端到端演练，用于验证 Graph Runner、持久化 Scheduler、Validator 和产物系统能否真正衔接。
 
+> [!IMPORTANT]
+> **已有 Skill 可以迁移进来，不需要放弃原有目标、脚本或工程经验。**
+> Infer-Forge 会把它们分别落到 Workflow/Task、可执行工具和 Skill 方法层，
+> 再通过 Golden Task、独立 Validator 和影子运行证明迁移前后能力一致。
+> 从[迁移已有 Skill](#迁移已有-skill)开始，完整步骤见
+> [旧 Skill 迁移指南](docs/guides/migrate-legacy-skill.zh-CN.md)。
+
 ## 目录
 
+- [迁移已有 Skill](#迁移已有-skill)
 - [当前支持](#当前支持)
 - [系统如何工作](#系统如何工作)
 - [快速开始：本地完整演练](#快速开始本地完整演练)
@@ -21,6 +29,45 @@ Infer-Forge 不实现推理引擎，也不重新实现已经存在的模型网�
 - [项目结构](#项目结构)
 - [文档导航](#文档导航)
 - [开发与验证](#开发与验证)
+
+## 迁移已有 Skill
+
+如果你已经积累了包含目标、Shell/Python 脚本、操作步骤和故障经验的 Skill，
+不要把它压缩成一段新提示词，也不要为了使用 Harness 丢弃原来的能力。
+迁移时保留原 Skill 的不可变版本作为 golden reference，再按责任拆分：
+
+| 原 Skill 资产 | 在 Harness 中的归属 | 保留方式 |
+| --- | --- | --- |
+| 目标与成功条件 | Workflow、Task、acceptance contract | 转换为明确输入、输出、失败状态和最终声明 |
+| Shell/Python 脚本 | CLI、Operation、Runner、Adapter 或受管 Tool | 保留执行能力，同时显式声明参数、副作用、输出和重试语义 |
+| 调查方法与决策经验 | `SKILL.md` 和 Skill Catalog | 保留适用前提、决策规则、验证方法和退出条件 |
+| 某次运行的结论 | Journal、Task Memory 和 artifact | 绑定 run、revision、environment 和证据哈希，不误写成全局规则 |
+| 人工成功判断 | 独立 Validator | 将判断依据变成可重复验证的证据门禁 |
+
+**“不丢能力”不等于保留原目录形态。** 推荐采用以下迁移路径：
+
+```mermaid
+flowchart LR
+    A["冻结旧 Skill 与来源版本"] --> B["盘点目标、脚本、经验和副作用"]
+    B --> C["按 Workflow / Task / Tool / Skill 拆分"]
+    C --> D["建立 Golden Task 与独立 Validator"]
+    D --> E["新旧路径对同一输入影子运行"]
+    E --> F["本地生产拓扑 E2E"]
+    F --> G["真实环境复验后切换入口"]
+```
+
+迁移期间旧入口保持可用，直到新路径满足以下条件：
+
+1. 相同输入下，关键原始证据、退出状态和失败分类能够对齐；
+2. 新路径覆盖旧 Skill 的副作用、重试、恢复和人工判断点；
+3. 本地 E2E 使用生产 Workflow，而不是缩短后的测试流程；
+4. 需要硬件的能力已经在显式授权的真实环境重新验证。
+
+旧 Skill 如果只是经验手册，可以作为已有 `task_type` 的条件化 Skill；
+如果只是确定性脚本，应迁为受管 Tool；如果它独自完成准备、执行、修复和发布，
+本质上应拆成完整 Workflow。详细的资产归属矩阵、Skill 包格式、Tool Catalog
+登记、上下文长度优化示例和迁移检查表见
+[`docs/guides/migrate-legacy-skill.zh-CN.md`](docs/guides/migrate-legacy-skill.zh-CN.md)。
 
 ## 当前支持
 
