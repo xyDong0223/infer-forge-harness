@@ -229,7 +229,32 @@ def _parser() -> argparse.ArgumentParser:
     validation_recovery = sub.add_parser("reconcile-validation", help="close a dead local validation coordinator without replay")
     validation_recovery.add_argument("--run-id", required=True)
     validation_recovery.add_argument("--validation-id", required=True)
+
+    plan = sub.add_parser("validation-plan", help="prepare a private internal validation plan and shareable request; never execute it")
+    plan.add_argument("--scenario", type=Path, required=True, help="external, private hardware scenario JSON")
+    plan.add_argument("--tier", choices=("device_smoke", "real_model"), required=True)
+    plan.add_argument("--out", type=Path, required=True, help="fresh external plan directory")
+    export = sub.add_parser("feedback-export", help="project a validation JUnit into a minimal shareable feedback packet")
+    export.add_argument("--request", type=Path, required=True)
+    export.add_argument("--junit", type=Path, required=True)
+    export.add_argument("--exit-code", type=int, required=True)
+    export.add_argument("--out", type=Path, required=True, help="fresh external share directory")
+    check = sub.add_parser("feedback-check", help="check feedback integrity offline; never import or promote scheduler results")
+    check.add_argument("--request", type=Path, required=True)
+    check.add_argument("--feedback-dir", type=Path, required=True)
     return parser
+
+
+def _feedback_command(args: argparse.Namespace) -> dict[str, Any]:
+    from operations.validation.feedback import (
+        check_feedback, create_validation_plan, export_feedback,
+    )
+
+    if args.command == "validation-plan":
+        return create_validation_plan(args.scenario, args.tier, args.out)
+    if args.command == "feedback-export":
+        return export_feedback(args.request, args.junit, args.exit_code, args.out)
+    return check_feedback(args.request, args.feedback_dir)
 
 
 def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
@@ -484,6 +509,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     store = None
     try:
+        # A feedback packet is an offline observation, not a scheduler command.
+        # Never even open --state (or create the default database) on this path.
+        if args.command in {"validation-plan", "feedback-export", "feedback-check"}:
+            result = {"command": args.command, **_feedback_command(args)}
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 2 if result.get("status") == "REJECTED" else 0
         # Observations never create/migrate a DB, allocate attempts, or recover leases.
         readonly = args.command in {"status", "context", "list", "execution-status"}
         if args.command in {"advance", "submit-decision", "reconcile-execution", "reconcile-validation",

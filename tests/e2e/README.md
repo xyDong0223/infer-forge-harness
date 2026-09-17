@@ -75,6 +75,27 @@ does not unlock a new attempt. These cases do not run the complete model-deliver
 graph or prove real XPU/model-service readiness. The builtin real XPU/integration
 driver is deliberately unsupported and returns `BLOCKED`.
 
+The incremental `test_process_protocol.py` fixture computes its candidate through
+the production standalone process supervisor; the real scheduler and independent
+validator still own acceptance. It covers measured worker completion, a persistent
+cancel-before-start rejection, and a new controller reusing the same execution.
+This does not integrate remote Pod transport, identity or ledger ownership.
+`test_validation_feedback.py` runs an actual unauthorized hardware-test skip, then
+plans, exports, rejects tampering and rechecks in fresh CLI processes. It verifies
+that exit zero with a skip never certifies hardware, private fields stay out of the
+packet, and feedback leaves scheduler state unchanged. The handoff commands never
+open or create a scheduler database.
+
+`test_managed_worker_cpu.py` additionally exercises the production fixed probe
+CLI with actual CPU Torch tensors: empty/nonempty cases, explicit noncontiguous
+strides, wrong numerics, fresh-input isolation and refusal to overwrite prior
+observations. These three parameterized cases require Torch and explicitly skip
+when it is absent; run them in a temporary Torch-enabled environment as an
+additional CPU tier. They are probe integration tests, not scheduler acceptance
+or hardware readiness. A fourth case always runs and proves a real run cannot
+disable the environment gate. The required dependency-light cases still cover
+the unchanged scheduler and independent-validator flow using simulation.
+
 The P3 unified-CLI case reuses that worker fixture to complete a measured task,
 then lists it alongside an unrelated expired legacy claim. Global and run-scoped
 `list` calls in fresh CLI processes preserve the database and attempt artifacts;

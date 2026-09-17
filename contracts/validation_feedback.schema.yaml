@@ -1,0 +1,149 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Minimal validation feedback, not an acceptance or promotion receipt
+$ref: '#/$defs/feedback'
+$defs:
+  sha256:
+    type: string
+    pattern: '^[a-f0-9]{64}$'
+  source:
+    type: object
+    required: [scope, sha256, file_count]
+    properties:
+      scope: {const: repository-execution-files-v1}
+      sha256: {$ref: '#/$defs/sha256'}
+      file_count: {type: integer, minimum: 1}
+    additionalProperties: false
+  tier:
+    enum: [device_smoke, real_model]
+  case_id:
+    enum:
+      - tests/e2e/test_model_adaptation_hardware.py::test_prepared_device_smoke
+      - tests/e2e/test_model_adaptation_hardware.py::test_real_model_service_regression
+  request:
+    type: object
+    required:
+      - schema_version
+      - kind
+      - request_id
+      - tier
+      - case_id
+      - source
+      - scenario_sha256
+      - authority
+      - cleanup_policy
+    properties:
+      schema_version: {type: integer, const: 1}
+      kind: {const: ValidationRequest}
+      request_id: {type: string, pattern: '^[a-f0-9]{32}$'}
+      tier: {$ref: '#/$defs/tier'}
+      case_id: {$ref: '#/$defs/case_id'}
+      source: {$ref: '#/$defs/source'}
+      scenario_sha256: {$ref: '#/$defs/sha256'}
+      authority: {const: original_inner_scheduler_only}
+      cleanup_policy: {const: retain_prepared_pod}
+    allOf:
+      - if:
+          properties: {tier: {const: device_smoke}}
+        then:
+          properties:
+            case_id: {const: 'tests/e2e/test_model_adaptation_hardware.py::test_prepared_device_smoke'}
+        else:
+          properties:
+            case_id: {const: 'tests/e2e/test_model_adaptation_hardware.py::test_real_model_service_regression'}
+    additionalProperties: false
+  observation:
+    type: object
+    required: [state, reason_code, test_counts, exit_code, request_binding_matches]
+    properties:
+      state: {enum: [TEST_PASSED, TEST_FAILED, NOT_RUN, BLOCKED]}
+      reason_code:
+        enum:
+          - REQUESTED_CASE_PASSED
+          - TEST_FAILURE
+          - TEST_ERROR
+          - SKIPPED
+          - EXECUTION_BINDING_MISSING
+          - EXIT_STATUS_MISMATCH
+      test_counts:
+        type: object
+        required: [tests, executed, passed, failed, errors, skipped]
+        properties:
+          tests: {type: integer, const: 1}
+          executed: {type: integer, minimum: 0, maximum: 1}
+          passed: {type: integer, minimum: 0, maximum: 1}
+          failed: {type: integer, minimum: 0, maximum: 1}
+          errors: {type: integer, minimum: 0, maximum: 1}
+          skipped: {type: integer, minimum: 0, maximum: 1}
+        additionalProperties: false
+      exit_code: {type: integer, minimum: -255, maximum: 255}
+      request_binding_matches:
+        type: boolean
+        description: External JUnit properties match the request; this does not authenticate execution.
+    additionalProperties: false
+  feedback:
+    type: object
+    required:
+      - schema_version
+      - kind
+      - request_id
+      - request_sha256
+      - tier
+      - case_id
+      - source
+      - scenario_sha256
+      - observation
+      - evidence
+      - observations_verified
+      - promoted
+      - limitations
+    properties:
+      schema_version: {type: integer, const: 1}
+      kind: {const: ValidationFeedback}
+      request_id: {type: string, pattern: '^[a-f0-9]{32}$'}
+      request_sha256: {$ref: '#/$defs/sha256'}
+      tier: {$ref: '#/$defs/tier'}
+      case_id: {$ref: '#/$defs/case_id'}
+      source: {$ref: '#/$defs/source'}
+      scenario_sha256: {$ref: '#/$defs/sha256'}
+      observation: {$ref: '#/$defs/observation'}
+      evidence:
+        type: object
+        required: [junit]
+        properties:
+          junit:
+            type: object
+            required: [sha256, size_bytes, content_included]
+            properties:
+              sha256: {$ref: '#/$defs/sha256'}
+              size_bytes: {type: integer, minimum: 1, maximum: 8388608}
+              content_included: {const: false}
+            additionalProperties: false
+        additionalProperties: false
+      observations_verified: {const: false}
+      promoted: {const: false}
+      limitations:
+        const:
+          - external_observation_is_not_authenticated
+          - hashes_do_not_prove_hardware_correctness
+          - only_the_original_scheduler_can_accept_evidence
+    additionalProperties: false
+  manifest:
+    type: object
+    required: [schema_version, kind, request_sha256, files]
+    properties:
+      schema_version: {type: integer, const: 1}
+      kind: {const: ValidationFeedbackManifest}
+      request_sha256: {$ref: '#/$defs/sha256'}
+      files:
+        type: array
+        minItems: 1
+        maxItems: 1
+        items:
+          type: object
+          required: [name, sha256, size_bytes]
+          properties:
+            name: {const: feedback.json}
+            sha256: {$ref: '#/$defs/sha256'}
+            size_bytes: {type: integer, minimum: 1, maximum: 2097152}
+          additionalProperties: false
+    additionalProperties: false

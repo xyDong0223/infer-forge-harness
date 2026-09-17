@@ -15,6 +15,13 @@ from typing import Any
 from operations.validation.tensor_diff import grade
 
 
+_CPU_DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4, "float64": 8,
+                    "int32": 4, "int64": 8}
+# A small logical tensor must not request unbounded storage through huge strides.
+# This fixed resource ceiling is not a correctness tolerance or user override.
+_MAX_STRIDED_INPUT_BYTES = 64 * 1024 * 1024
+
+
 class ValidationContractError(ValueError):
     """A measurement cannot be justified by the frozen operator contract."""
 
@@ -40,7 +47,7 @@ def tensor_shape(value: Any) -> list[int]:
     if not isinstance(value, list):
         _number(value, "tensor element")
         return []
-    _require(bool(value), "builtin worker validation does not support empty tensors")
+    _require(bool(value), "simulation cannot infer empty tensor geometry; use the real CPU probe")
     shapes = [tensor_shape(item) for item in value]
     _require(all(shape == shapes[0] for shape in shapes), "tensor must be rectangular")
     return [len(value), *shapes[0]]
@@ -57,18 +64,72 @@ def python_dtype(value: Any) -> str:
             _number(item, "tensor element")
             values.append(item)
     visit(value)
+    _require(bool(values), "simulation cannot observe an empty tensor's dtype; use the real CPU probe")
     return "float64" if any(type(item) is float for item in values) else "int64"
 
 
-def _tensor_contract(value, label):
+def validate_tensor_values(value: Any, shape: list[int], label: str) -> None:
+    """Check JSON values against explicit geometry, including unrepresented empty tails."""
+    if not shape:
+        _require(not isinstance(value, list), f"{label} must have the declared shape")
+        _number(value, label)
+        return
+    _require(isinstance(value, list) and len(value) == shape[0],
+             f"{label} must have the declared shape")
+    for item in value:
+        validate_tensor_values(item, shape[1:], label)
+
+
+def validate_input_strides(value: dict, label: str) -> None:
+    """Accept only explicit, provably non-overlapping CPU input strides.
+
+    Sorted dimensions must occupy disjoint storage spans. This sufficient check
+    covers transposes and ordinary gapped slices, not every possible strided view.
+    Overlap, storage offsets and exotic layouts require a specialized probe.
+    """
+    _require("storage_offset" not in value, f"{label}.storage_offset needs a specialized probe")
+    strides = value.get("strides")
+    if strides is None:
+        _require("strides" not in value and value["layout"] == "contiguous",
+                 f"{label}.strides must be explicit for noncontiguous inputs")
+        return
+    shape = value["shape"]
+    _require(isinstance(strides, list) and len(strides) == len(shape)
+             and all(type(stride) is int and 0 <= stride <= 2**63 - 1 for stride in strides),
+             f"{label}.strides must contain one nonnegative integer per dimension")
+    if 0 in shape:
+        _require(value["layout"] == "contiguous",
+                 f"{label}: empty CPU tensors cannot prove a noncontiguous layout")
+        return
+    span = 1
+    for stride, dim in sorted((stride, dim) for dim, stride in zip(shape, strides) if dim > 1):
+        _require(stride >= span, f"{label}.strides are overlapping or need a specialized probe")
+        span += (dim - 1) * stride
+    _require(span * _CPU_DTYPE_BYTES[value["dtype"]] <= _MAX_STRIDED_INPUT_BYTES,
+             f"{label}: strided input backing storage exceeds 64 MiB; use a specialized probe")
+    contiguous, expected_stride = True, 1
+    for dim, stride in reversed(list(zip(shape, strides))):
+        if dim > 1 and stride != expected_stride:
+            contiguous = False
+        expected_stride *= dim
+    _require(value["layout"] == ("contiguous" if contiguous else "noncontiguous"),
+             f"{label}.strides disagree with the declared layout")
+
+
+def _tensor_contract(value, label, *, input_tensor=False):
     _require(isinstance(value, dict), f"{label} must be an object")
     shape = value.get("shape")
-    _require(isinstance(shape, list) and all(type(dim) is int and dim > 0 for dim in shape),
-             f"{label}.shape must contain explicit positive dimensions")
-    _require(value.get("dtype") in {"float16", "bfloat16", "float32", "float64", "int32", "int64"},
+    _require(isinstance(shape, list) and all(type(dim) is int and dim >= 0 for dim in shape),
+             f"{label}.shape must contain explicit nonnegative dimensions")
+    _require(value.get("dtype") in _CPU_DTYPE_BYTES,
              f"{label}.dtype is not supported by the builtin probe")
     _require(value.get("layout") in {"contiguous", "noncontiguous"},
              f"{label}.layout must explicitly be contiguous or noncontiguous")
+    if input_tensor:
+        validate_input_strides(value, label)
+    else:
+        _require("strides" not in value and "storage_offset" not in value,
+                 f"{label}: explicit output strides/offsets need a specialized probe")
 
 
 def validation_plan(spec, stage: str) -> dict:
@@ -117,28 +178,29 @@ def validation_plan(spec, stage: str) -> dict:
                  "case IDs must be nonempty and unique")
         ids.add(identifier)
         bindings = case.get("bindings", {})
-        _require(isinstance(bindings, dict) and all(type(value) is int and value > 0
+        _require(isinstance(bindings, dict) and all(type(value) is int and value >= 0
                                                   for value in bindings.values()),
-                 "symbolic shape bindings must be explicit positive integers")
+                 "symbolic shape bindings must be explicit nonnegative integers")
         for group, specs in (("inputs", input_specs), ("outputs", output_specs)):
             values = case.get(group)
             _require(isinstance(values, dict) and set(values) == set(specs),
                      f"{identifier}.{group} must exactly cover OperatorSpec names")
             for name, value in values.items():
                 label = f"{identifier}.{group}.{name}"
-                _tensor_contract(value, label)
+                _tensor_contract(value, label, input_tensor=group == "inputs")
                 expected = specs[name]
                 declared_shape = expected.get("shape")
                 _require(isinstance(declared_shape, list), "OperatorSpec shape must be a dimension list")
                 resolved_shape = [bindings.get(dim) if isinstance(dim, str) else dim
                                   for dim in declared_shape]
-                _require(value["shape"] == resolved_shape and None not in resolved_shape,
+                _require(value["shape"] == resolved_shape
+                         and all(type(dim) is int and dim >= 0 for dim in resolved_shape),
                          f"{label}.shape must match the observed OperatorSpec and explicit bindings")
                 for field in ("dtype", "layout"):
                     _require(value[field] == expected[field], f"{label}.{field} differs from OperatorSpec")
                 if group == "inputs":
-                    _require("values" in value and tensor_shape(value["values"]) == value["shape"],
-                             f"{label}.values must have the declared shape")
+                    _require("values" in value, f"{label}.values are required")
+                    validate_tensor_values(value["values"], value["shape"], f"{label}.values")
     thresholds = contract.get("thresholds")
     _require(isinstance(thresholds, dict) and set(thresholds) == set(output_specs),
              "thresholds must explicitly cover every output")
@@ -178,6 +240,8 @@ def check_supported_mode(plan: dict, evidence_mode: str) -> None:
         for case in plan["contract"]["cases"]:
             for group in ("inputs", "outputs"):
                 for tensor in case[group].values():
+                    _require(0 not in tensor["shape"] and "strides" not in tensor,
+                             "empty/explicit-stride tensors require the real CPU probe")
                     _require(tensor["dtype"] in {"float64", "int64"}
                              and tensor["layout"] == "contiguous",
                              "simulation Python tensors support observed float64/int64 contiguous data only")
@@ -209,14 +273,29 @@ def _measurements(plan, raw, role, evidence_mode, validation_id):
     for case in plan["contract"]["cases"]:
         entry = indexed[case["id"]]
         _require(entry.get("inputs_sha256") == digest(case["inputs"]), f"{role} inputs differ from the frozen case")
+        if evidence_mode == "real" and role != "control":
+            # Protocol-1 ordinary cases remain replayable. New geometry requires
+            # actual pre-call metadata, not merely a hash of the intended input.
+            if any(0 in tensor["shape"] or "strides" in tensor for tensor in case["inputs"].values()):
+                inputs = entry.get("input_metadata")
+                _require(isinstance(inputs, dict) and set(inputs) == set(case["inputs"]),
+                         f"{role} requires measured input metadata for empty/strided cases")
+                for name, expected in case["inputs"].items():
+                    observed = inputs[name]
+                    _require(isinstance(observed, dict), f"{role}.{name} input metadata is missing")
+                    for field in ("shape", "dtype", "layout"):
+                        _require(observed.get(field) == expected[field], f"{role}.{name} input {field} mismatch")
+                    _require(observed.get("device") == "cpu", f"{role}.{name} input must be CPU")
+                    if "strides" in expected:
+                        _require(observed.get("strides") == expected["strides"],
+                                 f"{role}.{name} input strides mismatch")
         outputs = entry.get("outputs")
         _require(isinstance(outputs, dict) and set(outputs) == set(case["outputs"]),
                  f"{role} output names differ from the frozen case")
         for name, expected in case["outputs"].items():
             observed = outputs[name]
             _require(isinstance(observed, dict), f"{role}.{name} must be a raw tensor")
-            _require(tensor_shape(observed.get("values")) == expected["shape"],
-                     f"{role}.{name} values have the wrong shape")
+            validate_tensor_values(observed.get("values"), expected["shape"], f"{role}.{name} values")
             for field in ("shape", "dtype", "layout"):
                 _require(observed.get(field) == expected[field], f"{role}.{name} {field} mismatch")
             device = observed.get("device")
@@ -234,10 +313,20 @@ def grade_observations(plan: dict, candidate: dict, reference: dict, control: di
     measured = {role: _measurements(plan, raw, role, evidence_mode, validation_id)
                 for role, raw in (("candidate", candidate), ("reference", reference), ("control", control))}
     checks, cases = [], []
+    nonempty_outputs = set()
     for case in plan["contract"]["cases"]:
         identifier = case["id"]
         metrics = {}
         for name in case["outputs"]:
+            if 0 in case["outputs"][name]["shape"]:
+                # There are no numbers with which to distinguish a wrong kernel.
+                # Geometry was measured above; numerical evidence must come from
+                # a separate nonempty case for this same output name.
+                metrics[name] = {"numel": 0, "numerical": "not_applicable_empty",
+                                 "shape": case["outputs"][name]["shape"]}
+                checks.append({"name": f"{identifier}:{name}:empty_structure", "passed": True})
+                continue
+            nonempty_outputs.add(name)
             tensors = {role: data[identifier]["outputs"][name]["values"]
                        for role, data in measured.items()}
             metric = grade(tensors["candidate"], tensors["reference"], tensors["control"],
@@ -248,6 +337,8 @@ def grade_observations(plan: dict, candidate: dict, reference: dict, control: di
                 {"name": f"{identifier}:{name}:negative_control", "passed": metric.get("control_discriminates") is True},
             ])
         cases.append({"id": identifier, "metrics": metrics})
+    for name in plan["contract"]["thresholds"]:
+        checks.append({"name": f"{name}:nonempty_numerical_coverage", "passed": name in nonempty_outputs})
     if plan["stage"] in {"xpu", "integration"}:
         contract = plan["contract"]
         for case in contract["cases"]:

@@ -188,6 +188,8 @@ P1 可以先在本地模拟环境证明交互接缝。**真实并行 Pod 执行�
 
 剩余设备侧增量：可信 Pod UID 采集，托管安装/修复/设备测试/toy/服务组合操作，远端进程身份及终止观测，真实 XPU dispatch/fallback/service 驱动。未接入前 managed-v2 真实 Graph/environment 和 XPU/integration 明确阻断；不能绕回 legacy 路径。本地模拟不是硬件证明，P2 完成条件不因拆分而降低。
 
+后续本地增量补充真实 CPU 空张量/显式非连续输入、固定进程 supervisor 基础协议，以及内网 Agent 的计划/反馈/离线核对。supervisor 尚未对接可信 Pod 身份和 execution ledger，不宣称远端受管执行已完成；反馈不具备 scheduler 推进权限。真实 tier 由用户授权的内网 Agent 运行，原始证据留内网，详见 [内网验证交接](../migration/internal-validation-handoff.zh-CN.md)。
+
 ### P3 的收敛策略
 
 先定义只读的执行描述，由 Task 读取 `consumes/produces/validator/exit_states`，以类型化 argv 和输入映射表达可执行命令。不要从现有 `spec.runs_with` 的说明性 shell 字符串直接 eval，也不要为了消灭 NODES 引入完整脚本语言。

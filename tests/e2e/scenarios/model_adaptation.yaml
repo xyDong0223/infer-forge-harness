@@ -43,6 +43,21 @@ tiers:
         cases:
           - test_memory_projection_rebuild_rejection_and_graph_restart
           - test_memory_projection_preserves_failure_claims_and_pending_decision
+      - test: tests/e2e/test_validation_feedback.py
+        cases:
+          - test_feedback_skip_export_restart_preserves_scheduler
+          - test_feedback_tampering_and_wrong_request_rejected
+          - test_feedback_commands_never_create_a_scheduler_database
+      - test: tests/e2e/test_process_protocol.py
+        cases:
+          - test_process_protocol_measured_worker_completion
+          - test_process_protocol_cancel_blocks_late_start_without_promoting_task
+          - test_process_protocol_new_controller_reuses_single_execution
+      - test: tests/e2e/test_managed_worker_cpu.py
+        cases:
+          - test_cpu_probe_cli_measures_geometry_and_rejects_reused_output
+          - test_cpu_probe_cli_wrong_numerics_are_not_accepted
+          - test_real_cpu_run_cannot_disable_the_environment_gate
     real_components:
       - cli
       - workflow

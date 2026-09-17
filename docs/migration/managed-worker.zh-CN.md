@@ -8,7 +8,7 @@
 
 **尚不支持真实 Pod 的安装/修复/设备测试/toy/服务组合受管驱动、真实 XPU dispatch 和远端终止观测。** managed-v2 真实 Graph/environment 执行和真实 XPU/integration 验证明确阻断；不能退回旧 shell 或自报 PASS。本地 HTTP/数值模拟不是硬件 readiness；旧协议也不因此获得新保证。
 
-这是 P2 的可本地验收增量，不是完整 P2。下一增量接设备侧驱动及模拟故障注入；真实设备 smoke 另需授权。资源控制只约束同库合作入口，不是 OS 沙箱，也不支持跨数据库/多主机控制器。
+这是 P2 的可本地验收增量，不是完整 P2。新增独立进程 supervisor 和内网验证反馈协议，但尚未接入远端执行账本与可信 Pod 身份，不能据此解除上述门禁。交接方式见 [内网验证与反馈](internal-validation-handoff.zh-CN.md)；真实设备 smoke 另需授权。资源控制只约束同库合作入口，不是 OS 沙箱，也不支持跨数据库/多主机控制器。
 
 ## 冻结候选
 
@@ -35,6 +35,8 @@ controller 是实际 lease 持有者，producer 是实际实现者，validator �
 - XPU/integration 另需 `expected_dispatch`、`fallback.allowed_devices`。builtin 模拟支持 symbol `run_case`、device `simulation-cpu`、ranks `[0]`；integration 另需 `service.require_http_status: 200`。
 
 模拟浮点 list 自省为 float64，整数为 int64，不冒充低精度/XPU tensor。真实 CPU 路径读取实际 tensor 信息。不支持的 geometry/driver 明确阻断；输入标签和候选自报字段不是设备观测。
+
+真实 CPU 输入支持显式 shape 中的零维长度，以及 `layout: noncontiguous` 配合显式 `strides` 的可证明不重叠布局；每个显式 stride 输入的底层存储上限为 64 MiB，超出需专用 probe。probe 在调用前记录实际输入 metadata，grader 核对后才比较输出。空输出只通过结构检查，不参与数值误差；每个输出还必须有非空 case，并要求负对照能被既定阈值拒绝。模拟 list 路径不伪装空张量的 dtype/尾维或非连续 storage。重叠 stride、设备 tensor 和多 rank 仍需专用 probe。
 
 ## 执行与提交
 

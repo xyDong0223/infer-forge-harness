@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from core.storage import ArtifactStore, ensure_external
 from operations.validation.managed_worker import (
     ValidationContractError, check_supported_mode, digest, python_dtype, tensor_shape,
+    validate_input_strides, validate_tensor_values,
 )
 
 
@@ -25,31 +26,50 @@ def _load_json(path):
         ValidationContractError(f"non-finite JSON constant: {value}")))
 
 
-def _tensor(value, mode):
-    if mode == "simulation":
-        # Python scalar/list precision is observed, not relabelled as float32/XPU.
-        return {"values": value, "shape": tensor_shape(value), "dtype": python_dtype(value),
-                "layout": "contiguous", "device": "simulation-cpu"}
+def _cpu_metadata(value):
     import torch
     if not isinstance(value, torch.Tensor):
         raise ValidationContractError("real measurements require actual torch.Tensor outputs")
     if value.device.type != "cpu":
         raise ValidationContractError("builtin real worker probe supports the CPU torch stage only")
-    return {"values": value.detach().cpu().tolist(), "shape": list(value.shape),
+    return {"shape": list(value.shape), "strides": list(value.stride()),
             "dtype": str(value.dtype).removeprefix("torch."),
             "layout": "contiguous" if value.is_contiguous() else "noncontiguous",
             "device": str(value.device)}
 
 
+def _tensor(value, mode):
+    if mode == "simulation":
+        # Python scalar/list precision is observed, not relabelled as float32/XPU.
+        return {"values": value, "shape": tensor_shape(value), "dtype": python_dtype(value),
+                "layout": "contiguous", "device": "simulation-cpu"}
+    metadata = _cpu_metadata(value)
+    return {"values": value.detach().cpu().tolist(), **metadata}
+
+
 def _inputs(case, mode):
     if mode == "simulation":
-        return {name: tensor["values"] for name, tensor in case["inputs"].items()}
+        # Each invocation owns its data, even when an implementation mutates it.
+        return json.loads(json.dumps({name: tensor["values"] for name, tensor in case["inputs"].items()}))
     import torch
     result = {}
     for name, tensor in case["inputs"].items():
-        if tensor["layout"] != "contiguous":
-            raise ValidationContractError("explicit noncontiguous input strides need a specialized probe")
-        result[name] = torch.tensor(tensor["values"], dtype=getattr(torch, tensor["dtype"]), device="cpu")
+        validate_input_strides(tensor, name)
+        validate_tensor_values(tensor["values"], tensor["shape"], f"{name}.values")
+        value = torch.tensor(tensor["values"], dtype=getattr(torch, tensor["dtype"]), device="cpu")
+        # [] does not encode the trailing dimensions of [0, N]; geometry comes
+        # from the frozen OperatorSpec, never from an inferred Python-list shape.
+        value = value.reshape(tensor["shape"])
+        if "strides" in tensor:
+            strided = torch.empty_strided(tensor["shape"], tensor["strides"],
+                                          dtype=value.dtype, device="cpu")
+            strided.copy_(value)
+            value = strided
+        observed = _cpu_metadata(value)
+        for field in ("shape", "dtype", "layout", "strides"):
+            if field in tensor and observed[field] != tensor[field]:
+                raise ValidationContractError(f"{name}: materialized input {field} differs from frozen case")
+        result[name] = value
     return result
 
 
@@ -72,11 +92,16 @@ def _entry(request):
 
 
 def _invoke(function, inputs, case, request):
+    inputs_sha256 = digest(case["inputs"])
+    input_metadata = ({name: _cpu_metadata(value) for name, value in inputs.items()}
+                      if request["evidence_mode"] == "real" else None)
     values = function(inputs)
     if not isinstance(values, dict) or set(values) != set(case["outputs"]):
         raise ValidationContractError("entry must return exactly the declared output tensor names")
     outputs = {name: _tensor(value, request["evidence_mode"]) for name, value in values.items()}
-    measured = {"id": case["id"], "inputs_sha256": digest(case["inputs"]), "outputs": outputs}
+    measured = {"id": case["id"], "inputs_sha256": inputs_sha256, "outputs": outputs}
+    if input_metadata is not None:
+        measured["input_metadata"] = input_metadata
     if request["role"] == "candidate" and request["plan"]["stage"] in {"xpu", "integration"}:
         devices = sorted({tensor["device"] for tensor in outputs.values()})
         measured["dispatch"] = {
@@ -153,7 +178,8 @@ def _control_case(case, reference, settings, mode):
             outputs[name] = _tensor(values, mode)
         else:
             import torch
-            outputs[name] = _tensor(torch.tensor(values, dtype=getattr(torch, original["dtype"])), mode)
+            value = torch.tensor(values, dtype=getattr(torch, original["dtype"]), device="cpu")
+            outputs[name] = _tensor(value.reshape(original["shape"]), mode)
     return {"id": case["id"], "inputs_sha256": digest(case["inputs"]), "outputs": outputs}
 
 

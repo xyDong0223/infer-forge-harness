@@ -435,6 +435,7 @@ openwiki/      上游、插件和项目工程经验参考
 | [`docs/migration/runtime-write-policy.zh-CN.md`](docs/migration/runtime-write-policy.zh-CN.md) | 外部 run root、attempt、manifest 和写入约束 |
 | [`docs/migration/worker-results.md`](docs/migration/worker-results.md) | worker 结果 envelope、租约和证据要求 |
 | [`docs/migration/managed-worker.zh-CN.md`](docs/migration/managed-worker.zh-CN.md) | P2 本地受管候选验证、进程恢复及设备侧待接入边界 |
+| [`docs/migration/internal-validation-handoff.zh-CN.md`](docs/migration/internal-validation-handoff.zh-CN.md) | 内网 Agent 验证计划、最小反馈包与离线核对 |
 | [`docs/migration/task-execution.zh-CN.md`](docs/migration/task-execution.zh-CN.md) | P3 Task 执行元数据、可重建 Memory 与统一 CLI |
 | [`docs/guides/performance-analysis.md`](docs/guides/performance-analysis.md) | 性能阶段边界和指标解释 |
 | [`openwiki/harness/`](openwiki/harness/) | 已沉淀的模型适配、运行时漂移和算子接入经验 |

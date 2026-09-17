@@ -21,6 +21,11 @@ def hardware_scenario(request):
 
     value = os.environ.get("INFER_FORGE_HARDWARE_SCENARIO")
     assert value, "explicit authorization also requires INFER_FORGE_HARDWARE_SCENARIO"
+    validation_request = os.environ.get("INFER_FORGE_VALIDATION_REQUEST")
+    if validation_request:
+        from operations.validation.feedback import execution_properties
+
+        request.node.user_properties.extend(execution_properties(validation_request, value))
     config = json.loads(ensure_external(value).read_text())
     required = {
         "run_id", "state", "artifact_root", "subject", "pod",
@@ -50,8 +55,15 @@ def hardware_scenario(request):
         scheduler.store.close()
     attempt = RunPaths(config["artifact_root"], config["run_id"]).allocate_attempt(request.node.name)
     request.node.user_properties.append(("artifact_root", str(attempt.root)))
-    yield config, attempt
-    ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="RECORDED")
+    try:
+        yield config, attempt
+    finally:
+        ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="RECORDED")
+        if validation_request:
+            # A source/scenario change during execution invalidates the bound
+            # observation; pytest records a teardown error, never a clean pass.
+            request.node.user_properties.extend(
+                execution_properties(validation_request, value, phase="after"))
 
 
 def run_real(config, attempt, entrypoint, arguments):
