@@ -59,7 +59,7 @@ NODES: dict[str, dict] = {
     "environment_proof": {
         "produces": "EnvironmentProof",
         "command": [
-            "python3", "cli/deployment/proof.py", "{contract_instance}",
+            "python3", "cli/deployment/proof.py",
             "--execute", "--phase", "environment", "--artifact-dir", "{artifacts}",
         ],
         "state_file": "status.json",
@@ -339,7 +339,8 @@ def resolve(
     if spec.get("needs") and not environment:
         raise Unresolved("a nonempty environment is required to reuse Journal inputs; "
                          "provide --target/--env and a current environment proof")
-    if "contract_instance" not in context:
+    needs_contract = any("{contract_instance}" in part for part in (command or spec["command"]))
+    if needs_contract:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
         plan = input_fact(
@@ -348,6 +349,8 @@ def resolve(
         )
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
+        else:
+            raise Unresolved("DeploymentPlan is required; run MAT-005 to generate the service contract")
     command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
@@ -380,7 +383,14 @@ def resolve(
         command += ["--user-id", context["user_id"]]
     if "cli/deployment/proof.py" in command:
         path = command[command.index("cli/deployment/proof.py") + 1]
-        require_supported(contract_target(load_yaml(Path(path)), requested))
+        if not path.startswith("--"):
+            require_supported(contract_target(load_yaml(Path(path)), requested))
+        elif requested is not None:
+            require_supported(requested)
+        if environment.get("evidence_mode") == "simulation":
+            command += ["--evidence-mode", "simulation"]
+        if "proof_health_interval" in context:
+            command += ["--health-interval-seconds", str(context["proof_health_interval"])]
         if requested is not None:
             command += ["--target", context["target_file"], "--subject", context["subject"]]
         if context.get("pod") and "--attach-pod" not in command:
@@ -763,13 +773,8 @@ def _input_kinds(spec: dict, context: dict) -> tuple[set[str], set[str]]:
         reference.split(":", 2)[1]
         for reference in (spec.get("optional") or {}).values()
     }
-    if "contract_instance" not in context and (
-        "cli/deployment/proof.py" in spec.get("command", [])
-        or "--contract-instance" in spec.get("command", [])
-    ):
-        # A rendered plan supplies the contract when available; environment
-        # proof can instead receive the original contract from run context.
-        optional.add("DeploymentPlan")
+    if any("{contract_instance}" in part for part in spec.get("command", [])):
+        required.add("DeploymentPlan")
     return required, optional
 
 
@@ -1331,9 +1336,8 @@ def _run(args, resources: ExitStack) -> int:
             environment.update(target_env, compatibility_status="supported")
             context["target_file"] = str(args.target.resolve())
         if context.get("contract_instance"):
-            require_supported(contract_target(
-                load_yaml(Path(context["contract_instance"])), requested_target
-            ))
+            raise ValueError("Graph generates deployment contracts; remove --set contract_instance. "
+                             "MAT-005 supplies the service contract through the Journal.")
     except (ValueError, OSError) as error:
         print(f"blocked: {error}")
         emit_summary({"status": "BLOCKED", "reason_code": "TARGET_MISMATCH",

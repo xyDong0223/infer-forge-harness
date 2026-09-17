@@ -17,7 +17,8 @@ from runners.task_runner import run
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run or plan an inference engineering task")
-    parser.add_argument("contract", type=Path)
+    parser.add_argument("contract", type=Path, nargs="?",
+                        help="External generated contract to replay; environment generates its own by default")
     parser.add_argument("--target", type=Path, help="Requested target; must agree with the contract")
     parser.add_argument("--subject", help="Bind the model identity of an unbound --target")
     parser.add_argument("--execute", action="store_true", help="Run against the real cluster")
@@ -25,6 +26,9 @@ def main() -> int:
     parser.add_argument("--artifact-dir", type=Path, help="External run root, or allocated attempt output/")
     parser.add_argument("--run-id", help="Durable run identity for allocated attempts")
     parser.add_argument("--user-id", help="Resource owner's user ID, supplied by the user (legacy fallback: USER_ID)")
+    parser.add_argument("--evidence-mode", choices=("real", "simulation"), default=None)
+    parser.add_argument("--health-interval-seconds", type=float,
+                        help="Polling interval for this proof attempt")
     parser.add_argument(
         "--phase",
         choices=["all", "environment", "service"],

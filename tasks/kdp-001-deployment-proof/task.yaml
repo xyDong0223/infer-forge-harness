@@ -6,7 +6,7 @@ metadata:
   version: 0.1.0
 context:
   model:
-    name: Qwen3-8B
+    name: ${MODEL_NAME}
     path: ${MODEL_PATH}
   target:
     hardware: Kunlunxin-3-P800

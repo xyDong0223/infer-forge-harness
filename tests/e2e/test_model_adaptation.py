@@ -136,7 +136,7 @@ def scenario(tmp_path, request):
 def test_environment_user_id_input_and_restart(scenario):
     scenario.env.pop("USER_ID", None)
     arguments = ["environment", "--run-id", scenario.run_id,
-                 "--contract", scenario.fixture["contract_instance"]]
+                 "--health-interval-seconds", "0"]
     missing = json.loads(scenario.adaptation(*arguments, expected=6).stdout)
     assert missing["proof"]["status"] == "INPUT_REQUIRED"
     assert "INPUT_REQUIRED" in missing["error"]
@@ -152,6 +152,8 @@ def test_environment_user_id_input_and_restart(scenario):
     first_root = Path(ready["proof"]["artifact_root"])
     contract = json.loads((first_root.parent / "input" / "task_contract.json").read_text())
     assert contract["execution"]["user_id"] == "simulation"
+    assert contract["metadata"]["generated_by"] == "harness.environment_contract"
+    assert contract["context"]["model"]["name"] == "MiniMax-M2.5-Int8-W8A8"
 
     # A new CLI process resumes the same run with no ID in argv or environment.
     resumed = json.loads(scenario.adaptation(*arguments).stdout)
@@ -160,6 +162,12 @@ def test_environment_user_id_input_and_restart(scenario):
     assert resumed["proof"]["user_id"] == "simulation"
     assert Path(resumed["proof"]["artifact_root"]) not in {first_root, missing_root}
     assert (first_root / "status.json").is_file()
+
+
+def test_graph_rejects_manual_deployment_contract(scenario):
+    rejected = scenario.graph("--set", f"contract_instance={scenario.fixture['contract_instance']}", expected=2)
+    assert "MAT-005 supplies the service contract" in rejected.stdout
+    assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
 
 
 def test_model_adaptation_delivers_after_validated_workers(scenario):
@@ -187,6 +195,16 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     target_launch = next(i for i, script in enumerate(scripts)
                          if "echo started $!" in script and "minimax-base-smoke" not in script)
     assert base_launch < intake < toy < target_launch
+    # The target proof consumes the real MAT-005 output, never the legacy
+    # boundary fixture prepared for separate replay tests.
+    import yaml
+    facts = scenario.facts()
+    plan_fact = next(fact for fact in facts if fact["kind"] == "DeploymentPlan")
+    service_fact = next(fact for fact in facts if fact["kind"] == "DeploymentProof")
+    planned = yaml.safe_load((Path(plan_fact["artifacts"]) / "kdp_instance.yaml").read_text())
+    executed = yaml.safe_load((Path(service_fact["artifacts"]) / "task_contract.yaml").read_text())
+    assert executed["metadata"]["generated_by"] == "mat-005-deployment-plan"
+    assert executed["execution"]["commands"]["serve"] == planned["execution"]["commands"]["serve"]
     memory = json.loads((scenario.run_root / "task_memory.json").read_text())
     assert memory["next_loop_block"]["sub_target"] == "mat-026-operator-candidate-integration"
     assert memory["completed_loop_blocks"][-1]["state"] == "WAITING_FOR_OPERATORS"

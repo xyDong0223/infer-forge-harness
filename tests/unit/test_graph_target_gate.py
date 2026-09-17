@@ -126,16 +126,15 @@ def test_unknown_or_planned_graph_target_never_resolves_resources(
 
 def test_target_is_forwarded_to_deployment_command_and_revalidated(tmp_path):
     target = write_target(tmp_path / "target.yaml")
-    contract = write_contract(tmp_path / "contract.yaml")
     context = {"subject": "demo", "target_file": str(target),
-               "contract_instance": str(contract), "artifacts": str(tmp_path),
+               "artifacts": str(tmp_path),
                "user_id": "team-member"}
     command = graph_runner.resolve(graph_runner.NODES["environment_proof"], context,
                                    tmp_path / "journal.jsonl", {"hardware": "p800"})
     assert command[-4:] == ["--target", str(target), "--subject", "demo"]
     assert command[command.index("--user-id") + 1] == "team-member"
-    write_contract(contract, backend="cuda")
-    with pytest.raises(ValueError, match="backend"):
+    write_target(target, runtime={"engine": "sglang", "backend": "kunlun", "plugin": "sglang-kunlun"})
+    with pytest.raises(ValueError, match="planned"):
         graph_runner.resolve(graph_runner.NODES["environment_proof"], context,
                              tmp_path / "journal.jsonl", {"hardware": "p800"})
 

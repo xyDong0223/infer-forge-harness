@@ -292,7 +292,7 @@ def run_progress(store, run_id, *, graph=None, now=None):
     continuing = bool(operators or graph)
     action = "RESUME_GRAPH" if continuing else "START_GRAPH"
     instruction = ("Resume the full graph with the same run and inputs." if continuing else
-                   "Supply model_path and contract_instance inputs, then execute the first graph "
+                   "Supply model_path and user_id inputs; the harness generates deployment contracts. Execute the first graph "
                    "with --execute for this run.")
     return result(explanation("READY", "graph", action,
                               "No active operator work remains; graph validation/delivery is still required."

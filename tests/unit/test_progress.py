@@ -46,7 +46,7 @@ def test_initial_run_guidance_requests_first_execution(tmp_path):
         assert progress["reason_code"] == "START_GRAPH"
         assert progress["next_action"]["action"] == "START_GRAPH"
         assert "model_path" in progress["next_action"]["instruction"]
-        assert "contract_instance" in progress["next_action"]["instruction"]
+        assert "user_id" in progress["next_action"]["instruction"]
         assert "resume" not in progress["next_action"]["instruction"].lower()
         # Those inputs have not been supplied: do not invent an executable command.
         assert progress["next_action"]["command"] is None
