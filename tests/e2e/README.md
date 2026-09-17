@@ -60,6 +60,14 @@ the same run in a new process using its recorded ID and Pod. A separate case
 rejects a manual Graph contract override before cluster access. Full delivery
 asserts that service execution consumes the real MAT-005 generated contract.
 
+All persisted deployment proof states are checked against the shared status
+schema, including success and failure. A pre-plan intake failure exercises the
+contract-free triage path, preservation of original console logs, resuming triage
+from the Journal, and retrying intake in the same Pod. The resulting UNKNOWN
+diagnosis remains NEEDS_HUMAN; it cannot enter patch placement or vendor handoff.
+Changing an established run's owner is rejected before external operations and
+leaves its generated plan and prepared environment unchanged.
+
 The environment-drift case rejects a synthetic runtime incompatibility before
 intake in both scheduler-connected and standalone Graph modes, retains the failed
 proof and Pod, and resumes into intake on that same Pod. Environment failures

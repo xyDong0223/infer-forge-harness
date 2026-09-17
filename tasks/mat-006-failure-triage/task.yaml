@@ -8,8 +8,8 @@ metadata:
 spec:
   question: which layer owns this failure, and can we fix it or must the vendor
   produces: FailureTriage
-  # Consumes a failed service proof. This Task is the reason KDP-001b's failure
-  # edge is not a dead end.
+  # Before DeploymentPlan exists, preserve the failed task status and logs as
+  # NEEDS_HUMAN/UNKNOWN. Do not launch or attribute a service that was never planned.
   consumes: [ServiceProofFailure, CapabilityMatch, EnvironmentProof]
   layers:
     # Attribution matters because the four layers have different owners: the
@@ -19,11 +19,15 @@ spec:
     - kunlun_ops_vendor
     - torch_xmlir_vendor
   runs_with: |
+    # Before a deployment plan: collect the original failed task for diagnosis.
+    python3 cli/operators/triage.py --failure-status <failed-status.json> --out <fresh-output>
+    # After planning: instrument and reproduce the service failure.
     python3 cli/operators/instrument_kernel_trace.py --pod <pod> --call speculative_attention
     # rerun the service proof, then read the captured arguments
     python3 cli/operators/instrument_kernel_trace.py --pod <pod> --restore
 context:
   input_artifacts:
+    - failed task status and command logs when no DeploymentPlan exists
     - service proof status.json and server_log.txt
     - environment proof status.json
   target:

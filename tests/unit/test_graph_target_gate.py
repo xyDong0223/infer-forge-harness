@@ -188,11 +188,18 @@ def test_base_model_execution_preserves_requested_subject_and_persists_validator
     # validator rejection even when the implementation reports a ready state.
     status = {"state": "ENVIRONMENT_READY", "checks": {}, "artifacts": [], "pod": "fixture-pod"}
     monkeypatch.setenv("USER_ID", "fixture")
-    def load_fixture(path):
-        return profile if path.name == "p800-cluster.yaml" else yaml.safe_load(path.read_text())
+    from operations.deployment import environment_contract
+    resources = tmp_path / "resources"
+    profile_path = resources / "config/clusters/p800-cluster.yaml"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text(yaml.safe_dump(profile))
+    task_relative = Path("tasks/kdp-001a-environment-proof/task.yaml")
+    task_path = resources / task_relative
+    task_path.parent.mkdir(parents=True)
+    task_path.write_bytes((task_runner.REPO_ROOT / task_relative).read_bytes())
+    monkeypatch.setattr(environment_contract, "REPO_ROOT", resources)
 
-    with patch.object(task_runner, "load_yaml", side_effect=load_fixture), \
-            patch("adapters.ClusterConfig.load", return_value=SimpleNamespace(namespace="fixture-namespace")), \
+    with patch("adapters.ClusterConfig.load", return_value=SimpleNamespace(namespace="fixture-namespace")), \
             patch("core.facade.get_hardware") as hardware, \
             patch("runners.deployment_proof.DeploymentProofRunner") as runner:
         runner.return_value.run.return_value = status

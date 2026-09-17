@@ -14,13 +14,13 @@ from core.user_identity import resolve_user_id
 def build_environment_contract(
     user_id: str | None = None, *, previous: dict | None = None,
     evidence_mode: str | None = None, health_interval_seconds: float | None = None,
-    profile: dict | None = None,
 ) -> dict:
     """Only explicit operational overrides survive; target launch settings do not."""
     task_path = REPO_ROOT / "tasks/kdp-001a-environment-proof/task.yaml"
     profile_path = REPO_ROOT / "config/clusters/p800-cluster.yaml"
-    task = yaml.safe_load(task_path.read_text())
-    profile = profile if profile is not None else yaml.safe_load(profile_path.read_text())
+    task_source, profile_source = task_path.read_bytes(), profile_path.read_bytes()
+    task = yaml.safe_load(task_source)
+    profile = yaml.safe_load(profile_source)
     base = profile.get("validation", {}).get("base_model", {})
     if not base.get("required") or not base.get("path"):
         raise ValueError("environment base model is not configured in the cluster profile")
@@ -41,8 +41,8 @@ def build_environment_contract(
             "name": task["metadata"]["name"], "task_type": "environment_proof",
             "version": task["metadata"]["version"], "evidence_mode": mode,
             "generated_by": "harness.environment_contract",
-            "sources": {str(path.relative_to(REPO_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-                        for path in (task_path, profile_path)},
+            "sources": {str(path.relative_to(REPO_ROOT)): hashlib.sha256(source).hexdigest()
+                        for path, source in ((task_path, task_source), (profile_path, profile_source))},
         },
         "context": {
             "model": {"name": base["name"], "path": base["path"], "pvc": deployment["model_pvc"]},

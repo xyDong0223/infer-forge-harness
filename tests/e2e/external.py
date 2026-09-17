@@ -408,6 +408,8 @@ class SimulatedCluster(KunlunP800Adapter):
     def _probe(self, filename, argv, config):
         model = self.settings["model_path"]
         if filename == "mat001_probe.py":
+            if self.settings.get("intake_failure"):
+                return {"state": "MODEL_UNAVAILABLE", "reason": "synthetic missing checkpoint shard"}
             if argv != [model]:
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))

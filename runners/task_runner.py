@@ -160,6 +160,11 @@ def execute(
 
     try:
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
+        recorded_owner = contract.get("execution", {}).get("user_id")
+        if (proof_phase(contract, phase) != "environment" and recorded_owner
+                and owner != recorded_owner):
+            raise ValueError("user_id does not match the generated service contract owner; "
+                             "use the recorded owner or generate a plan for a new run")
         contract.setdefault("execution", {})["user_id"] = owner
         ArtifactStore(attempt.input).write_json("requested_task_contract.json", {
             "requested_phase": phase,
@@ -201,7 +206,6 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     if phase == "environment":
         generated = build_environment_contract(
             owner, previous=contract,
-            profile=load_yaml(REPO_ROOT / "config/clusters/p800-cluster.yaml"),
         )
         contract.clear()
         contract.update(generated)

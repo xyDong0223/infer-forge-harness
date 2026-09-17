@@ -210,12 +210,16 @@ class TriageExecutor:
 
 
 def run(args) -> int:
-
+    if getattr(args, "failure_status", None):
+        from operations.operators.failure_triage import collect_failure
+        status = collect_failure(args.failure_status, args.out)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 3
     pod = args.pod
     if not pod and args.env_status and args.env_status.exists():
         pod = json.loads(args.env_status.read_text(encoding="utf-8")).get("pod")
     if not pod:
-        parser.error("a pod is required: pass --pod or --env-status")
+        raise ValueError("a pod is required: pass --pod or --env-status")
 
     executor = TriageExecutor(pod, args.contract_instance, args.call,
                               PodOps(KunlunP800Adapter()), args.out)

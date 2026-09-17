@@ -107,3 +107,17 @@ def test_missing_owner_publishes_schema_valid_rejection_before_cluster_access(tm
     assert datetime.fromisoformat(persisted['updated_at']).utcoffset() is not None
     manifest = json.loads(Path(persisted['manifest_path']).read_text())
     assert manifest['outcome'] == 'INPUT_REQUIRED'
+
+
+def test_service_owner_change_is_rejected_before_publishing_inconsistent_contract(tmp_path, capsys):
+    contract = load('tests/fixtures/deployment-proof.yaml')
+    contract['metadata']['task_type'] = 'service_proof'
+    contract['execution'].update(user_id='original-owner', resource_name='original-owner-service')
+    original = copy.deepcopy(contract)
+    with patch('adapters.ClusterConfig.load') as cluster:
+        assert task_runner.execute(contract, None, tmp_path, user_id='new-owner') == 2
+    cluster.assert_not_called()
+    assert contract == original
+    status = json.loads(capsys.readouterr().out)
+    assert 'does not match' in status['message']
+    Draft202012Validator(load('contracts/status.schema.yaml')).validate(status)

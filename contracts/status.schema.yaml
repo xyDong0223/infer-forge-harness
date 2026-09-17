@@ -18,6 +18,7 @@ properties:
       - RUNTIME_DRIFT
       - CONTRACT_INVALID
       - INPUT_REQUIRED
+      - EXECUTION_NOT_CONFIGURED
       - BLOCKED
       - INSTALL_FAILED
       - MODEL_NOT_FOUND
@@ -51,4 +52,23 @@ properties:
   artifact_root: {type: string}
   manifest_path: {type: [string, "null"]}
   workspace_identity: {type: object}
+  pod: {type: [string, "null"]}
+  phase: {type: string, enum: [environment, service, all]}
+  server_log: {type: [string, "null"]}
+  target: {type: object}
+  validator:
+    type: object
+    required: [passed, errors]
+    properties:
+      passed: {type: boolean}
+      errors:
+        type: array
+        items: {type: string}
+    additionalProperties: false
+  errors:
+    type: array
+    items: {type: string}
+  execution_error: {type: string}
+  manifest_error: {type: string}
+  status_error: {type: string}
 additionalProperties: false

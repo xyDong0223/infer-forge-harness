@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from core.storage import ArtifactStore, RunPaths, WritePolicyError
 from runners import task_runner
@@ -60,6 +61,13 @@ def make_runner(path):
         yaml.safe_load(CONTRACT.read_text()), SimpleNamespace(config=SimpleNamespace(kubeconfig="fixture")),
         REPO, path,
     )
+
+
+def test_schema_accepts_failure_before_a_pod_is_selected(tmp_path):
+    runner = make_runner(tmp_path)
+    status = runner.collect_artifacts("INSTALL_FAILED", "runtime import failed")
+    assert status["pod"] is None
+    Draft202012Validator(yaml.safe_load((REPO / "contracts/status.schema.yaml").read_text())).validate(status)
 
 
 def test_direct_runner_rejects_source_and_stale_output(tmp_path):
@@ -178,6 +186,7 @@ def test_task_declared_directory_symlink_is_rejected_before_inventory(tmp_path, 
     status = json.loads(capsys.readouterr().out)
     assert status["state"] == "BLOCKED"
     assert status["manifest_path"] is None
+    Draft202012Validator(yaml.safe_load((REPO / "contracts/status.schema.yaml").read_text())).validate(status)
 
 
 def test_task_output_policy_precedes_cluster_loading(capsys):
