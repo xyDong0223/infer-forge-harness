@@ -21,7 +21,7 @@ P800 设备观察。
 
 ```python
 hardware_type = get_hardware("kunlun/p800")
-hardware = hardware_type.load()
+hardware = hardware_type()
 result = hardware.exec(pod, "xpu_smi -L")
 ```
 
