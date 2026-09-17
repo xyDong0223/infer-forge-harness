@@ -105,6 +105,16 @@ Other moves inside the surviving packages:
   `torch.ops._C.silu_and_mul_per_block_quant`, which this stack does not
   register — shape-dynamic MLA decode spans require `--enforce-eager`
   (the same requirement `tools/torch/paged_decode.py` records).
+  Update (run step35-flash-p800-002, 2026-09-17): the run report records
+  a run-local drift repair registering the op into `vllm_kunlun/ops/_custom_ops.py`
+  (`@custom_op("_C::silu_and_mul_per_block_quant")` + a torch reference of
+  the helion kernel semantics + `register_fake`), so the fusion pass imports
+  and torch.compile backend init no longer dies with AttributeError;
+  `--enforce-eager` is no longer needed for that import. The registered
+  reference impl is unvalidated on quantized paths — independent numerical
+  validation is required before relying on it for FP8/INT8 serving.
+  This documentation does not ship that repair. The run still ended in
+  API_SMOKE_FAILED; successful compilation is not model-correctness evidence.
 - See `catalog/xpu_specs.yaml#numerical` for the int8-only constraint and
   its evidence; the engine's generic MLA-sparse path (fp8e4m3 + deepgemm)
   cannot run on this device at all.
