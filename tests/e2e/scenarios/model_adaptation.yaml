@@ -9,6 +9,7 @@ tiers:
     test: tests/e2e/test_model_adaptation.py
     cases:
       - test_environment_user_id_input_and_restart
+      - test_environment_drift_blocks_before_intake_and_resumes_same_pod
       - test_model_adaptation_delivers_after_validated_workers
       - test_missing_worker_evidence_blocks_delivery
       - test_pre_operator_service_cannot_certify_delivery

@@ -207,6 +207,9 @@ def test_base_model_execution_preserves_requested_subject_and_persists_validator
 
 
 def test_graph_different_target_revision_cannot_resume_old_fact(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(graph_runner.NODES, "model_intake", {
+        **graph_runner.NODES["model_intake"], "needs": {},
+    })
     target = write_target(tmp_path / "target.yaml",
                           runtime={"engine": "vllm", "backend": "kunlun", "plugin": "vllm-kunlun",
                                    "revisions": {"model": "new"}})

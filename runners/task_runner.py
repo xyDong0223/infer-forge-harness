@@ -49,11 +49,15 @@ def build_plan(
     require_supported(resolved)
     phase = proof_phase(contract, phase)
     actions = contract.get("actions", [])
-    if phase == "environment":
-        actions = load_yaml(REPO_ROOT / "tasks/kdp-001a-environment-proof/task.yaml")["actions"]
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        actions = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")["actions"]
     return {
         "task_id": contract.get("metadata", {}).get("name"),
-        "task_type": contract.get("metadata", {}).get("task_type"),
+        "task_type": {"environment": "environment_proof", "service": "service_proof"}.get(
+            phase, contract.get("metadata", {}).get("task_type"),
+        ),
         "mode": "PLAN_ONLY",
         "phase": phase,
         "actions": actions,
@@ -181,18 +185,21 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     except ValueError as error:
         return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
-    if phase == "environment":
-        # The persisted contract must describe the phase actually executed,
-        # even when the caller supplied a target-model deployment instance.
-        environment_contract = load_yaml(REPO_ROOT / "tasks/kdp-001a-environment-proof/task.yaml")
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        # Normalize the phase contract while preserving the target launch
+        # settings imported from the deployment plan for service execution.
+        phase_contract = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")
         for field in ("actions", "acceptance", "exit_states"):
-            contract[field] = environment_contract[field]
+            contract[field] = phase_contract[field]
         contract["artifacts"] = {
             "directory": str(target_dir),
             "collect": list(dict.fromkeys([
-                *environment_contract["artifacts"], "task_contract", "reproduce_command",
+                *phase_contract["artifacts"], "task_contract", "reproduce_command",
             ])),
         }
+    if phase == "environment":
         profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
         base = profile.get("validation", {}).get("base_model", {})
         deployment = profile.get("deployment", {})
