@@ -1,11 +1,13 @@
 """Phase descriptions match execution without discarding target launch settings."""
 import copy
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from runners import task_runner
 
@@ -66,13 +68,13 @@ def test_service_execution_persists_phase_contract_and_preserves_target(tmp_path
 
 @pytest.mark.parametrize('task,expected', [
     ('kdp-001a-environment-proof', {
-        'ENVIRONMENT_READY', 'CONTRACT_INVALID', 'BLOCKED', 'RUNTIME_DRIFT',
+        'ENVIRONMENT_READY', 'INPUT_REQUIRED', 'CONTRACT_INVALID', 'BLOCKED', 'RUNTIME_DRIFT',
         'NEEDS_HUMAN', 'INSTALL_FAILED', 'MODEL_NOT_FOUND', 'CODE_NOT_READY',
         'DEVICE_NOT_READY', 'SERVER_START_FAILED', 'READINESS_TIMEOUT',
         'API_SMOKE_FAILED', 'UNEXPECTED_FALLBACK',
     }),
     ('kdp-001b-service-proof', {
-        'DEPLOYMENT_READY', 'CONTRACT_INVALID', 'BLOCKED', 'RUNTIME_DRIFT',
+        'DEPLOYMENT_READY', 'INPUT_REQUIRED', 'CONTRACT_INVALID', 'BLOCKED', 'RUNTIME_DRIFT',
         'NEEDS_HUMAN', 'BRINGUP_BLOCKED', 'SERVER_START_FAILED',
         'READINESS_TIMEOUT', 'API_SMOKE_FAILED', 'UNEXPECTED_FALLBACK',
     }),
@@ -84,3 +86,24 @@ def test_reachable_phase_states_are_declared_across_contract_catalog_schema(task
     skill = next(entry for entry in catalog['entries'] if entry['id'] == 'environment-proof')
     assert declared <= set(skill['exit_conditions'])
     assert declared <= set(load('contracts/status.schema.yaml')['properties']['state']['enum'])
+
+
+@pytest.mark.parametrize('phase', ['environment', 'service', 'all'])
+def test_missing_owner_publishes_schema_valid_rejection_before_cluster_access(tmp_path, monkeypatch, capsys, phase):
+    monkeypatch.delenv('USER_ID', raising=False)
+    contract = load('tests/fixtures/deployment-proof.yaml')
+    contract['execution'].pop('user_id', None)
+    with patch('adapters.ClusterConfig.load') as cluster, \
+            patch('runners.deployment_proof.DeploymentProofRunner') as runner:
+        assert task_runner.execute(contract, None, tmp_path, phase=phase) == 3
+    cluster.assert_not_called()
+    runner.assert_not_called()
+    emitted = json.loads(capsys.readouterr().out)
+    persisted = json.loads((Path(emitted['artifact_root']) / 'status.json').read_text())
+    assert emitted == persisted
+    Draft202012Validator(load('contracts/status.schema.yaml')).validate(persisted)
+    assert persisted['task_id'] == contract['metadata']['name']
+    assert persisted['state'] == persisted['status'] == 'INPUT_REQUIRED'
+    assert datetime.fromisoformat(persisted['updated_at']).utcoffset() is not None
+    manifest = json.loads(Path(persisted['manifest_path']).read_text())
+    assert manifest['outcome'] == 'INPUT_REQUIRED'

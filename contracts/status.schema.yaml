@@ -17,6 +17,7 @@ properties:
       - ENVIRONMENT_READY
       - RUNTIME_DRIFT
       - CONTRACT_INVALID
+      - INPUT_REQUIRED
       - BLOCKED
       - INSTALL_FAILED
       - MODEL_NOT_FOUND
@@ -40,4 +41,14 @@ properties:
     type: array
     items: {type: string}
   next_task: {type: string}
+  status: {type: string}
+  message: {type: string}
+  paths:
+    type: array
+    items: {type: string}
+  user_id: {type: string}
+  evidence_mode: {type: string, enum: [real, simulation]}
+  artifact_root: {type: string}
+  manifest_path: {type: [string, "null"]}
+  workspace_identity: {type: object}
 additionalProperties: false

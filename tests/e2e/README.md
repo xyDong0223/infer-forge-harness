@@ -54,7 +54,8 @@ repository source files.
 
 The environment-input case starts without a seed YAML, checks the generated
 contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
-missing-input rejection before cluster access, supplies `--user-id`, and resumes
+missing-input rejection against the shared status schema before cluster access,
+supplies `--user-id`, and resumes
 the same run in a new process using its recorded ID and Pod. A separate case
 rejects a manual Graph contract override before cluster access. Full delivery
 asserts that service execution consumes the real MAT-005 generated contract.

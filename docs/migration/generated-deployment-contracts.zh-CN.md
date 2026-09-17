@@ -1,6 +1,6 @@
 # 由 harness 生成部署契约
 
-KDP-001 的模型示例已移除。环境阶段不再需要输入模型 YAML：
+KDP-001 和 KDP-001a 的模型示例已移除。环境阶段不再需要输入模型 YAML：
 
 ```bash
 python cli/adaptation.py --state /external/state.sqlite environment \

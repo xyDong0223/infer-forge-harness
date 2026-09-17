@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,9 @@ def execute(
     inventory = ArtifactStore(attempt.root)
 
     def finish(status: dict[str, Any], code: int) -> int:
+        status.setdefault("task_id", task_id)
+        status.setdefault("state", status.get("status", "BLOCKED"))
+        status.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
         if contract.get("execution", {}).get("user_id"):
             status["user_id"] = contract["execution"]["user_id"]
         status["evidence_mode"] = contract.get("metadata", {}).get("evidence_mode", "real")

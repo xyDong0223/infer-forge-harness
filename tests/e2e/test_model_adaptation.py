@@ -11,6 +11,8 @@ import sys
 import time
 
 import pytest
+import yaml
+from jsonschema import Draft202012Validator
 
 from core.paths import REPO_ROOT
 from core.storage import ArtifactStore
@@ -142,7 +144,14 @@ def test_environment_user_id_input_and_restart(scenario):
     assert "INPUT_REQUIRED" in missing["error"]
     assert "--user-id" in missing["proof"]["message"]
     missing_root = Path(missing["proof"]["artifact_root"])
-    assert (missing_root / "status.json").is_file()
+    rejection_path = missing_root / "status.json"
+    rejection_bytes = rejection_path.read_bytes()
+    rejection = json.loads(rejection_bytes)
+    schema = yaml.safe_load((REPO_ROOT / "contracts/status.schema.yaml").read_text())
+    Draft202012Validator(schema).validate(rejection)
+    assert rejection["task_id"] == rejection["workspace_identity"]["task_id"]
+    assert rejection["state"] == "INPUT_REQUIRED"
+    assert rejection["paths"] == ["$.execution.user_id"]
     assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
 
     ready = json.loads(scenario.adaptation(*arguments, "--user-id", "simulation").stdout)
@@ -162,6 +171,7 @@ def test_environment_user_id_input_and_restart(scenario):
     assert resumed["proof"]["user_id"] == "simulation"
     assert Path(resumed["proof"]["artifact_root"]) not in {first_root, missing_root}
     assert (first_root / "status.json").is_file()
+    assert rejection_path.read_bytes() == rejection_bytes
 
 
 def test_graph_rejects_manual_deployment_contract(scenario):
