@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from core.paths import REPO_ROOT
+from core.user_identity import resolve_user_id
 from validators.contract_validator import (
     find_placeholders,
     validate_contract_file,
@@ -59,6 +59,7 @@ def execute(
     phase: str = "all",
     target: TargetContext | None = None,
     run_id: str | None = None,
+    user_id: str | None = None,
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
     task_id = contract["metadata"]["name"]
@@ -90,6 +91,8 @@ def execute(
     inventory = ArtifactStore(attempt.root)
 
     def finish(status: dict[str, Any], code: int) -> int:
+        if contract.get("execution", {}).get("user_id"):
+            status["user_id"] = contract["execution"]["user_id"]
         status["evidence_mode"] = contract.get("metadata", {}).get("evidence_mode", "real")
         status["artifact_root"] = str(target_dir)
         status["manifest_path"] = str(attempt.root / "manifest.json")
@@ -133,6 +136,8 @@ def execute(
         return code
 
     try:
+        owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
+        contract.setdefault("execution", {})["user_id"] = owner
         ArtifactStore(attempt.input).write_json("task_contract.json", contract)
         return _execute(contract, target_dir, attach_pod, phase, target, finish)
     except (ValueError, OSError, RuntimeError) as error:
@@ -163,9 +168,14 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         base = profile.get("validation", {}).get("base_model", {})
         deployment = profile.get("deployment", {})
         cluster = profile.get("cluster", {})
-        user_id = os.environ.get("USER_ID", "").strip()
+        user_id = resolve_user_id(recorded=contract.get("execution", {}).get("user_id"))
         if not user_id:
-            return finish({"status": "INPUT_REQUIRED", "paths": ["$env.USER_ID"]}, 3)
+            return finish({
+                "status": "INPUT_REQUIRED", "paths": ["$.execution.user_id"],
+                "message": "Ask the user for their user ID and pass --user-id <USER_ID> "
+                           "(or execution.user_id in the contract; legacy USER_ID is supported). "
+                           "Do not infer it from the host login or an example resource name.",
+            }, 3)
         if not base.get("required") or not base.get("path"):
             return finish({"status": "CONTRACT_INVALID", "message": "base model is not configured"}, 2)
         contract["context"]["model"] = {"name": base["name"], "path": base["path"], "pvc": deployment["model_pvc"]}
@@ -181,6 +191,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         previous_execution = contract.get("execution", {})
         contract["execution"] = {
             "mode": "execute", "namespace": cluster["namespace"],
+            "user_id": user_id,
             "resource_name": f"{user_id}-environment-base",
             "manifest": deployment["base_manifest"],
             "startup_timeout_seconds": 1800,
@@ -208,7 +219,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     errors = validate_executable(contract)
     if errors:
         return finish({"status": "CONTRACT_INVALID", "errors": errors}, 2)
-    config = ClusterConfig.load()
+    config = ClusterConfig.load(user_id=contract.get("execution", {}).get("user_id"))
     if contract["execution"]["namespace"] != config.namespace:
         return finish({
             "status": "NEEDS_HUMAN",
@@ -260,7 +271,8 @@ def run(args) -> int:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
         return 3
     if args.execute:
-        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase, target, args.run_id)
+        return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase,
+                       target, args.run_id, getattr(args, "user_id", None))
 
     plan = build_plan(contract, target)
     rendered = json.dumps(plan, indent=2)

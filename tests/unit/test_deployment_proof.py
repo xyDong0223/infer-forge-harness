@@ -47,6 +47,12 @@ class TestManifestRendering(unittest.TestCase):
             render_manifest(TEMPLATE, incomplete)
         self.assertEqual(ctx.exception.state, "CONTRACT_INVALID")
 
+    def test_user_id_is_explicit_and_never_inferred_from_resource_name(self) -> None:
+        self.assertNotIn("USER_ID", self.values)
+        self.contract["execution"]["user_id"] = "team-member"
+        values = manifest_values(self.contract, "attempt", "/workspace", "")
+        self.assertEqual(values["USER_ID"], "team-member")
+
 
 def make_runner(path):
     return DeploymentProofRunner(

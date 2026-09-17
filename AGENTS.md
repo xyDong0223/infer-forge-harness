@@ -185,8 +185,16 @@ python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
+  --user-id <user-supplied-id> \
   --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml
 ```
+
+`user_id` is the resource owner's ID supplied by the user. If it is unknown,
+ask the user before execution; never guess it from the host login, repository
+path, example contracts, or an existing resource name. Pass it via `--user-id`
+(Graph: `--set user_id=<user-supplied-id>`), or `execution.user_id` in the
+contract. Legacy explicitly configured `USER_ID` remains supported. Environment
+attempts record the ID, and scheduler retries reuse the recorded value.
 
 Environment retries automatically reuse the Pod recorded in the run (including
 failed proofs), and direct proof execution attaches to the existing deployment

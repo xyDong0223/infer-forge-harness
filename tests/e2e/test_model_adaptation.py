@@ -133,7 +133,38 @@ def scenario(tmp_path, request):
     assert source_snapshot() == source_before
 
 
+def test_environment_user_id_input_and_restart(scenario):
+    scenario.env.pop("USER_ID", None)
+    arguments = ["environment", "--run-id", scenario.run_id,
+                 "--contract", scenario.fixture["contract_instance"]]
+    missing = json.loads(scenario.adaptation(*arguments, expected=6).stdout)
+    assert missing["proof"]["status"] == "INPUT_REQUIRED"
+    assert "INPUT_REQUIRED" in missing["error"]
+    assert "--user-id" in missing["proof"]["message"]
+    missing_root = Path(missing["proof"]["artifact_root"])
+    assert (missing_root / "status.json").is_file()
+    assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
+
+    ready = json.loads(scenario.adaptation(*arguments, "--user-id", "simulation").stdout)
+    assert ready["proof"]["validator"]["passed"] is True
+    assert ready["proof"]["evidence_mode"] == "simulation"
+    assert ready["run"]["environment"]["environment_proof"]["user_id"] == "simulation"
+    first_root = Path(ready["proof"]["artifact_root"])
+    contract = json.loads((first_root.parent / "input" / "task_contract.json").read_text())
+    assert contract["execution"]["user_id"] == "simulation"
+
+    # A new CLI process resumes the same run with no ID in argv or environment.
+    resumed = json.loads(scenario.adaptation(*arguments).stdout)
+    assert resumed["proof"]["validator"]["passed"] is True
+    assert resumed["proof"]["pod"] == ready["proof"]["pod"]
+    assert resumed["proof"]["user_id"] == "simulation"
+    assert Path(resumed["proof"]["artifact_root"]) not in {first_root, missing_root}
+    assert (first_root / "status.json").is_file()
+
+
 def test_model_adaptation_delivers_after_validated_workers(scenario):
+    scenario.env.pop("USER_ID", None)
+    scenario.fixture["graph_args"].extend(["--set", "user_id=simulation"])
     first = scenario.graph(expected=3)
     assert '"reason_code": "WAITING_FOR_OPERATORS"' in first.stdout
     before = scenario.status()

@@ -343,6 +343,7 @@ class TaskScheduler:
             **run.environment,
             "environment_proof": {
                 "pod": proof["pod"],
+                "user_id": proof.get("user_id"),
                 "checks": dict(checks),
                 "artifacts": list(artifacts),
                 "fingerprint": fingerprint,
@@ -364,6 +365,7 @@ class TaskScheduler:
         run.status = "ENVIRONMENT_FAILED"
         run.environment = {**run.environment, "failed_environment_proof": {
             "state": proof.get("state", "FAILED"), "pod": proof.get("pod"),
+            "user_id": proof.get("user_id"),
             "artifact_root": proof.get("artifact_root"),
             "checks": proof.get("checks", {}), "artifacts": proof.get("artifacts", []),
             "diagnosis": proof.get("reason", error),

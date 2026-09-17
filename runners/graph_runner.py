@@ -24,6 +24,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from core.paths import REPO_ROOT
+from core.user_identity import resolve_user_id
 
 from runners import evidence  # noqa: E402
 from runners import watch as watch_module  # noqa: E402
@@ -373,6 +374,10 @@ def resolve(
         command += ["--registry", context["shim_registry"]]
     requested = (bind_subject(load_target(context["target_file"]), context["subject"])
                  if context.get("target_file") else None)
+    if context.get("user_id") and any(entry in command for entry in (
+        "cli/deployment/proof.py", "cli/deployment/plan_deployment.py",
+    )):
+        command += ["--user-id", context["user_id"]]
     if "cli/deployment/proof.py" in command:
         path = command[command.index("cli/deployment/proof.py") + 1]
         require_supported(contract_target(load_yaml(Path(path)), requested))
@@ -410,6 +415,8 @@ def fan_out_items(
         verify_input_skills=verify_input_skills,
     )
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    if "user_id" in context:
+        env["USER_ID"] = resolve_user_id(context["user_id"])
     if skill_contract is not None:
         env["INFER_FORGE_SKILL_CONTRACT"] = str(skill_contract)
     result = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True,
@@ -1089,6 +1096,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
     def rerun(decision) -> tuple[bool, str]:
         nonlocal final_artifacts
         protected = {"artifacts", "attempt", "subject", "target_file", "contract_instance",
+                     "user_id",
                      "_environment_pod", "environment_text", "run_id", "journal", "loop_state",
                      "scheduler_state", "operator_report", "shim_registry", "evidence_mode"}
         if any(key not in context or key in protected for key in decision.params):
@@ -1142,6 +1150,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                     command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                     crash_tag="recovery", watch=watch,
                     env_overrides={
+                        **({"USER_ID": merged["user_id"]} if "user_id" in merged else {}),
                         "INFER_FORGE_SKILL_CONTRACT": skill_contract,
                     },
                 )
@@ -1287,6 +1296,8 @@ def _run(args, resources: ExitStack) -> int:
             raise WritePolicyError("Journal and Task Memory must have distinct paths")
         environment = dict(pair.split("=", 1) for pair in args.env)
         context = dict(pair.split("=", 1) for pair in args.set)
+        if "user_id" in context:
+            context["user_id"] = resolve_user_id(context["user_id"])
         if any(key in context for key in ("artifacts", "attempt", "run_id", "journal",
                                           "loop_state", "subject", "scheduler_state",
                                           "operator_report", "shim_registry", "evidence_mode")):
@@ -1619,6 +1630,7 @@ def _run(args, resources: ExitStack) -> int:
                         command, cwd=REPO_ROOT, log_path=logs / "node_console.log",
                         crash_tag="node", watch=watch,
                         env_overrides={
+                            **({"USER_ID": context["user_id"]} if "user_id" in context else {}),
                             "INFER_FORGE_SKILL_CONTRACT": skill_contract,
                         },
                     )

@@ -20,7 +20,7 @@ records model-level validation. Neither replaces proof for the current run.
 Before following the [real adaptation steps](../README.md#运行真实模型适配):
 
 1. Replace development-cluster image, queue, node-pool, PVC and mount assumptions with confirmed resources.
-2. Set external `KUBECONFIG` and `USER_ID`; check namespace, context, container, deployment kind and resource ownership prefix.
+2. Set external `KUBECONFIG`. Ask the user for their resource-owner ID and pass `--user-id <user-supplied-id>` to the environment/proof/planner CLI (Graph: `--set user_id=<user-supplied-id>`); contracts can record `execution.user_id`. Explicit input takes precedence over the contract and legacy `USER_ID` environment variable. Never infer the ID from the host login or example resource names. Check namespace, context, container, deployment kind and resource ownership prefix.
 3. Check runtime paths, setup commands and proxy settings against the actual image and network.
 4. Pin model/plugin revisions and the matching deployment contract. Check the cluster profile's validation base model as well as the target model.
 5. Choose a persistent external state directory, inspect the plan and prove the environment before discovery.

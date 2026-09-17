@@ -322,3 +322,12 @@ def test_generated_contract_accepts_explicit_external_run_root(runtime):
             deployment_report(), {"model": {}},
             runtime_artifact_root=runtime / "source" / "artifacts",
         )
+
+
+def test_generated_contract_preserves_supplied_owner(runtime, monkeypatch):
+    monkeypatch.setenv("USER_ID", "wrong-owner")
+    rendered = yaml.safe_load(render_instance(
+        deployment_report(), {"model": {}}, runtime / "service", user_id="team-member",
+    ))
+    assert rendered["execution"]["user_id"] == "team-member"
+    assert rendered["execution"]["resource_name"].startswith("team-member-kdp001-")

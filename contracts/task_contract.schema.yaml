@@ -48,6 +48,10 @@ properties:
     properties:
       mode: {enum: [plan_only, execute]}
       namespace: {type: string, minLength: 1}
+      user_id:
+        type: string
+        description: Resource owner's ID supplied by the user; never inferred from resource_name.
+        pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
       resource_name: {type: string, minLength: 1}
       manifest: {type: string}
       startup_timeout_seconds: {type: integer, minimum: 1}
