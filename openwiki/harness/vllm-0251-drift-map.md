@@ -105,6 +105,13 @@ Other moves inside the surviving packages:
   `torch.ops._C.silu_and_mul_per_block_quant`, which this stack does not
   register — shape-dynamic MLA decode spans require `--enforce-eager`
   (the same requirement `tools/torch/paged_decode.py` records).
+  A missing dispatcher registration should be diagnosed separately from
+  shape-dynamic execution constraints. Register the expected schema,
+  device implementation and fake implementation before the fusion pass
+  imports, then validate dispatch, numerical results and compilation
+  independently. Resolving the import does not by itself clear other eager
+  requirements. See [operator registration](../vllm-kunlun/op-registration.md)
+  for the general procedure; this page does not ship an implementation.
 - See `catalog/xpu_specs.yaml#numerical` for the int8-only constraint and
   its evidence; the engine's generic MLA-sparse path (fp8e4m3 + deepgemm)
   cannot run on this device at all.

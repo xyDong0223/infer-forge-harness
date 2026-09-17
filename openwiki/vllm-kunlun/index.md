@@ -52,6 +52,7 @@ post-import 补丁和安装期文件覆盖，把 vLLM 的 CUDA 代码路径改�
 | 怎么装、厂商 wheel 版本、版本对齐规则 | [build-and-install.md](build-and-install.md) |
 | CI 里哪些是真门禁 | [testing-and-ci.md](testing-and-ci.md) |
 | 已知的代码/文档冲突、死代码、未实现特性 | [known-gaps.md](known-gaps.md) |
+| 引擎引用了本 stack 未注册的 `_C::` 算子怎么补 | [op-registration.md](op-registration.md) |
 | 模型适配中的可复用排查、验证和算子接入经验 | [Infer-Forge 工程实践](../harness/practice-experience.md) |
 
 ## 一分钟总览
