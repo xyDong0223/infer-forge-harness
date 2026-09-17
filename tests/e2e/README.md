@@ -26,7 +26,7 @@ test-only workflow:
 
 ```text
 create-run CLI
-  -> Graph CLI: intake, environment, scan, classification
+  -> Graph CLI: MiniMax environment (no toy), intake, scan, classification
   -> persistent operator dispatch
   -> evaluation, plan, toy bring-up, shim handoff, service, accuracy, baseline
   -> WAITING_FOR_OPERATORS
@@ -55,6 +55,18 @@ repository source files.
 The environment-input case also removes legacy `USER_ID`, checks the persisted
 missing-input rejection before cluster access, supplies `--user-id`, and resumes
 the same run in a new process using its recorded ID and Pod.
+
+The environment-drift case rejects a synthetic runtime incompatibility before
+intake in both scheduler-connected and standalone Graph modes, retains the failed
+proof and Pod, and resumes into intake on that same Pod. Environment failures
+stop at a diagnostic terminal; model triage requires a successful environment.
+Workflow intake requires EnvironmentProof and never creates its standalone
+ephemeral probe Pod.
+
+The completion case checks persisted fact order and actual adapter commands:
+MiniMax baseline launch precedes intake; target toy follows discovery and precedes
+target service launch. Boundary cases check that omitted `--phase` and explicit
+`--phase environment` both launch only MiniMax and never invoke a toy probe.
 
 **SIMULATION_PASS proves process integration, not device correctness, actual
 model accuracy or performance.** Read the receipt's evidence mode and Journal

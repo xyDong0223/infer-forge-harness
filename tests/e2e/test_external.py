@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 from core.paths import REPO_ROOT
 from tests.e2e.external import SETTINGS_ENV, prepare_environment
@@ -56,11 +57,12 @@ def test_unexpected_external_access_fails_closed(tmp_path, command):
     assert "RuntimeError" in result.stderr
 
 
-def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
+@pytest.mark.parametrize("phase_args", [[], ["--phase", "environment"]])
+def test_real_environment_cli_validates_raw_simulated_observations(tmp_path, phase_args):
     fixture = prepare_environment(tmp_path / "external")
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "cli/deployment/proof.py"),
-         fixture["contract_instance"], "--execute", "--phase", "environment",
+         fixture["contract_instance"], "--execute", *phase_args,
          "--artifact-dir", str(tmp_path / "proof"), "--run-id", "boundary-smoke"],
         cwd=tmp_path, env={**os.environ, **fixture["env"]},
         capture_output=True, text=True, timeout=30, check=False,
@@ -70,6 +72,26 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
     assert validate_environment_status(status) == []
     assert status["evidence_mode"] == "simulation"
     assert status["pod"] == fixture["pod"]
+    assert status["phase"] == "environment"
+    assert "toy_bringup" not in status["checks"]
+    assert not (Path(status["artifact_root"]) / "toy_bringup.json").exists()
+    contract = yaml.safe_load((Path(status["artifact_root"]) / "task_contract.yaml").read_text())
+    assert "toy_bringup_before_load" not in contract["actions"]
+    assert contract["acceptance"]["base_prefill"] is True
+    assert contract["exit_states"]["pass"] == "ENVIRONMENT_READY"
+    assert contract["metadata"]["task_type"] == "environment_proof"
+    assert contract["artifacts"]["directory"] == status["artifact_root"]
+    assert {"environment_fingerprint", "base_model_identity", "base_server_log",
+            "base_health_result", "base_chat_result", "reproduce_command"} <= set(
+                contract["artifacts"]["collect"])
+    assert not {"server_log", "health_result", "chat_result"} & set(contract["artifacts"]["collect"])
+    inputs = Path(status["artifact_root"]).parent / "input"
+    effective = json.loads((inputs / "task_contract.json").read_text())
+    requested = json.loads((inputs / "requested_task_contract.json").read_text())
+    assert effective == contract
+    assert requested["effective_phase"] == "environment"
+    assert requested["contract"]["metadata"]["task_type"] == "deployment_proof"
+    assert requested["contract"]["context"]["model"]["name"] == fixture["subject"]
     assert (Path(status["artifact_root"]) / "environment_fingerprint.txt").is_file()
     reused = _python(fixture, (
         "from adapters import get_hardware; "
@@ -85,9 +107,46 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
     assert unexpected.returncode != 0
     assert "unexpected external exec command" in unexpected.stderr
     events = [json.loads(line) for line in fixture["events"].read_text().splitlines()]
+    scripts = [event["script"] for event in events if event["operation"] == "exec"]
+    launches = [script for script in scripts if "echo started $!" in script]
+    assert len(launches) == 1
+    assert "minimax-base-smoke" in launches[0]
+    assert not any("mat028_probe.py" in script for script in scripts)
     assert {event["pod"] for event in events if "pod" in event} == {fixture["pod"]}
     assert len({event["pid"] for event in events}) >= 3
     assert all(event["evidence_mode"] == "simulation" for event in events)
+
+
+@pytest.mark.parametrize("fault", ["failed-proof", "different-pod"])
+def test_intake_rejects_invalid_environment_before_cluster_access(tmp_path, fault):
+    fixture = prepare_environment(tmp_path / "external")
+    env = {**os.environ, **fixture["env"]}
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "cli/deployment/proof.py"),
+         fixture["contract_instance"], "--execute", "--phase", "environment",
+         "--artifact-dir", str(tmp_path / "proof")],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    status = json.loads(result.stdout)
+    proof = Path(status["artifact_root"]) / "status.json"
+    extra = ["--attach-pod", fixture["pod"] + "-wrong"]
+    if fault == "failed-proof":
+        proof = tmp_path / "failed-status.json"
+        proof.write_text(json.dumps({**status, "state": "RUNTIME_DRIFT"}))
+        extra = []
+    count = len(fixture["events"].read_text().splitlines())
+    rejected = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "cli/intake/model_intake.py"),
+         "--model-id", fixture["subject"], "--model-path", fixture["model_path"],
+         "--attempt-id", "rejected", "--out", str(tmp_path / "intake"),
+         "--env-status", str(proof), *extra],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert rejected.returncode != 0
+    assert "CONTRACT_INVALID" in rejected.stdout + rejected.stderr
+    events = [json.loads(line) for line in fixture["events"].read_text().splitlines()[count:]]
+    assert all(event["operation"] == "bootstrap" for event in events)
 
 
 def test_persistent_environment_and_toy_failure_block_target_weights(tmp_path):
@@ -137,3 +196,48 @@ def test_persistent_environment_and_toy_failure_block_target_weights(tmp_path):
     assert ready['pod'] == baseline['pod']
     assert ready['checks']['toy_bringup'] is True
     assert (Path(blocked['artifact_root']) / 'toy_bringup.json').is_file()
+
+
+@pytest.mark.parametrize("phase", ["environment", "service"])
+def test_generated_reproduction_allocates_fresh_attempts_in_same_run(tmp_path, phase):
+    fixture = prepare_environment(tmp_path / "external")
+    env = {**os.environ, **fixture["env"]}
+    root = tmp_path / "run with spaces"
+
+    def execute_phase(selected):
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "cli/deployment/proof.py"),
+             fixture["contract_instance"], "--execute", "--phase", selected,
+             "--artifact-dir", str(root), "--run-id", "reproduction",
+             *(["--attach-pod", fixture["pod"]] if selected == "service" else [])],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    original = execute_phase("environment")
+    if phase == "service":
+        original = execute_phase("service")
+    output = Path(original["artifact_root"])
+    snapshot = {path: path.read_bytes() for path in output.parent.rglob("*") if path.is_file()}
+    command = (output / "reproduce_command.txt").read_text()
+    roots = {original["artifact_root"]}
+    for _ in range(2):
+        replay = subprocess.run(
+            ["/bin/sh", "-c", command], cwd=REPO_ROOT, env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        assert replay.returncode == 0, replay.stdout + replay.stderr
+        status = json.loads(replay.stdout)
+        assert status["phase"] == phase
+        assert status["pod"] == original["pod"]
+        assert status["validator"]["passed"] is True
+        assert status["workspace_identity"]["run_id"] == "reproduction"
+        assert status["artifact_root"] not in roots
+        assert root in Path(status["artifact_root"]).parents
+        roots.add(status["artifact_root"])
+        assert all(path.read_bytes() == data for path, data in snapshot.items())
+    events = [json.loads(line) for line in fixture["events"].read_text().splitlines()]
+    applies = [event for event in events if event["operation"] == "cluster"
+               and event["args"][:2] == ["apply", "-f"]]
+    assert len(applies) == 1

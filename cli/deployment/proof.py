@@ -28,8 +28,9 @@ def main() -> int:
     parser.add_argument(
         "--phase",
         choices=["all", "environment", "service"],
-        default="all",
-        help="Which half of the proof to run; a contract's task_type overrides this",
+        default="environment",
+        help="Default: environment (MiniMax baseline only). Use service after target adaptation; "
+             "all explicitly selects legacy standalone deployment. A contract's task_type overrides this",
     )
     parser.add_argument(
         "--attach-pod",

@@ -49,6 +49,7 @@ from validators.deployment_validator import (  # noqa: E402
 NODES: dict[str, dict] = {
     "model_intake": {
         "produces": "ModelRequest",
+        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
         "command": [
             "python3", "cli/intake/model_intake.py",
             "--model-id", "{subject}", "--model-path", "{model_path}",
@@ -824,8 +825,8 @@ def reusable_inputs_current(
 
 
 def fact_environment(kind: str, environment: dict) -> dict:
-    # Intake is model identity, and the proof establishes the runtime scope.
-    # Neither depends on a fingerprint that is only produced by that proof.
+    # Identity lookup remains model-scoped. Intake's explicit EnvironmentProof
+    # dependency separately invalidates it when the prepared context changes.
     if kind in ("ModelRequest", "EnvironmentProof"):
         return {key: value for key, value in environment.items()
                 if key not in ("environment_fingerprint", "environment_pod")}
@@ -1711,11 +1712,21 @@ def _run(args, resources: ExitStack) -> int:
                         "artifacts": [str(artifacts)],
                     }, args.json)
                     return 3 if waiting else 2
-            if bridge and spec["produces"] == "EnvironmentProof" and not passed:
+            if spec["produces"] == "EnvironmentProof" and not passed:
+                if bridge is None:
+                    emit_summary({
+                        "status": "BLOCKED", "node": current, "next_task": current,
+                        "reason_code": "ENVIRONMENT_FAILED", "state": state,
+                        "message": _failure_reason(artifacts, spec, state),
+                        "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
+                    }, args.json)
+                    return 2
                 try:
                     bridge.bind_environment(artifacts)
                 except ValueError as error:
                     emit_summary({"status": "BLOCKED", "node": current,
+                                  "next_task": current, "state": state,
+                                  "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
                                   "reason_code": "ENVIRONMENT_FAILED", "message": str(error)}, args.json)
                 else:
                     emit_summary({

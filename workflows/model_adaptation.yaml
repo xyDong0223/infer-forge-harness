@@ -5,20 +5,18 @@ metadata:
   regression_scenario: tests/e2e/scenarios/model_adaptation.yaml
 spec:
   description: Evidence-driven model adaptation for vLLM-Kunlun.
-  entry_task: mat-001-model-intake
+  entry_task: kdp-001a-environment-proof
   nodes:
-    # Cheapest gate first. Intake reads the PVC with no XPU and stops a wrong
-    # directory — an mcore training checkpoint under a model-like name — before
-    # eight cards are ever requested.
-    - id: mat-001-model-intake
-      task: tasks/mat-001-model-intake/task.yaml
-      on_success: kdp-001a-environment-proof
-      on_failure: mat-006-failure-triage
-    # Deploy the pod and the stack before deciding anything about the model. This
-    # proves the base environment and produces the pod that the scan runs inside,
-    # which is why no separate throwaway pod is needed from here on.
+    # Prove MiniMax-M2.5 directly, without target-model toy bring-up or weights.
+    # Only then begin target-model intake and adaptation in the prepared context.
     - id: kdp-001a-environment-proof
       task: tasks/kdp-001a-environment-proof/task.yaml
+      on_success: mat-001-model-intake
+      # Model triage consumes a successful proof; a failed environment must be
+      # diagnosed from its retained Pod/evidence before resuming this same node.
+      on_failure: NEEDS_HUMAN
+    - id: mat-001-model-intake
+      task: tasks/mat-001-model-intake/task.yaml
       on_success: mat-027-runtime-drift
       on_failure: mat-006-failure-triage
     # The cheapest gate here, and the one whose absence cost the most. A registry
@@ -157,8 +155,7 @@ spec:
       on_success: DELIVERED
       on_failure: mat-006-failure-triage
   notes:
-    - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
-      the environment proof's pod.
+    - Intake and every later in-pod inspection reuse the environment proof's Pod.
     - The environment half is provable without launch parameters, so the scan runs
       before any parameter is chosen.
     - Nodes marked PLANNED have no validator yet and must not be claimed as

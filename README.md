@@ -87,7 +87,7 @@ flowchart LR
 
 | 能力 | 状态 | 当前边界 |
 | --- | --- | --- |
-| 模型适配工作流 | **可用** | 覆盖 intake、环境证明、运行时漂移、能力匹配、toy bring-up、算子适配、服务与精度回归、支持矩阵 |
+| 模型适配工作流 | **可用** | 覆盖环境证明、intake、运行时漂移、能力匹配、toy bring-up、算子适配、服务与精度回归、支持矩阵 |
 | Graph Runner + 持久化 Scheduler | **可用** | Graph 负责流程和失败边，SQLite Scheduler 负责 `torch -> xpu -> integration` 任务、租约、诊断和恢复 |
 | 部署环境证明 | **可用** | 验证 Pod、运行时、代码工作树、XPU、基础模型 prefill/decode、健康检查和 chat 请求 |
 | 缺失算子适配 | **可用** | 严格 `OperatorSpec`、独立 PyTorch 参考、XPU 实现、dispatch 证明、服务集成回归 |
@@ -119,8 +119,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["创建 AdaptationRun"] --> B["模型身份 Intake"]
-    B --> C["部署环境证明"]
+    A["创建 AdaptationRun"] --> B["MiniMax-M2.5 环境证明"]
+    B --> C["目标模型身份 Intake"]
     C --> D["运行时漂移与模型扫描"]
     D --> E["能力匹配与缺口分类"]
     E --> F["持久化 OperatorSpec"]
@@ -139,6 +139,8 @@ flowchart LR
 ```
 
 环境证明是硬门禁：真实扫描、算子发现和设备任务必须绑定同一个 Pod、代码版本和环境指纹。算子完成以后，流程会重新执行服务与精度回归，不能用替换算子之前的基线证明最终模型。
+
+MiniMax-M2.5 是已知可工作的环境基线，直接启动并验证 health、prefill/decode 和后端，不运行 toy bring-up。环境证明结束后保留 Pod、释放基线服务显存，再开始新模型 intake、扫描、能力匹配和缺口发现。MAT-028 toy bring-up 属于目标模型适配；目标服务（例如 Step-3.5-Flash）的真实权重只在这之后加载。
 
 ### Graph 与 Scheduler 的职责
 
