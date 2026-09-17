@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import argparse
 from cli.common import run_managed_tool
-from runners.triage_executor import CONTRACT, run
+from runners.triage_executor import CONTRACT, MissingPodError, run
 
 
 def main() -> int:
@@ -46,9 +46,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return run(args)
-    except ValueError as error:
-        if str(error) != "a pod is required: pass --pod or --env-status":
-            raise
+    except MissingPodError as error:
         parser.error(str(error))
 
 
