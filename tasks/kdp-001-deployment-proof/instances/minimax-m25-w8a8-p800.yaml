@@ -2,7 +2,7 @@ api_version: infer.kunlun/v1alpha1
 kind: Task
 metadata:
   name: kdp-001-minimax-m25-w8a8-p800
-  task_type: deployment_proof
+  task_type: environment_proof
   version: 0.1.0
   owner: dongxinyu03
 
@@ -45,17 +45,25 @@ context:
 actions:
   - preflight
   - prepare_environment
-  - toy_bringup_before_load
-  - start_server
-  - poll_health
-  - run_chat_smoke
-  - collect_artifacts
+  - verify_runtime_importable
+  - discover_base_model
+  - start_base_model
+  - run_base_prefill_decode_smoke
+  - verify_base_service
+  - collect_environment_fingerprint
+  - release_base_service_memory_keep_pod
 
 acceptance:
   pod_ready: true
-  health_check: 200
-  chat_completion: non_empty
-  expected_backend: kunlun
+  runtime_importable: true
+  code_ready: true
+  device_ready: true
+  base_model_loaded: true
+  base_prefill: true
+  base_decode: true
+  base_health_check: 200
+  base_chat_completion: non_empty
+  fingerprint_required: true
   unexpected_fallback: false
   startup_timeout_seconds: 2700
 
@@ -131,18 +139,27 @@ artifacts:
     - pod_spec
     - environment_versions
     - install_log
-    - server_log
-    - health_result
-    - chat_result
+    - runtime_import
+    - code_readiness
+    - device_readiness
+    - environment_fingerprint
+    - base_model_identity
+    - base_server_log
+    - base_health_result
+    - base_chat_result
     - reproduce_command
 
 exit_states:
-  pass: DEPLOYMENT_READY
+  pass: ENVIRONMENT_READY
+  runtime_drift: RUNTIME_DRIFT
   install_failed: INSTALL_FAILED
-  bringup_blocked: BRINGUP_BLOCKED
   startup_failed: SERVER_START_FAILED
   health_timeout: READINESS_TIMEOUT
   api_failed: API_SMOKE_FAILED
   fallback_detected: UNEXPECTED_FALLBACK
   invalid: CONTRACT_INVALID
   needs_human: NEEDS_HUMAN
+
+notes:
+  - Environment baseline only. The executor uses config/clusters/p800-cluster.yaml
+    for MiniMax launch settings and returns before target-model intake or toy bring-up.

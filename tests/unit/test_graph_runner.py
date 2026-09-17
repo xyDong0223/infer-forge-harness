@@ -40,6 +40,11 @@ ENVIRONMENT = {"hardware": "P800", "stack_commit": "3ced109a"}
 
 
 def graph_fixture(tmp_path, monkeypatch, outcomes):
+    # This synthetic one-node workflow tests execution bookkeeping, not the
+    # production intake/environment handoff covered by local E2E.
+    monkeypatch.setitem(graph_runner.NODES, "model_intake", {
+        **graph_runner.NODES["model_intake"], "needs": {},
+    })
     workflow = [{"id": "intake", "task": "fixture", "on_success": "DELIVERED",
                  "on_failure": "REWORK"}]
     monkeypatch.setattr(graph_runner, "load_workflow", lambda _: workflow)
@@ -804,12 +809,12 @@ class FactReliabilityTest(unittest.TestCase):
                     task_type,
                 )
             record_fact(
-                journal, NODES["model_intake"], "demo", intake, ENVIRONMENT,
-                skill=skills["model_intake"],
-            )
-            record_fact(
                 journal, NODES["environment_proof"], "demo", environment_root,
                 ENVIRONMENT, skill=skills["environment_proof"],
+            )
+            record_fact(
+                journal, NODES["model_intake"], "demo", intake, ENVIRONMENT,
+                skill=skills["model_intake"],
             )
             scan_skill = graph_runner.skill_registry.execution_contract(
                 graph_runner.skill_registry.resolve_for_context("model_scan", {}),

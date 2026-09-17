@@ -7,9 +7,9 @@ contaminate the identity fact.
 
 Two facts cannot be established from this host: the weights live on a PVC that
 is only visible inside the cluster, and the stack ref must be resolved to a
-commit. So intake creates a throwaway XPU-free Pod, fingerprints the checkpoint
-through `tools/probe/model_fingerprint_probe.py`, removes the Pod, and resolves
-the ref with `git ls-remote`.
+commit. In the adaptation workflow intake uses the proven Pod supplied by
+`--env-status`. Standalone identity-only calls may create an XPU-free probe Pod.
+The checkpoint probe and `git ls-remote` supply the model and stack identities.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ def main() -> int:
     parser.add_argument("--attempt-id", required=True, help="unique per run, e.g. 20260907-1")
     parser.add_argument("--out", required=True)
     parser.add_argument("--attach-pod", help="reuse a ready owned pod instead of creating one")
+    parser.add_argument("--env-status", type=Path,
+                        help="validated environment proof; use its retained Pod (required by Graph)")
     parser.add_argument("--image", default="iregistry.baidu-int.com/hac_test/aiak-inference-llm:vLLM-Kunlun-Base")
     parser.add_argument("--dedicated-pool", default="aihcq-sirzhpwo0g1u")
     parser.add_argument("--ttl-seconds", type=int, default=900)

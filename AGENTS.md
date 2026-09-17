@@ -236,6 +236,11 @@ including one using a target-model example contract, derives the base model and
 smoke command from `config/clusters/p800-cluster.yaml`. Target weights are not a
 substitute. Require the base model identity, health, prefill/decode and backend
 evidence before model investigation.
+Launch this known-good baseline directly, without MAT-028/toy bring-up. Stop
+after the environment proof; only then run target intake, scan, capability
+matching, gap discovery and target toy bring-up. Never launch the target service
+as part of proving the environment. The deployment CLI defaults to `environment`;
+`--phase all` is an explicit legacy standalone deployment, not this workflow.
 
 **Diagnose before repairing.** Deployment no longer auto-discovers or executes
 `tools/patches/patch_*.py`, including the commit-specific Kunlun drift repair.

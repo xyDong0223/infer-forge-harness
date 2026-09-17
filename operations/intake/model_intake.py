@@ -7,9 +7,9 @@ contaminate the identity fact.
 
 Two facts cannot be established from this host: the weights live on a PVC that
 is only visible inside the cluster, and the stack ref must be resolved to a
-commit. So intake creates a throwaway XPU-free Pod, fingerprints the checkpoint
-through `tools/probe/model_fingerprint_probe.py`, removes the Pod, and resolves
-the ref with `git ls-remote`.
+commit. In the adaptation workflow intake uses the proven Pod supplied by
+`--env-status`. Standalone identity-only calls may create an XPU-free probe Pod.
+The checkpoint probe and `git ls-remote` supply the model and stack identities.
 """
 
 from __future__ import annotations
@@ -163,6 +163,17 @@ def execute(args) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "env_status", None):
+        from validators.deployment_validator import validate_environment_status, validate_environment_identity
+
+        status_path = Path(args.env_status)
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        errors = validate_environment_status(status) + validate_environment_identity(status_path.parent)
+        if errors or not status.get("pod"):
+            raise IntakeFailed("CONTRACT_INVALID", "environment proof rejected: " + "; ".join(errors))
+        if args.attach_pod and args.attach_pod != status["pod"]:
+            raise IntakeFailed("CONTRACT_INVALID", "attach Pod does not match environment proof")
+        args.attach_pod = status["pod"]
     adapter = KunlunP800Adapter()
     stack_commit = resolve_stack_commit(args.stack_ref)
 

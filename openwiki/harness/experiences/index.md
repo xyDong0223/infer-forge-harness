@@ -24,4 +24,4 @@ summary: 按能力轴（而非模型）组织的适配经验。模型是能力�
 | [moe](moe.md) | MoE 层：W8A8 expert、FusedMoE 工厂参数、dummy-expert 造模 |
 | [quantization-w8a8](quantization-w8a8.md) | W8A8 INT8 动态量化：scale 布局与门禁度量 |
 | [spec-decode-mtp](spec-decode-mtp.md) | MTP / speculative decode：nextn 层配置与 decode 路由 |
-| [engine-drift](engine-drift.md) | vllm_kunlun↔vllm API 漂移：修复模式与预检方法 |
+| [engine-drift](engine-drift.md) | vllm_kunlun↔vllm API 漂移：修复模式与真实运行验证 |

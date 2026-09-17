@@ -43,6 +43,9 @@ artifacts:
   - chat_result
   - reproduce_command
 exit_states:
+  contract_invalid: CONTRACT_INVALID
+  blocked: BLOCKED
+  runtime_drift: RUNTIME_DRIFT
   pass: DEPLOYMENT_READY
   bringup_blocked: BRINGUP_BLOCKED
   startup_failed: SERVER_START_FAILED

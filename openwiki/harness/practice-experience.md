@@ -6,12 +6,16 @@ summary: >-
   先建立服务基线，再用独立证据定位 dispatch、算子、运行时和模型组合问题。
 generated:
   by: hand-authored
-  at: 2026-09-09T00:00:00Z
+  at: 2026-09-17T00:00:00Z
 evidence_version:
   repo: https://github.com/xyDong0223/infer-forge-harness
-  ref: main
-  commit: f3cea1e0c1b09bbabb87df13ed5e2ea602e3004d
+  ref: codex/environment-before-model-adaptation
+  commit: 3f5aa15e23daa473157ac993e2069c684e3d5c45
 sources:
+- repo://workflows/model_adaptation.yaml
+- repo://tasks/kdp-001a-environment-proof/task.yaml
+- repo://cli/deployment/proof.py
+- repo://runners/deployment_proof.py
 - repo://README.md#L17-L78
 - repo://skills/model_bringup_loop/SKILL.md
 - repo://skills/kernel_grade/SKILL.md
@@ -38,14 +42,15 @@ claims: .claims/practice-experience.json
 
 模型适配的第一目标是建立一个可重复的 serving baseline，而不是一开始就追求所有 vendor kernel 都被使用。
 
-推荐顺序：
+推荐顺序（`practice-007`；依据工作流与环境任务契约，不代表新增硬件实测）：
 
 ```text
-model intake
-  -> environment proof
+MiniMax-M2.5 environment proof (direct launch, no toy)
+  -> target model intake
   -> model scan
   -> capability match
   -> gap classification
+  -> target toy bring-up and shim handoff
   -> service bring-up
   -> independent accuracy
   -> baseline freeze

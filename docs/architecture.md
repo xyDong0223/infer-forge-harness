@@ -68,7 +68,7 @@ phase-2 worklist):
 | `runners/graph_runner.py` | Core | one leak: reads `environment.get("hardware", "p800")` into a field named `backend` |
 | `runners/evidence.py`, `runners/watch.py`, `engine/state/journal.py`, `engine/state/task_memory.py` | Core | crash-first snapshots, heartbeats, fingerprint-scoped facts |
 | `runners/task_runner.py` | Core + Runtime + Hardware (via factory) | renders contracts; still assembles the `python -m vllm.entrypoints.openai.api_server` serve command itself (phase 2) |
-| `runners/deployment_proof.py` | Core + Runtime + Hardware (via factory) | install/replay/toy bring-up/readiness; the largest mixed site |
+| `runners/deployment_proof.py` | Core + Runtime + Hardware (via factory) | install/toy bring-up/readiness; the largest mixed site |
 | `runners/{triage,patch,correctness}_executor.py` | Core + Hardware (via factory) | behaviour-neutral; reach the adapter through `get_hardware()` |
 | `runtimes/` | Runtime | registry, profile, `VllmKunlunRuntime` env surface; behavioural methods grow here in phase 2 |
 | `adapters/` (+ `get_hardware()`) | Hardware + Cluster | kubectl primitives, safety gates, `xpu_smi` device probes — cluster and hardware still fused; split planned |

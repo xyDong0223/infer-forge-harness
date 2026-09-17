@@ -35,14 +35,32 @@ def load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
-def build_plan(contract: dict[str, Any], target: TargetContext | None = None) -> dict[str, Any]:
+def proof_phase(contract: dict[str, Any], phase: str) -> str:
+    return {"environment_proof": "environment", "service_proof": "service"}.get(
+        contract.get("metadata", {}).get("task_type"), phase,
+    )
+
+
+def build_plan(
+    contract: dict[str, Any], target: TargetContext | None = None,
+    phase: str = "environment",
+) -> dict[str, Any]:
     resolved = contract_target(contract, target)
     require_supported(resolved)
+    phase = proof_phase(contract, phase)
+    actions = contract.get("actions", [])
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        actions = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")["actions"]
     return {
         "task_id": contract.get("metadata", {}).get("name"),
-        "task_type": contract.get("metadata", {}).get("task_type"),
+        "task_type": {"environment": "environment_proof", "service": "service_proof"}.get(
+            phase, contract.get("metadata", {}).get("task_type"),
+        ),
         "mode": "PLAN_ONLY",
-        "actions": contract.get("actions", []),
+        "phase": phase,
+        "actions": actions,
         "requires": {
             "explicit_execute": True,
             "cluster_access": True,
@@ -56,7 +74,7 @@ def execute(
     contract_path: Path,
     artifact_dir: Path | None,
     attach_pod: str | None = None,
-    phase: str = "all",
+    phase: str = "environment",
     target: TargetContext | None = None,
     run_id: str | None = None,
     user_id: str | None = None,
@@ -138,7 +156,11 @@ def execute(
     try:
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
         contract.setdefault("execution", {})["user_id"] = owner
-        ArtifactStore(attempt.input).write_json("task_contract.json", contract)
+        ArtifactStore(attempt.input).write_json("requested_task_contract.json", {
+            "requested_phase": phase,
+            "effective_phase": proof_phase(contract, phase),
+            "contract": contract,
+        })
         return _execute(contract, target_dir, attach_pod, phase, target, finish)
     except (ValueError, OSError, RuntimeError) as error:
         return finish({"status": "BLOCKED", "message": str(error), "task_id": task_id}, 2)
@@ -153,7 +175,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     task_type = contract["metadata"]["task_type"]
     # environment_proof and service_proof are the two halves of a deployment
     # proof: the same executor, stopped at a different exit criterion.
-    phase = {"environment_proof": "environment", "service_proof": "service"}.get(task_type, phase)
+    phase = proof_phase(contract, phase)
     if task_type not in ("deployment_proof", "environment_proof", "service_proof"):
         return finish({"status": "EXECUTION_NOT_CONFIGURED", "message": "no executor for this task_type"}, 4)
 
@@ -163,6 +185,20 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     except ValueError as error:
         return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        # Normalize the phase contract while preserving the target launch
+        # settings imported from the deployment plan for service execution.
+        phase_contract = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")
+        for field in ("actions", "acceptance", "exit_states"):
+            contract[field] = phase_contract[field]
+        contract["artifacts"] = {
+            "directory": str(target_dir),
+            "collect": list(dict.fromkeys([
+                *phase_contract["artifacts"], "task_contract", "reproduce_command",
+            ])),
+        }
     if phase == "environment":
         profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
         base = profile.get("validation", {}).get("base_model", {})
@@ -216,6 +252,14 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         "revisions": target_context.revisions,
         "compatibility": bundle.compatibility,
     }
+    contract["metadata"]["task_type"] = {
+        "environment": "environment_proof", "service": "service_proof",
+    }.get(phase, task_type)
+    attempt = locate_attempt(target_dir)
+    if attempt is not None:
+        # Keep the request for diagnosis, but replay only the effective contract
+        # that is also passed to the runner and saved in output/task_contract.yaml.
+        ArtifactStore(attempt.input).write_json("task_contract.json", contract)
     errors = validate_executable(contract)
     if errors:
         return finish({"status": "CONTRACT_INVALID", "errors": errors}, 2)
@@ -264,8 +308,8 @@ def run(args) -> int:
         return 2
     if args.server_log:
         contract.setdefault("execution", {})["server_log"] = args.server_log
-    environment_phase = (args.phase == "environment" or
-                         contract.get("metadata", {}).get("task_type") == "environment_proof")
+    phase = proof_phase(contract, args.phase)
+    environment_phase = phase == "environment"
     placeholders = [] if args.execute and environment_phase else find_placeholders(contract)
     if placeholders:
         print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
@@ -274,7 +318,7 @@ def run(args) -> int:
         return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase,
                        target, args.run_id, getattr(args, "user_id", None))
 
-    plan = build_plan(contract, target)
+    plan = build_plan(contract, target, phase)
     rendered = json.dumps(plan, indent=2)
     if args.output:
         try:

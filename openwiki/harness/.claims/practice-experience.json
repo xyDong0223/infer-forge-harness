@@ -3,9 +3,9 @@
   "page": "practice-experience.md",
   "evidence_version": {
     "repo": "https://github.com/xyDong0223/infer-forge-harness",
-    "ref": "main",
-    "commit": "f3cea1e0c1b09bbabb87df13ed5e2ea602e3004d",
-    "observed_at": "2026-09-09"
+    "ref": "codex/environment-before-model-adaptation",
+    "commit": "3f5aa15e23daa473157ac993e2069c684e3d5c45",
+    "observed_at": "2026-09-17"
   },
   "claims": [
     {
@@ -71,6 +71,18 @@
         "repo://tasks/mat-008-capability-evaluation/task.yaml",
         "repo://tasks/mat-023-long-context-sparse-correctness/task.yaml",
         "repo://operations/validation/tensor_diff.py"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "practice-007",
+      "statement": "MiniMax-M2.5 环境基线直接启动，不先运行 toy bring-up；环境证明完成后，才开始目标模型 intake、扫描、能力匹配、缺口分类与目标 toy bring-up，最后验证目标服务。",
+      "kind": "method",
+      "evidence": [
+        "repo://workflows/model_adaptation.yaml",
+        "repo://tasks/kdp-001a-environment-proof/task.yaml",
+        "repo://cli/deployment/proof.py",
+        "repo://runners/deployment_proof.py"
       ],
       "confidence": "high"
     }
