@@ -65,6 +65,41 @@ python cli/adaptation.py --state "$STATE" apply-diagnosis \
 
 使用 `adaptation.py --state "$STATE" status --run-id "$RUN_ID" --events` 查看实际状态。恢复继续用原数据库、run_id、版本和 artifact root；不要重用旧 attempt 作为输出。
 
+需要直接查看停在哪里、为什么停、由谁处理时：
+
+```bash
+python cli/adaptation.py --state "$STATE" status --run-id "$RUN_ID" --format text
+```
+
+默认 JSON 保留 `run`、`tasks`、`events`，新增统一的 `progress` 和逐任务
+`task_progress`。Graph 的 JSON summary 也带相同结构。每条说明包含
+`state`、`location`、`reason_code`、`summary`、`next_action`（责任人、动作、
+说明、可选命令参数数组）、`evidence` 和 `observed_at`；协议见
+[`progress.schema.yaml`](../contracts/progress.schema.yaml)。这些字段只解释进度，
+不参与验收，也不会降低 Validator 的要求。
+
+| 统一状态 | 含义 |
+| --- | --- |
+| `RUNNING` | 最近观察到节点启动或有效的 worker 租约；需通过日志/心跳确认进程仍存活 |
+| `WAITING` | 等待领取、上游阶段、诊断或外部决策 |
+| `BLOCKED` | 输入、环境、证据或实现问题阻止继续 |
+| `ACTION_REQUIRED` | 需要明确操作，例如重新领取过期任务、应用诊断或打破失败循环 |
+| `READY` | 可以执行/恢复下一步；不代表模型功能就绪 |
+| `COMPLETED` | Graph 已记录最终功能/模拟交付，或某个任务已完成；查看 location 和原始状态 |
+
+`WORKER_UNCLAIMED` 只表示任务未被领取。当前没有 worker 可用性注册表，不能
+据此断言没有配置 worker。提示里的 `claim` 命令仍按数据库和 stage 领取，
+没有 run 过滤；执行者必须核对返回的任务身份。命令只作为建议显示，不会自动执行。
+
+Scheduler 模式下，Graph 将最近一条说明存入 run 的 `metadata.graph_progress`
+和事件历史。新进程查询时会结合当前队列重新计算算子等待、租约和诊断状态；
+例如 worker 全部完成后，提示恢复 Graph，不沿用过时的等待文案。Graph 运行状态是
+带时间戳的最后观察，不能用于断言进程仍活着。graph-only 模式输出说明但不持久化到 Scheduler。
+
+`status` 以只读事务读取已有数据库，不创建数据库、不恢复租约、不应用诊断。
+历史交付说明不会重新验证证据文件；实际继续运行/交付仍由原有验收门禁检查。
+`details.raw_status` 区分 `FUNCTIONAL_READY` 与 `SIMULATION_PASS`。
+
 连接 Scheduler 的 Graph 返回 exit 3 表示等待 worker，exit 2 表示阻塞或返工。省略 `--scheduler-state` 的 graph-only 模式不生成 scheduler-backed 功能交付凭据；`--until-node` 的部分执行和供应商交接的 `DELIVERED` 都不是模型功能就绪。
 
 Graph 和 deployment proof 不带 `--execute` 时为计划模式，其他独立入口可能直接访问集群。更详细的错误定位与不同恢复机制见[排障指南](../docs/guides/troubleshooting.zh-CN.md)。新增命令的源码归属见[贡献指南](../CONTRIBUTING.md)。

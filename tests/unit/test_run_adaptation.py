@@ -289,9 +289,24 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
 
 
 def test_unknown_run_is_machine_readable_error(tmp_path: Path) -> None:
-    result = _run(tmp_path / "state.db", "status", "--run-id", "missing")
+    from engine.scheduler import EventStore
+
+    state = tmp_path / "state.db"
+    EventStore(state).close()
+    result = _run(state, "status", "--run-id", "missing")
     assert result.returncode == 2
-    assert json.loads(result.stdout) == {"error": "unknown run: missing", "command": "status"}
+    payload = json.loads(result.stdout)
+    assert payload["error"] == "unknown run: missing"
+    assert payload["command"] == "status"
+    assert payload["progress"]["next_action"]["action"] == "FIX_COMMAND"
+
+
+def test_status_missing_database_is_read_only(tmp_path: Path) -> None:
+    state = tmp_path / "missing/state.db"
+    result = _run(state, "status", "--run-id", "missing")
+    assert result.returncode == 2
+    assert "existing state database" in json.loads(result.stdout)["error"]
+    assert not state.parent.exists()
 
 
 def test_discover_requires_environment_proof(tmp_path: Path) -> None:

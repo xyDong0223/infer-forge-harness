@@ -137,6 +137,9 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     first = scenario.graph(expected=3)
     assert '"reason_code": "WAITING_FOR_OPERATORS"' in first.stdout
     before = scenario.status()
+    assert before["progress"]["reason_code"] == "WORKER_UNCLAIMED"
+    assert before["progress"]["next_action"]["owner"] == "torch_worker"
+    assert before["run"]["metadata"]["graph_progress"]["node"] == "mat-026-operator-candidate-integration"
     assert [(task["stage"], task["status"]) for task in before["tasks"]] == [("torch", "pending")]
     events = [event["event_type"] for event in before["events"]]
     assert events.index("environment_bound") < events.index("operator_discovered")
@@ -166,8 +169,14 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
 
     for stage in ("torch", "xpu", "integration"):
         scenario.worker(stage)
+    ready = scenario.status()["progress"]
+    assert ready["reason_code"] == "RESUME_GRAPH"
+    assert ready["state"] == "READY"
+    assert "--resume" in ready["next_action"]["command"]
     delivery = scenario.delivery(scenario.graph("--resume"))
     snapshot = scenario.status()
+    assert snapshot["progress"]["state"] == "COMPLETED"
+    assert snapshot["progress"]["details"]["raw_status"] == "SIMULATION_PASS"
     assert len(snapshot["tasks"]) == 3
     fingerprint = snapshot["run"]["environment"]["environment_proof"]["fingerprint"]
     for task in snapshot["tasks"]:
@@ -215,6 +224,9 @@ def test_missing_worker_evidence_blocks_delivery(scenario):
     scenario.graph(expected=3)
     scenario.worker("torch", "--fault", "missing-evidence", expected=6)
     snapshot = scenario.status()
+    assert snapshot["progress"]["reason_code"] == "DIAGNOSIS_PENDING"
+    source_failure = next(item for item in snapshot["task_progress"] if item["details"]["stage"] == "torch")
+    assert source_failure["details"]["validation_errors"]
     assert {(task["stage"], task["status"]) for task in snapshot["tasks"]} == {
         ("torch", "failed"), ("diagnosis", "pending"),
     }
@@ -263,7 +275,11 @@ def test_resume_preserves_attempts_and_rejects_old_lease(scenario):
     ).stdout)["abandoned"]
     original_output = Path(abandoned["input"]["workspace"]["output"]) / "abandoned.json"
     original_hash = digest(original_output)
+    assert scenario.status()["progress"]["reason_code"] in {"WORKER_RUNNING", "LEASE_EXPIRED"}
     time.sleep(max(0, abandoned["lease_expires"] - time.time()) + 0.03)
+    expired = scenario.status()
+    assert expired["progress"]["reason_code"] == "LEASE_EXPIRED"
+    assert expired["tasks"][0]["status"] == "running"
     scenario.worker("torch")
     task = next(item for item in scenario.status()["tasks"] if item["stage"] == "torch")
     assert task["attempt"] == 2
@@ -291,6 +307,8 @@ def test_environment_tampering_blocks_resume(scenario):
     assert "DELIVERY_RECORDED" not in blocked.stdout
     snapshot = scenario.status()
     assert snapshot["run"]["status"] == "ENVIRONMENT_FAILED"
+    assert snapshot["progress"]["reason_code"] == "ENVIRONMENT_FAILED"
+    assert snapshot["progress"]["next_action"]["action"] == "PROVE_ENVIRONMENT"
     assert snapshot["run"]["environment"]["environment_proof"]["fingerprint"] == proof["fingerprint"]
     claimed = json.loads(scenario.adaptation(
         "claim", "--worker", "must-not-run", "--stage", "torch",
@@ -312,6 +330,10 @@ def test_incomplete_operator_report_is_blocked(scenario):
     )
     assert "shape" in (Path(dispatch["artifacts"]) / "dispatch_status.json").read_text()
     assert scenario.status()["tasks"] == []
+    progress = scenario.status()["progress"]
+    assert progress["reason_code"] == "DISPATCH_BLOCKED"
+    assert "shape" in progress["summary"]
+    assert progress["next_action"]["action"] == "COMPLETE_OPERATOR_CONTRACT"
     assert "DELIVERY_RECORDED" not in blocked.stdout
 
 

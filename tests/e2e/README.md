@@ -56,6 +56,12 @@ repository source files.
 model accuracy or performance.** Read the receipt's evidence mode and Journal
 context; an intermediate node's `*_READY` state alone is not hardware evidence.
 
+The same production scenarios check progress explanations across process
+boundaries: an unclaimed task, an expired lease without read-side recovery,
+queued diagnosis, blocked measured contracts, a ready-to-resume graph and the
+final simulation delivery. Status queries retain original states and report
+the next responsible actor without treating explanations as evidence.
+
 ## Production Graph/scheduler handoff
 
 Create the run using `cli/adaptation.py`, then connect the graph explicitly:

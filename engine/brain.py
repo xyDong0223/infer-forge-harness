@@ -176,11 +176,15 @@ class AgentBrain:
     RESPONSE_NAME = "decision.json"
 
     def __init__(self, workdir: Path, command: list[str] | None = None,
-                 poll_seconds: float = 2.0, timeout_seconds: float = 600.0):
+                 poll_seconds: float = 2.0, timeout_seconds: float = 600.0,
+                 on_request: Callable[[Path, Path], None] | None = None,
+                 on_decision: Callable[[Decision], None] | None = None):
         self.workdir = ensure_external(workdir)
         self.command = command
         self.poll_seconds = poll_seconds
         self.timeout_seconds = timeout_seconds
+        self.on_request = on_request
+        self.on_decision = on_decision
 
     def decide(self, request: DecisionRequest) -> Decision:
         paths = RunPaths(self.workdir)
@@ -193,6 +197,8 @@ class AgentBrain:
                 encoding="utf-8",
             )
             store = ArtifactStore(workspace.root)
+            if self.on_request is not None:
+                self.on_request(request_path, response_path)
             if self.command:
                 try:
                     result = subprocess.run(
@@ -226,6 +232,8 @@ class AgentBrain:
                 payload = json.loads(response_path.read_text(encoding="utf-8"))
                 decision = Decision.from_dict(payload)
                 store.register(identity=workspace.identity, outcome=decision.next_action)
+                if self.on_decision is not None:
+                    self.on_decision(decision)
                 return decision
             except WritePolicyError:
                 raise
@@ -286,7 +294,9 @@ def brain_from_config(config: dict[str, Any], workdir: Path) -> Brain:
         if isinstance(command, str):
             command = command.split()
         return AgentBrain(workdir=workdir, command=command,
-                          timeout_seconds=float(config.get("decide_timeout", 600)))
+                          timeout_seconds=float(config.get("decide_timeout", 600)),
+                          on_request=config.get("on_request"),
+                          on_decision=config.get("on_decision"))
     raise BrainError(f"unknown brain type {kind!r}: expected 'rule' or 'agent'")
 
 

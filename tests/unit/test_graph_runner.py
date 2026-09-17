@@ -181,6 +181,54 @@ def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_graph_reports_decision_paths_before_waiting(tmp_path, monkeypatch, capsys):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [
+        {"state": "FAILED", "validator": {"passed": False, "errors": ["kernel mismatch"]}},
+    ])
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--auto-recover", "--brain", "agent", "--decide-timeout", "0",
+    ])
+    assert _graph_runner_cli.main() == 0  # legacy graph-only exit contract
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    waiting = next(item for item in summaries if item["reason_code"] == "WAITING_FOR_DECISION")
+    details = waiting["progress"]["details"]
+    assert Path(details["request_path"]).is_file()
+    assert Path(details["response_path"]).name == "decision.json"
+    assert not details["decider_configured"]
+    assert "No decider command" in waiting["progress"]["summary"]
+    blocked = next(item for item in summaries if item["reason_code"] == "RECOVERY_BLOCKED")
+    assert "no decision.json" in blocked["progress"]["summary"]
+    failure = next(item for item in summaries if item["status"] == "REWORK")
+    assert "kernel mismatch" in failure["message"]
+
+
+def test_partial_graph_has_explicit_non_delivery_explanation(tmp_path, monkeypatch, capsys):
+    argv, _ = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute", "--until-node", "intake"])
+    assert _graph_runner_cli.main() == 0
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    assert summaries[-1]["reason_code"] == "UNTIL_NODE_REACHED"
+    assert summaries[-1]["progress"]["state"] == "READY"
+    command = summaries[-1]["progress"]["next_action"]["command"]
+    assert "--resume" in command
+    assert "--until-node" not in command
+
+
+def test_custom_terminal_is_not_reported_as_delivery(tmp_path, monkeypatch, capsys):
+    argv, _ = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: [
+        {"id": "intake", "task": "fixture", "on_success": "NEEDS_REVIEW"},
+    ])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert _graph_runner_cli.main() == 0
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    assert summaries[-1]["status"] == "NEEDS_HUMAN"
+    assert summaries[-1]["progress"]["reason_code"] == "WORKFLOW_STOPPED"
+
+
 @pytest.mark.parametrize("extra", [
     ["--artifact-root", str(ROOT / "runtime-test")],
     ["--journal", str(ROOT / "journal-test.jsonl")],

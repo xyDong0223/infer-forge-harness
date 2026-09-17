@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
 from core.storage import RunPaths, default_state_root, ensure_external, safe_component  # noqa: E402
+from engine.scheduler import EventStore  # noqa: E402
+from engine.progress import graph_progress, render_progress, run_progress  # noqa: E402
 
 
 def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
@@ -121,6 +124,8 @@ def _parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show durable run and task status")
     status.add_argument("--run-id", required=True)
     status.add_argument("--events", action="store_true", help="include append-only events")
+    status.add_argument("--format", choices=("json", "text"), default="json",
+                        help="JSON (default) or a readable location/reason/next-action summary")
 
     reconcile = sub.add_parser("reconcile", help="repair historical missing task edges using evidence")
     reconcile.add_argument("--run-id", required=True)
@@ -313,6 +318,7 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
             "command": "status",
             "run": run.to_dict(),
             "tasks": [task.to_dict() for task in scheduler.store.tasks(args.run_id)],
+            **run_progress(scheduler.store, args.run_id),
         }
         if args.events:
             result["events"] = [event.to_dict() for event in scheduler.store.events(args.run_id)]
@@ -327,14 +333,37 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    store = None
     try:
-        result = _run(args, TaskScheduler(args.state))
-    except (KeyError, ValueError, OSError) as exc:
+        # Status is an observation: never create/migrate a DB or recover leases.
+        store = EventStore(args.state, readonly=args.command == "status")
+        if args.command == "status":
+            store.db.execute("BEGIN")
+        result = _run(args, TaskScheduler(store))
+        run_id = result.get("run", {}).get("run_id") or result.get("task", {}).get("run_id")
+        if run_id and "progress" not in result:
+            result.update(run_progress(store, run_id))
+    except (KeyError, ValueError, OSError, sqlite3.Error) as exc:
         # Keep failures machine-readable as well.  The non-zero exit code
         # lets a shell/Agent distinguish a rejected transition from success.
-        print(json.dumps({"error": str(exc), "command": args.command}, ensure_ascii=False))
+        failure = {"error": str(exc), "command": args.command}
+        failure["progress"] = graph_progress({
+            "status": "BLOCKED", "command": args.command,
+            "reason_code": "COMMAND_REJECTED", "message": str(exc),
+        })
+        print(render_progress(failure["progress"]) if getattr(args, "format", None) == "text"
+              else json.dumps(failure, ensure_ascii=False))
         return 2
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    finally:
+        if store is not None:
+            store.close()
+    if getattr(args, "format", None) == "text":
+        print(render_progress(result["progress"]))
+        for progress in result.get("task_progress", []):
+            if progress["state"] != "COMPLETED" and progress != result["progress"]:
+                print("\n" + render_progress(progress))
+    else:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     return 6 if result.get("error") or result.get("blocked") or result.get("task", {}).get("status") == "failed" else 0
 
 

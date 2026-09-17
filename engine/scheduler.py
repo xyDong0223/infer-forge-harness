@@ -364,6 +364,7 @@ class TaskScheduler:
         run.status = "ENVIRONMENT_FAILED"
         run.environment = {**run.environment, "failed_environment_proof": {
             "state": proof.get("state", "FAILED"), "pod": proof.get("pod"),
+            "artifact_root": proof.get("artifact_root"),
             "checks": proof.get("checks", {}), "artifacts": proof.get("artifacts", []),
             "diagnosis": proof.get("reason", error),
         }}
@@ -377,7 +378,7 @@ class TaskScheduler:
     ) -> AdaptationRun:
         """Persist graph handoffs without changing the environment status meaning."""
         if key not in {"graph_environment_required", "graph_environment",
-                       "graph_discovery", "graph_shim_discovery", "graph_delivery"}:
+                       "graph_discovery", "graph_shim_discovery", "graph_delivery", "graph_progress"}:
             raise ValueError(f"unsupported graph transition: {key}")
         run = self.store.run(run_id)
         if run is None:
