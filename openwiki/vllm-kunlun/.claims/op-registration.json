@@ -1,0 +1,56 @@
+{
+  "schema": "openwiki/claims/v0.2",
+  "page": "op-registration.md",
+  "evidence_version": {
+    "repo": "https://github.com/baidu/vLLM-Kunlun",
+    "ref": "v0.25.1-dev",
+    "commit": "c53e090ff8800f586bf9e36e0d876779981bfb20",
+    "observed_at": "2026-09-17"
+  },
+  "claims": [
+    {
+      "id": "opr-001",
+      "statement": "Kunlun bootstrap 按固定顺序执行启动阶段，其中第 2 阶段通过文件路径加载 `ops/_custom_ops.py`；导入期依赖的算子注册必须在调用方首次解析符号前完成。",
+      "kind": "mechanism",
+      "evidence": [
+        "repo://vllm_kunlun/registration/bootstrap.py#L7-L14",
+        "repo://vllm_kunlun/registration/bootstrap.py#L57-L110"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "opr-002",
+      "statement": "Kunlun 用自有 schema helper 替换 `vllm.utils.torch_utils.direct_register_custom_op`，把 PEP-604 注解归一化为 `torch.library.infer_schema` 可接受的形式，默认 dispatch key 为 `CUDA`。",
+      "kind": "mechanism",
+      "evidence": [
+        "repo://vllm_kunlun/schema.py#L25",
+        "repo://vllm_kunlun/schema.py#L58-L117"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "opr-003",
+      "statement": "Kunlun 自定义算子并非只有一个命名空间：仓库声明 `_C`/`_moe_C` 算子，另有厂商 `xspeedgate_ops`/`custom_ops`、`kunlun_ops`，以及额外注册到 `vllm::` 的算子；补注册前必须先确认调用方期望的命名空间。",
+      "kind": "mechanism",
+      "evidence": [
+        "repo://vllm_kunlun/ops/_custom_ops.py#L20",
+        "repo://vllm_kunlun/ops/_custom_ops.py#L2842",
+        "repo://vllm_kunlun/ops/_custom_ops.py#L2863",
+        "repo://vllm_kunlun/ops/_kunlun_ops.py#L22-L35",
+        "repo://vllm_kunlun/ops/_kunlun_ops.py#L46-L47",
+        "repo://vllm_kunlun/ops/attention/layer.py#L223-L240"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "opr-004",
+      "statement": "Kunlun 的 import hook/dispatch patch 是 fail-soft 的：单个补丁异常不会中断整个进程，并通过 `_DISPATCHING` 防止重入；因此注册与验证必须独立记录，不能仅凭进程未崩溃判断补丁生效。",
+      "kind": "caveat",
+      "evidence": [
+        "repo://vllm_kunlun/registration/import_hooks.py#L49",
+        "repo://vllm_kunlun/registration/import_hooks.py#L69-L97"
+      ],
+      "confidence": "high"
+    }
+  ]
+}

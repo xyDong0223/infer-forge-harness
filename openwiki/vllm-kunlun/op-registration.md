@@ -1,3 +1,26 @@
+---
+type: reference
+title: 自定义算子注册与验证清单
+summary: >-
+  Kunlun 侧自定义算子的注册时机、命名空间判断、schema 兼容层与分层验证顺序；
+  页内 `vllm/...` 路径仅作源码导航提示，审计结论以旁挂 claims 为准。
+generated:
+  by: hand-authored (GitHub Copilot, OpenWiki OKF v0.2 conventions)
+  at: 2026-09-17T00:00:00Z
+evidence_version:
+  repo: https://github.com/baidu/vLLM-Kunlun
+  ref: v0.25.1-dev
+  commit: c53e090ff8800f586bf9e36e0d876779981bfb20
+sources:
+- repo://vllm_kunlun/registration/bootstrap.py#L7-L110
+- repo://vllm_kunlun/schema.py#L25-L117
+- repo://vllm_kunlun/registration/import_hooks.py#L45-L97
+- repo://vllm_kunlun/ops/_custom_ops.py#L20-L2863
+- repo://vllm_kunlun/ops/_kunlun_ops.py#L22-L47
+- repo://vllm_kunlun/ops/attention/layer.py#L223-L240
+claims: .claims/op-registration.json
+---
+
 # vLLM-Kunlun 自定义算子注册方法
 
 本文说明如何将引擎需要的算子接入 Kunlun 运行时：确认接口、选择实现、
@@ -5,8 +28,9 @@
 方法以算子契约为单位，不依赖具体模型。`_C::silu_and_mul_per_block_quant`
 仅用于演示接口和注册结构；应用到其他算子时必须重新核对契约。
 
-源码路径以 vLLM 0.25.1 系列的接口为例，其他版本应以已安装源码为准。
-本文不提供可直接部署的算子实现，也不要求使用某个历史补丁脚本。
+源码路径以 vLLM 0.25.1 / Kunlun `v0.25.1-dev` 兼容栈为例；本页可审计结论只覆盖
+Kunlun 侧已核对的注册机制，`vllm/...` 路径在本文中仅作源码导航提示，其他版本应以
+已安装源码重新定锚。本文不提供可直接部署的算子实现，也不要求使用某个历史补丁脚本。
 
 ## 1. 区分注册缺失与执行失败
 
