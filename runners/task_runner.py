@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core.paths import REPO_ROOT
 from core.user_identity import resolve_user_id
+from operations.deployment.environment_contract import build_environment_contract
 from validators.contract_validator import (
     find_placeholders,
-    validate_contract_file,
+    validate_task_contract,
     validate_executable,
 )
 from validators.deployment_validator import (
@@ -71,7 +73,7 @@ def build_plan(
 
 def execute(
     contract: dict[str, Any],
-    contract_path: Path,
+    contract_path: Path | None,
     artifact_dir: Path | None,
     attach_pod: str | None = None,
     phase: str = "environment",
@@ -109,6 +111,9 @@ def execute(
     inventory = ArtifactStore(attempt.root)
 
     def finish(status: dict[str, Any], code: int) -> int:
+        status.setdefault("task_id", task_id)
+        status.setdefault("state", status.get("status", "BLOCKED"))
+        status.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
         if contract.get("execution", {}).get("user_id"):
             status["user_id"] = contract["execution"]["user_id"]
         status["evidence_mode"] = contract.get("metadata", {}).get("evidence_mode", "real")
@@ -155,6 +160,10 @@ def execute(
 
     try:
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
+        recorded_owner = contract.get("execution", {}).get("user_id")
+        if recorded_owner and owner != recorded_owner:
+            raise ValueError("user_id does not match the prepared environment owner; "
+                             "use the recorded owner or generate a plan for a new run")
         contract.setdefault("execution", {})["user_id"] = owner
         ArtifactStore(attempt.input).write_json("requested_task_contract.json", {
             "requested_phase": phase,
@@ -185,6 +194,21 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     except ValueError as error:
         return finish({"status": "BLOCKED", "message": str(error)}, 2)
 
+    owner = resolve_user_id(recorded=contract.get("execution", {}).get("user_id"))
+    if not owner:
+        return finish({
+            "state": "INPUT_REQUIRED", "status": "INPUT_REQUIRED",
+            "paths": ["$.execution.user_id"],
+            "message": "Ask the user for their user ID and pass --user-id <USER_ID>. "
+                       "Do not infer it from the host login or an example resource name.",
+        }, 3)
+    if phase == "environment":
+        generated = build_environment_contract(
+            owner, previous=contract,
+        )
+        contract.clear()
+        contract.update(generated)
+        contract["artifacts"]["directory"] = str(target_dir)
     phase_task = {"environment": "kdp-001a-environment-proof",
                   "service": "kdp-001b-service-proof"}.get(phase)
     if phase_task:
@@ -199,50 +223,6 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
                 *phase_contract["artifacts"], "task_contract", "reproduce_command",
             ])),
         }
-    if phase == "environment":
-        profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
-        base = profile.get("validation", {}).get("base_model", {})
-        deployment = profile.get("deployment", {})
-        cluster = profile.get("cluster", {})
-        user_id = resolve_user_id(recorded=contract.get("execution", {}).get("user_id"))
-        if not user_id:
-            return finish({
-                "status": "INPUT_REQUIRED", "paths": ["$.execution.user_id"],
-                "message": "Ask the user for their user ID and pass --user-id <USER_ID> "
-                           "(or execution.user_id in the contract; legacy USER_ID is supported). "
-                           "Do not infer it from the host login or an example resource name.",
-            }, 3)
-        if not base.get("required") or not base.get("path"):
-            return finish({"status": "CONTRACT_INVALID", "message": "base model is not configured"}, 2)
-        contract["context"]["model"] = {"name": base["name"], "path": base["path"], "pvc": deployment["model_pvc"]}
-        contract["context"]["server"] = {"host": "0.0.0.0", "port": 8356, **base}
-        contract["context"]["target"] = {"hardware": "Kunlunxin-3-P800", "device_count": deployment["xpu_count"], "namespace": cluster["namespace"], "volcano_queue": deployment["queue"], "dedicated_pool": deployment["node_pool"]}
-        contract["context"]["software"] = {"image": deployment["image"]}
-        common_setup = profile.get("runtime", {}).get("common_setup", [])
-        serve_config = {
-            "port": 8356,
-            "path": base["path"],
-            **base,
-        }
-        previous_execution = contract.get("execution", {})
-        contract["execution"] = {
-            "mode": "execute", "namespace": cluster["namespace"],
-            "user_id": user_id,
-            "resource_name": f"{user_id}-environment-base",
-            "manifest": deployment["base_manifest"],
-            "startup_timeout_seconds": 1800,
-            "health_interval_seconds": previous_execution.get("health_interval_seconds", 10),
-            "health_successes_required": previous_execution.get("health_successes_required", 3),
-            "retain_on_failure": True,
-            "commands": {
-                "install": ["bash /workspace/install_vllm_kunlun.sh"],
-                "setup": common_setup,
-                "serve": [bundle.runtime.build_serve_command(serve_config)],
-            },
-        }
-        if previous_execution.get("server_log"):
-            contract["execution"]["server_log"] = previous_execution["server_log"]
-        contract["checks"] = {"health": {"path": "/health", "expected_status": 200}, "chat": {"path": "/v1/chat/completions", "method": "POST", "expected_non_empty_text": True, "payload": {"model": base["served_model_name"], "messages": [{"role": "user", "content": "Say hello in one short sentence."}], "max_tokens": 16}}, "backend": {"expected": "kunlun", "reject_unexpected_fallback": True}}
     contract.setdefault("context", {})["resolved_target"] = {
         "model": target.model if target else target_context.model,
         "hardware": target_context.hardware,
@@ -291,23 +271,42 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
 
 def run(args) -> int:
 
-    errors = validate_contract_file(args.contract)
-    contract = load_yaml(args.contract)
-    if errors:
-        print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
-        return 2
     try:
         target = load_target(args.target) if args.target else None
         if args.subject:
             if target is None:
                 raise ValueError("--subject requires --target")
             target = bind_subject(target, args.subject)
+        if target is not None:
+            require_supported(target)
+        if args.contract is None:
+            if args.phase != "environment":
+                raise ValueError("service/all requires an external contract generated by MAT-005")
+            contract = build_environment_contract(
+                getattr(args, "user_id", None),
+                evidence_mode=getattr(args, "evidence_mode", None),
+                health_interval_seconds=getattr(args, "health_interval_seconds", None),
+            )
+        else:
+            contract = load_yaml(args.contract)
+        if getattr(args, "evidence_mode", None) == "simulation":
+            contract.setdefault("metadata", {})["evidence_mode"] = "simulation"
+        errors = validate_task_contract(contract)
+        if errors:
+            print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
+            return 2
         require_supported(contract_target(contract, target))
     except (ValueError, OSError) as error:
         print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
         return 2
     if args.server_log:
         contract.setdefault("execution", {})["server_log"] = args.server_log
+    interval = getattr(args, "health_interval_seconds", None)
+    if interval is not None:
+        if interval < 0:
+            print(json.dumps({"status": "CONTRACT_INVALID", "message": "health interval must be nonnegative"}))
+            return 2
+        contract.setdefault("execution", {})["health_interval_seconds"] = interval
     phase = proof_phase(contract, args.phase)
     environment_phase = phase == "environment"
     placeholders = [] if args.execute and environment_phase else find_placeholders(contract)

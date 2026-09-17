@@ -185,8 +185,7 @@ python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
-  --user-id <user-supplied-id> \
-  --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml
+  --user-id <user-supplied-id>
 ```
 
 `user_id` is the resource owner's ID supplied by the user. If it is unknown,
@@ -195,6 +194,13 @@ path, example contracts, or an existing resource name. Pass it via `--user-id`
 (Graph: `--set user_id=<user-supplied-id>`), or `execution.user_id` in the
 contract. Legacy explicitly configured `USER_ID` remains supported. Environment
 attempts record the ID, and scheduler retries reuse the recorded value.
+
+The harness generates the environment contract from the cluster profile and the
+environment Task, persisting it in the attempt. Do not copy model-specific YAML
+examples or hand-author launch settings. Target service contracts come from the
+validated MAT-005 DeploymentPlan in the Journal; Graph rejects a manually supplied
+`contract_instance`. Direct proof replay may use a previously generated external
+contract. Generated YAML and runtime outputs never belong in versioned source.
 
 Environment retries automatically reuse the Pod recorded in the run (including
 failed proofs), and direct proof execution attaches to the existing deployment
@@ -206,7 +212,6 @@ python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
   environment \
   --run-id <run-id> \
-  --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml \
   --attach-pod <prepared-pod>
 ```
 
@@ -232,7 +237,7 @@ reinstall a working stack to retry a model. Replacement requires a diagnosed
 Pod/node failure or an explicit environment change, with evidence preserved.
 
 **MiniMax-M2.5 is the environment gate.** Every `--phase environment` invocation,
-including one using a target-model example contract, derives the base model and
+including a replay of an external contract, derives the base model and
 smoke command from `config/clusters/p800-cluster.yaml`. Target weights are not a
 substitute. Require the base model identity, health, prefill/decode and backend
 evidence before model investigation.

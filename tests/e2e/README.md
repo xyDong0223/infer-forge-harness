@@ -52,9 +52,21 @@ stale accuracy after a fresh service proof, and refusal to import a simulation
 proof into a real run. Each case checks that the scenario did not modify
 repository source files.
 
-The environment-input case also removes legacy `USER_ID`, checks the persisted
-missing-input rejection before cluster access, supplies `--user-id`, and resumes
-the same run in a new process using its recorded ID and Pod.
+The environment-input case starts without a seed YAML, checks the generated
+contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
+missing-input rejection against the shared status schema before cluster access,
+supplies `--user-id`, and resumes
+the same run in a new process using its recorded ID and Pod. A separate case
+rejects a manual Graph contract override before cluster access. Full delivery
+asserts that service execution consumes the real MAT-005 generated contract.
+
+All persisted deployment proof states are checked against the shared status
+schema, including success and failure. A pre-plan intake failure exercises the
+contract-free triage path, preservation of original console logs, resuming triage
+from the Journal, and retrying intake in the same Pod. The resulting UNKNOWN
+diagnosis remains NEEDS_HUMAN; it cannot enter patch placement or vendor handoff.
+Changing an established run's owner is rejected before external operations and
+leaves its generated plan and prepared environment unchanged.
 
 The environment-drift case rejects a synthetic runtime incompatibility before
 intake in both scheduler-connected and standalone Graph modes, retains the failed
@@ -93,7 +105,7 @@ python cli/workflow/graph.py \
   --env hardware=P800 \
   --env stack_commit=PINNED_PLUGIN_COMMIT \
   --set model_path=/mounted/model \
-  --set contract_instance=/external/pinned-contract.yaml \
+  --set user_id=<user-supplied-id> \
   --execute --resume --json
 ```
 
@@ -140,9 +152,8 @@ Set `INFER_FORGE_HARDWARE_SCENARIO` to an external JSON configuration containing
 | `pod`, `namespace` | The proven Pod, in the configured adapter namespace |
 | `image_digest`, `hardware` | Recorded run environment identity |
 | `model_revision`, `plugin_revision` | Pinned revisions matching the run |
-| `contract_instance` | Generic deployment-proof contract pinned to that namespace and plugin |
 | `environment` | The exact Graph `--env` mapping used by the run |
-| `context` | Graph node arguments such as model path, port and served-model name |
+| `context` | Graph node arguments such as model path, user_id, port and served-model name |
 | `cleanup_policy` | `retain_prepared_pod`; these tests never delete the prepared environment |
 
 `KUBECONFIG` and any runtime credentials remain in the external execution

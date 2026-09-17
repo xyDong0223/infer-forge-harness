@@ -17,6 +17,8 @@ properties:
       - ENVIRONMENT_READY
       - RUNTIME_DRIFT
       - CONTRACT_INVALID
+      - INPUT_REQUIRED
+      - EXECUTION_NOT_CONFIGURED
       - BLOCKED
       - INSTALL_FAILED
       - MODEL_NOT_FOUND
@@ -40,4 +42,42 @@ properties:
     type: array
     items: {type: string}
   next_task: {type: string}
+  status: {type: string}
+  message: {type: string}
+  paths:
+    type: array
+    items: {type: string}
+  user_id: {type: string}
+  evidence_mode: {type: string, enum: [real, simulation]}
+  artifact_root: {type: string}
+  manifest_path: {type: [string, "null"]}
+  workspace_identity: {type: object}
+  pod: {type: [string, "null"]}
+  phase: {type: string, enum: [environment, service, all]}
+  server_log: {type: [string, "null"]}
+  target: {type: object}
+  validator:
+    type: object
+    required: [passed, errors]
+    properties:
+      passed: {type: boolean}
+      errors:
+        type: array
+        items: {type: string}
+    additionalProperties: false
+  errors:
+    type: array
+    items: {type: string}
+  execution_error: {type: string}
+  manifest_error: {type: string}
+  status_error: {type: string}
+allOf:
+  - if:
+      properties:
+        state: {const: ENVIRONMENT_READY}
+      required: [state]
+    then:
+      required: [user_id]
+      properties:
+        user_id: {type: string, minLength: 1}
 additionalProperties: false

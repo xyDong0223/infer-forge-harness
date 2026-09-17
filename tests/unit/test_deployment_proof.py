@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from core.storage import ArtifactStore, RunPaths, WritePolicyError
 from runners import task_runner
@@ -18,7 +19,7 @@ import cli.deployment.proof as _task_runner_cli
 from runners.deployment_proof import DeploymentProofRunner, ActionFailed, manifest_values, render_manifest
 
 REPO = Path(__file__).resolve().parents[2]
-CONTRACT = REPO / "tasks/kdp-001-deployment-proof/instances/qwen3-8b-p800.yaml"
+CONTRACT = REPO / "tests/fixtures/deployment-proof.yaml"
 TEMPLATE = REPO / "tasks/kdp-001-deployment-proof/manifests/feddeployment.template.yaml"
 
 
@@ -33,7 +34,7 @@ class TestManifestRendering(unittest.TestCase):
 
     def test_rendered_manifest_is_owned_and_labelled(self) -> None:
         doc = yaml.safe_load(render_manifest(TEMPLATE, self.values))
-        self.assertTrue(doc["metadata"]["name"].startswith("dongxinyu03-"))
+        self.assertTrue(doc["metadata"]["name"].startswith("fixture-owner-"))
         self.assertEqual(doc["metadata"]["namespace"], "pd-test")
         self.assertEqual(
             doc["metadata"]["labels"]["infer.kunlun/attempt-id"], "20260907T000000Z"
@@ -60,6 +61,13 @@ def make_runner(path):
         yaml.safe_load(CONTRACT.read_text()), SimpleNamespace(config=SimpleNamespace(kubeconfig="fixture")),
         REPO, path,
     )
+
+
+def test_schema_accepts_failure_before_a_pod_is_selected(tmp_path):
+    runner = make_runner(tmp_path)
+    status = runner.collect_artifacts("INSTALL_FAILED", "runtime import failed")
+    assert status["pod"] is None
+    Draft202012Validator(yaml.safe_load((REPO / "contracts/status.schema.yaml").read_text())).validate(status)
 
 
 def test_direct_runner_rejects_source_and_stale_output(tmp_path):
@@ -178,6 +186,7 @@ def test_task_declared_directory_symlink_is_rejected_before_inventory(tmp_path, 
     status = json.loads(capsys.readouterr().out)
     assert status["state"] == "BLOCKED"
     assert status["manifest_path"] is None
+    Draft202012Validator(yaml.safe_load((REPO / "contracts/status.schema.yaml").read_text())).validate(status)
 
 
 def test_task_output_policy_precedes_cluster_loading(capsys):
@@ -265,16 +274,13 @@ def test_plan_external_output_is_atomic_and_not_overwritten(tmp_path, monkeypatc
     assert not list(output.parent.glob("*.pending"))
 
 
-@pytest.mark.parametrize("filename,phase_args,expected", [
-    ("qwen3-8b-p800.yaml", [], "environment"),
-    ("qwen3-8b-p800.yaml", ["--phase", "environment"], "environment"),
-    ("qwen3-8b-p800.yaml", ["--phase", "all"], "all"),
-    ("minimax-m25-w8a8-p800.yaml", [], "environment"),
-    ("minimax-m25-w8a8-p800.yaml", ["--phase", "all"], "environment"),
+@pytest.mark.parametrize("phase_args,expected", [
+    ([], "environment"),
+    (["--phase", "environment"], "environment"),
+    (["--phase", "all"], "all"),
 ])
-def test_cli_plan_exposes_effective_phase(monkeypatch, capsys, filename, phase_args, expected):
-    path = CONTRACT.parent / filename
-    monkeypatch.setattr("sys.argv", ["proof", str(path), *phase_args])
+def test_cli_plan_exposes_effective_phase(monkeypatch, capsys, phase_args, expected):
+    monkeypatch.setattr("sys.argv", ["proof", str(CONTRACT), *phase_args])
     assert _task_runner_cli.main() == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["phase"] == expected

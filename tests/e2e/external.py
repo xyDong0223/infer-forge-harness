@@ -106,16 +106,22 @@ def prepare_environment(root: Path) -> dict:
     }
     report_path = root / "operators.json"
     _json(report_path, report)
-    contract = yaml.safe_load((
-        REPO_ROOT / "tasks/kdp-001-deployment-proof/instances/qwen3-8b-p800.yaml"
-    ).read_text())
-    contract["metadata"].update(name="kdp-001-simulation", evidence_mode="simulation")
+    from operations.deployment.plan_deployment import plan, render_instance
+    request = {"model": {"id": SUBJECT, "source": str(model), "pvc": "simulation-models",
+                         "revision": fingerprint["revision"], "total_weight_bytes": 16},
+               "identity": config,
+               "target": {"hardware": "kunlun/p800", "vllm_kunlun_commit": PLUGIN_REVISION}}
+    report = plan(request, {"classification": "OPERATOR_GAP"}, {"hbm_mib": 98304}, None)
+    contract = yaml.safe_load(render_instance(report, request, root / "deployment", user_id="simulation"))
+    # Legacy replay exercises all phases; the production Graph uses its own
+    # environment generator and MAT-005 output instead of this boundary fixture.
+    contract["metadata"].update(name="kdp-001-simulation", task_type="deployment_proof", evidence_mode="simulation")
     ctx = contract["context"]
     ctx["model"].update(name=SUBJECT, path=str(model), pvc="simulation-models")
     ctx["target"].update(device_count=1, namespace="pd-test",
                          volcano_queue="simulation", dedicated_pool="simulation")
-    ctx["repository"]["vllm_kunlun_ref"] = PLUGIN_REVISION
-    ctx["software"]["image"] = "simulation.invalid/runtime:never-pulled"
+    ctx["repository"] = {"vllm_kunlun_ref": PLUGIN_REVISION}
+    ctx["software"] = {"image": "simulation.invalid/runtime:never-pulled"}
     ctx["server"].update(served_model_name=SUBJECT, max_model_len=128, dtype="float32")
     # This target-model validation entry must never override the profile's
     # MiniMax baseline when the environment phase normalizes the contract.
@@ -164,8 +170,8 @@ def prepare_environment(root: Path) -> dict:
         "KUBECONFIG": str(root / "kubeconfig.json"),
     }
     context = {"model_path": str(model), "weights": str(model),
-               "contract_instance": str(contract_path),
-               "server_log": "/workspace/server.log", "served_model_name": SUBJECT,
+               "proof_health_interval": "0",
+               "server_log": f"/workspace/server_{SUBJECT.lower()}.log", "served_model_name": SUBJECT,
                "port": "8356"}
     environment = {"evidence_mode": "simulation", "stack": PLUGIN_REVISION}
     graph_args = ["--subject", SUBJECT, "--target", str(target_path)]
@@ -383,9 +389,10 @@ class SimulatedCluster(KunlunP800Adapter):
             return {"choices": [{"logprobs": {
                 "top_logprobs": [{item["token"]: item["logprob"] for item in values}],
             }}]}
-        if script == "cat /workspace/server.log":
+        server_logs = ("/workspace/server.log", f"/workspace/server_{SUBJECT.lower()}.log")
+        if script in (f"cat {path}" for path in server_logs):
             return self._server_log()
-        if script.startswith("stat -c %s ") and "server.log" in script and "tail -n 1" in script:
+        if script.startswith("stat -c %s ") and any(path in script for path in server_logs) and "tail -n 1" in script:
             return f"{len(self._server_log())}\n{self._server_log()}"
         raise RuntimeError(f"unexpected external exec command: {script[-1500:]}")
 
@@ -401,6 +408,8 @@ class SimulatedCluster(KunlunP800Adapter):
     def _probe(self, filename, argv, config):
         model = self.settings["model_path"]
         if filename == "mat001_probe.py":
+            if self.settings.get("intake_failure"):
+                return {"state": "MODEL_UNAVAILABLE", "reason": "synthetic missing checkpoint shard"}
             if argv != [model]:
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))

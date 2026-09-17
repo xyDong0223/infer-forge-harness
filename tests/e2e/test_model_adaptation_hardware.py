@@ -23,14 +23,15 @@ def hardware_scenario(request):
     assert value, "explicit authorization also requires INFER_FORGE_HARDWARE_SCENARIO"
     config = json.loads(ensure_external(value).read_text())
     required = {
-        "run_id", "state", "artifact_root", "subject", "contract_instance", "pod",
+        "run_id", "state", "artifact_root", "subject", "pod",
         "namespace", "image_digest", "hardware", "model_revision", "plugin_revision",
         "cleanup_policy", "environment", "context",
     }
     assert required <= config.keys(), f"missing configuration: {sorted(required - config.keys())}"
     assert config["cleanup_policy"] == "retain_prepared_pod"
     assert str(config["image_digest"]).startswith("sha256:")
-    assert ClusterConfig.load().namespace == config["namespace"]
+    assert config["context"].get("user_id"), "hardware scenarios require the user-supplied owner ID"
+    assert ClusterConfig.load(user_id=config["context"]["user_id"]).namespace == config["namespace"]
     state = ensure_external(config["state"])
     assert state.is_file(), "optional tiers require an existing run"
     scheduler = TaskScheduler(state)
@@ -47,13 +48,6 @@ def hardware_scenario(request):
         assert canonical_hardware(run.environment["hardware"]) == canonical_hardware(config["hardware"])
     finally:
         scheduler.store.close()
-    contract = yaml.safe_load(Path(config["contract_instance"]).read_text())
-    assert contract["metadata"]["task_type"] == "deployment_proof"
-    assert contract["metadata"].get("evidence_mode", "real") == "real"
-    assert contract["context"]["target"]["namespace"] == config["namespace"]
-    repository = contract["context"]["repository"]
-    revision = repository.get("vllm_kunlun_ref", repository.get("vllm_kunlun_commit"))
-    assert revision == config["plugin_revision"]
     attempt = RunPaths(config["artifact_root"], config["run_id"]).allocate_attempt(request.node.name)
     request.node.user_properties.append(("artifact_root", str(attempt.root)))
     yield config, attempt
@@ -87,7 +81,7 @@ def test_prepared_device_smoke(hardware_scenario):
     config, attempt = hardware_scenario
     result = run_real(config, attempt, "cli/adaptation.py", [
         "--state", config["state"], "environment", "--run-id", config["run_id"],
-        "--contract", config["contract_instance"], "--attach-pod", config["pod"],
+        "--user-id", config["context"]["user_id"], "--attach-pod", config["pod"],
         "--artifact-dir", str(attempt.output / "environment"),
     ])
     proof = json.loads(result.stdout)["run"]["environment"]["environment_proof"]
@@ -110,8 +104,7 @@ def test_real_model_service_regression(hardware_scenario):
         "--artifact-root", config["artifact_root"], "--subject", config["subject"],
         "--from-node", "kdp-001b-service-proof", "--execute", "--json",
     ]
-    context = {**config["context"], "pod": config["pod"],
-               "contract_instance": config["contract_instance"]}
+    context = {**config["context"], "pod": config["pod"]}
     for key, value in config["environment"].items():
         arguments += ["--env", f"{key}={value}"]
     for key, value in context.items():

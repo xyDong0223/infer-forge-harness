@@ -11,6 +11,8 @@ import sys
 import time
 
 import pytest
+import yaml
+from jsonschema import Draft202012Validator
 
 from core.paths import REPO_ROOT
 from core.storage import ArtifactStore
@@ -126,6 +128,11 @@ def scenario(tmp_path, request):
     case.logs.write_json("source_snapshot.json", source_before)
     request.node.user_properties.append(("artifact_root", str(tmp_path)))
     yield case
+    schema = yaml.safe_load((REPO_ROOT / "contracts/status.schema.yaml").read_text())
+    for path in case.run_root.glob("tasks/*/attempts/*/output/status.json"):
+        status = json.loads(path.read_text())
+        if status.get("task_id", "").startswith("kdp-"):
+            Draft202012Validator(schema).validate(status)
     case.logs.register(
         identity={"scenario": "model_adaptation", "case": request.node.name},
         outcome="RECORDED",
@@ -136,13 +143,20 @@ def scenario(tmp_path, request):
 def test_environment_user_id_input_and_restart(scenario):
     scenario.env.pop("USER_ID", None)
     arguments = ["environment", "--run-id", scenario.run_id,
-                 "--contract", scenario.fixture["contract_instance"]]
+                 "--health-interval-seconds", "0"]
     missing = json.loads(scenario.adaptation(*arguments, expected=6).stdout)
     assert missing["proof"]["status"] == "INPUT_REQUIRED"
     assert "INPUT_REQUIRED" in missing["error"]
     assert "--user-id" in missing["proof"]["message"]
     missing_root = Path(missing["proof"]["artifact_root"])
-    assert (missing_root / "status.json").is_file()
+    rejection_path = missing_root / "status.json"
+    rejection_bytes = rejection_path.read_bytes()
+    rejection = json.loads(rejection_bytes)
+    schema = yaml.safe_load((REPO_ROOT / "contracts/status.schema.yaml").read_text())
+    Draft202012Validator(schema).validate(rejection)
+    assert rejection["task_id"] == rejection["workspace_identity"]["task_id"]
+    assert rejection["state"] == "INPUT_REQUIRED"
+    assert rejection["paths"] == ["$.execution.user_id"]
     assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
 
     ready = json.loads(scenario.adaptation(*arguments, "--user-id", "simulation").stdout)
@@ -152,6 +166,8 @@ def test_environment_user_id_input_and_restart(scenario):
     first_root = Path(ready["proof"]["artifact_root"])
     contract = json.loads((first_root.parent / "input" / "task_contract.json").read_text())
     assert contract["execution"]["user_id"] == "simulation"
+    assert contract["metadata"]["generated_by"] == "harness.environment_contract"
+    assert contract["context"]["model"]["name"] == "MiniMax-M2.5-Int8-W8A8"
 
     # A new CLI process resumes the same run with no ID in argv or environment.
     resumed = json.loads(scenario.adaptation(*arguments).stdout)
@@ -160,6 +176,61 @@ def test_environment_user_id_input_and_restart(scenario):
     assert resumed["proof"]["user_id"] == "simulation"
     assert Path(resumed["proof"]["artifact_root"]) not in {first_root, missing_root}
     assert (first_root / "status.json").is_file()
+    assert rejection_path.read_bytes() == rejection_bytes
+
+
+def test_graph_rejects_manual_deployment_contract(scenario):
+    rejected = scenario.graph("--set", f"contract_instance={scenario.fixture['contract_instance']}", expected=2)
+    assert "MAT-005 supplies the service contract" in rejected.stdout
+    assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
+
+
+@pytest.mark.parametrize("scheduled", [True, False])
+def test_preplan_failure_is_preserved_for_triage_and_restart(scenario, scheduled):
+    settings = json.loads(scenario.fixture["settings"].read_text())
+    settings["intake_failure"] = True
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    failed = scenario.graph(expected=2, scheduled=scheduled)
+    assert "FAILURE_DIAGNOSIS_REQUIRED" in failed.stdout
+    assert "INPUT_UNRESOLVED" not in failed.stdout
+    assert not (scenario.run_root / "tasks/mat-005-deployment-plan").exists()
+    assert not (scenario.run_root / "tasks/mat-020-vendor-handoff").exists()
+    report_path = next(scenario.run_root.glob("tasks/mat-006-failure-triage/attempts/*/output/triage_report.json"))
+    original = report_path.read_bytes()
+    report = json.loads(original)
+    assert report["state"] == "NEEDS_HUMAN"
+    assert report["verdict"] == "UNKNOWN"
+    assert report["validator"]["passed"] is True
+    assert report["source_status"]["state"] == "UNKNOWN"
+    assert report["source_status"]["returncode"] == 1
+    assert "synthetic missing checkpoint shard" in "\n".join(
+        (report_path.parent / item["path"]).read_text() for item in report["evidence"])
+    assert any("logs/" in item["path"] for item in report["evidence"])
+    # A separate invocation can diagnose the persisted failure with no plan.
+    scenario.graph("--from-node", "mat-006-failure-triage", expected=2, scheduled=scheduled)
+    settings.pop("intake_failure")
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    scenario.graph("--resume", "--until-node", "mat-001-model-intake", scheduled=scheduled)
+    assert report_path.read_bytes() == original
+    assert len(json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"]) == 1
+
+
+def test_graph_rejects_owner_change_without_mutating_plan_or_environment(scenario):
+    scenario.graph("--until-node", "mat-005-deployment-plan")
+    plan = next(fact for fact in scenario.facts() if fact["kind"] == "DeploymentPlan")
+    plan_path = Path(plan["artifacts"]) / "kdp_instance.yaml"
+    original = plan_path.read_bytes()
+    def cluster_events():
+        return [line for line in scenario.fixture["events"].read_text().splitlines()
+                if json.loads(line)["operation"] != "bootstrap"]
+    before = cluster_events()
+    rejected = scenario.graph("--resume", "--set", "user_id=another-owner", expected=2)
+    assert "user_id does not match the prepared environment owner" in rejected.stdout
+    assert plan_path.read_bytes() == original
+    assert cluster_events() == before
+    scenario.env.pop("USER_ID", None)
+    scenario.graph("--resume", "--until-node", "mat-005-deployment-plan")
+    assert plan_path.read_bytes() == original
 
 
 @pytest.mark.parametrize("scheduled", [True, False])
@@ -220,6 +291,18 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     target_launch = next(i for i, script in enumerate(scripts)
                          if "echo started $!" in script and "minimax-base-smoke" not in script)
     assert base_launch < intake < toy < target_launch
+    # The target proof consumes the real MAT-005 output, never the legacy
+    # boundary fixture prepared for separate replay tests.
+    import yaml
+    facts = scenario.facts()
+    plan_fact = next(fact for fact in facts if fact["kind"] == "DeploymentPlan")
+    service_fact = next(fact for fact in facts if fact["kind"] == "DeploymentProof")
+    planned = yaml.safe_load((Path(plan_fact["artifacts"]) / "kdp_instance.yaml").read_text())
+    executed = yaml.safe_load((Path(service_fact["artifacts"]) / "task_contract.yaml").read_text())
+    assert executed["metadata"]["generated_by"] == "mat-005-deployment-plan"
+    assert executed["execution"]["commands"]["serve"] == planned["execution"]["commands"]["serve"]
+
+
     intake_events = [event for event in external if event["operation"] == "exec"
                      and "python3 /tmp/mat001_probe.py" in event["script"]]
     assert {event["pod"] for event in intake_events} == {scenario.fixture["pod"]}

@@ -14,9 +14,7 @@ spec:
   # failure triage, operator coverage — can run before any parameter is chosen.
   # It also means a later kernel failure cannot be blamed on the install.
   runs_with: |
-    python3 cli/deployment/proof.py \
-      tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase environment
-  instances_shared_with: kdp-001b-service-proof
+    python3 cli/deployment/proof.py --user-id <user-supplied-id> --execute --phase environment
 context:
   validation:
     base_model:
@@ -75,6 +73,7 @@ artifacts:
   - base_health_result
   - base_chat_result
 exit_states:
+  input_required: INPUT_REQUIRED
   contract_invalid: CONTRACT_INVALID
   blocked: BLOCKED
   model_not_found: MODEL_NOT_FOUND

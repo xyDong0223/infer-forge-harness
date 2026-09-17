@@ -25,7 +25,7 @@ class TestEnvironmentAttachWiring(unittest.TestCase):
                 "--state", "/tmp/x.db",
                 "environment",
                 "--run-id", "run-1",
-                "--contract", "tasks/kdp-001-deployment-proof/instances/glm52-int-w8a8-p800.yaml",
+                "--contract", "/external/generated-environment.yaml",
                 "--attach-pod", "dongxinyu03-vllm-abc-0",
             ]
         )

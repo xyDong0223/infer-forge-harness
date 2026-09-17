@@ -26,7 +26,6 @@ from core.storage import default_state_root, ensure_external, safe_component  # 
 from validators.plan_validator import validate_deployment_plan  # noqa: E402
 
 CONTRACT = REPO_ROOT / "tasks" / "mat-005-deployment-plan" / "task.yaml"
-INSTANCE_TEMPLATE = REPO_ROOT / "tasks" / "kdp-001-deployment-proof" / "instances"
 # vLLM-Kunlun forces 64 for MLA and defaults to 16 otherwise
 # (openwiki/vllm-kunlun/platform-contract.md).
 BLOCK_SIZE = {"mla": 64, "default": 16}
@@ -220,11 +219,14 @@ def render_instance(
             "generated_by": "mat-005-deployment-plan",
         },
         "context": {
+            "runtime": {"engine": "vllm", "backend": "kunlun", "plugin": "vllm-kunlun",
+                        "revisions": {"plugin": report["stack_commit"]} if report.get("stack_commit") else {}},
             "model": {"name": report["subject"], "path": model.get("source"),
                       "pvc": model.get("pvc"), "revision": model.get("revision")},
             "target": {"hardware": report["hardware"],
                        "device_count": values["tensor_parallel_size"]},
             "server": {"host": "0.0.0.0", "port": 8356, "served_model_name": subject,
+                       "tensor_parallel_size": values["tensor_parallel_size"],
                        **{k: values[k] for k in ("dtype", "max_model_len", "block_size",
                                                   "gpu_memory_utilization")}},
         },
@@ -232,7 +234,7 @@ def render_instance(
         # The sections below are what makes the instance a runnable contract:
         # without them kdp-001b validates CONTRACT_INVALID before touching the
         # cluster, which is how the graph used to stop here.
-        "actions": ["start_server", "poll_health", "run_chat_smoke", "collect_artifacts"],
+        "actions": ["toy_bringup_before_load", "start_server", "poll_health", "run_chat_smoke", "verify_backend", "collect_artifacts"],
         "acceptance": {
             "pod_ready": True,
             "health_check": 200,

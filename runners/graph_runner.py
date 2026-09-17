@@ -60,7 +60,7 @@ NODES: dict[str, dict] = {
     "environment_proof": {
         "produces": "EnvironmentProof",
         "command": [
-            "python3", "cli/deployment/proof.py", "{contract_instance}",
+            "python3", "cli/deployment/proof.py",
             "--execute", "--phase", "environment", "--artifact-dir", "{artifacts}",
         ],
         "state_file": "status.json",
@@ -340,7 +340,8 @@ def resolve(
     if spec.get("needs") and not environment:
         raise Unresolved("a nonempty environment is required to reuse Journal inputs; "
                          "provide --target/--env and a current environment proof")
-    if "contract_instance" not in context:
+    needs_contract = any("{contract_instance}" in part for part in (command or spec["command"]))
+    if needs_contract:
         # The plan renders the instance the service proof runs, so the graph can
         # supply it rather than asking an operator to copy a path.
         plan = input_fact(
@@ -349,6 +350,17 @@ def resolve(
         )
         if plan:
             context = {**context, "contract_instance": str(Path(plan["artifacts"]) / "kdp_instance.yaml")}
+            owner = load_yaml(Path(context["contract_instance"])).get("execution", {}).get("user_id")
+            if context.get("user_id") and owner != context["user_id"]:
+                raise Unresolved("DeploymentPlan user_id does not match the current resource owner")
+        elif spec.get("produces") == "FailureTriage":
+            failure_status = latest_failure_status(journal, context["subject"], environment)
+            if failure_status is None:
+                raise Unresolved("triage requires a recorded failure when no DeploymentPlan exists")
+            command = ["python3", "cli/operators/triage.py", "--failure-status",
+                       str(failure_status), "--out", "{artifacts}"]
+        else:
+            raise Unresolved("DeploymentPlan is required; run MAT-005 to generate the service contract")
     command = [part.format(**context) for part in (command or spec["command"])]
     for flag, reference in (spec.get("needs") or {}).items():
         _, kind, filename = reference.split(":", 2)
@@ -381,7 +393,14 @@ def resolve(
         command += ["--user-id", context["user_id"]]
     if "cli/deployment/proof.py" in command:
         path = command[command.index("cli/deployment/proof.py") + 1]
-        require_supported(contract_target(load_yaml(Path(path)), requested))
+        if not path.startswith("--"):
+            require_supported(contract_target(load_yaml(Path(path)), requested))
+        elif requested is not None:
+            require_supported(requested)
+        if environment.get("evidence_mode") == "simulation":
+            command += ["--evidence-mode", "simulation"]
+        if "proof_health_interval" in context:
+            command += ["--health-interval-seconds", str(context["proof_health_interval"])]
         if requested is not None:
             command += ["--target", context["target_file"], "--subject", context["subject"]]
         if context.get("pod") and "--attach-pod" not in command:
@@ -764,13 +783,8 @@ def _input_kinds(spec: dict, context: dict) -> tuple[set[str], set[str]]:
         reference.split(":", 2)[1]
         for reference in (spec.get("optional") or {}).values()
     }
-    if "contract_instance" not in context and (
-        "cli/deployment/proof.py" in spec.get("command", [])
-        or "--contract-instance" in spec.get("command", [])
-    ):
-        # A rendered plan supplies the contract when available; environment
-        # proof can instead receive the original contract from run context.
-        optional.add("DeploymentPlan")
+    if any("{contract_instance}" in part for part in spec.get("command", [])):
+        (optional if spec.get("produces") == "FailureTriage" else required).add("DeploymentPlan")
     return required, optional
 
 
@@ -869,6 +883,31 @@ def file_digest(path: Path) -> str | None:
         return None
 
 
+def latest_failure_status(journal: Path, subject: str, environment: dict) -> Path | None:
+    """Use the persisted failed node, including when triage resumes in a new process."""
+    for fact in reversed(journal_module.load(journal)):
+        kind = fact.get("kind")
+        if (fact.get("subject") != subject or kind in ("FailureTriage", "EnvironmentProof")
+                or fact.get("environment") != fact_environment(kind, environment)):
+            continue
+        spec = next((item for item in NODES.values() if item.get("produces") == kind), None)
+        if spec is None:
+            continue
+        # The latest upstream result supersedes older failures.
+        if node_passed(Path(fact["artifacts"]), spec, fact.get("detail", {}).get("returncode", 0)):
+            return None
+        path = Path(fact["artifacts"]) / spec["state_file"]
+        detail = fact.get("detail", {})
+        expected = detail.get("status_sha256")
+        if detail.get("failure_sha256"):
+            path = Path(fact["artifacts"]) / "failure_record.json"
+            expected = detail.get("failure_sha256")
+        if expected and expected == file_digest(path) and path.is_file():
+            return path
+        return None
+    return None
+
+
 def proof_fingerprint(artifacts: Path) -> str | None:
     path = artifacts / "environment_fingerprint.txt"
     try:
@@ -886,6 +925,12 @@ def bind_proven_environment(context: dict, environment: dict, journal: Path) -> 
         return
     artifacts = Path(proof["artifacts"])
     status = read_status(artifacts, NODES["environment_proof"])
+    owner = status.get("user_id")
+    if owner:
+        if resolve_user_id(context.get("user_id"), owner) != owner:
+            raise Unresolved("user_id does not match the prepared environment owner; "
+                             "resume with the recorded owner or create a new run")
+        context["user_id"] = owner
     proven = proof_fingerprint(artifacts)
     if environment.get("environment_fingerprint") not in (None, proven):
         raise Unresolved("current environment proof fingerprint does not match --env")
@@ -903,6 +948,8 @@ def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
                 child_skills: list[dict] | None = None) -> dict:
     detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
               "returncode": returncode}
+    if (artifacts / "failure_record.json").is_file():
+        detail["failure_sha256"] = file_digest(artifacts / "failure_record.json")
     if skill is not None:
         method = skill.get("method")
         detail["skill"] = {
@@ -1332,9 +1379,8 @@ def _run(args, resources: ExitStack) -> int:
             environment.update(target_env, compatibility_status="supported")
             context["target_file"] = str(args.target.resolve())
         if context.get("contract_instance"):
-            require_supported(contract_target(
-                load_yaml(Path(context["contract_instance"])), requested_target
-            ))
+            raise ValueError("Graph generates deployment contracts; remove --set contract_instance. "
+                             "MAT-005 supplies the service contract through the Journal.")
     except (ValueError, OSError) as error:
         print(f"blocked: {error}")
         emit_summary({"status": "BLOCKED", "reason_code": "TARGET_MISMATCH",
@@ -1651,6 +1697,13 @@ def _run(args, resources: ExitStack) -> int:
                 returncode = returncode or result.returncode
             state = read_state(artifacts, spec)
             passed = node_passed(artifacts, spec, returncode)
+            if not passed:
+                ArtifactStore(artifacts).write_json("failure_record.json", {
+                    "task_id": current, "state": "UNKNOWN", "returncode": returncode,
+                    "reason": "Task did not pass; inspect the original status and command logs.",
+                    "expected_status_file": spec["state_file"],
+                    "observed_status": read_status(artifacts, spec),
+                })
             ArtifactStore(attempt.root).register(
                 identity=attempt.identity, outcome=state,
                 required=(f"output/{spec['state_file']}",) if passed else (),
@@ -1743,6 +1796,12 @@ def _run(args, resources: ExitStack) -> int:
             # success edge would skip triage for a failure that already
             # happened — the failure edge must be selected by EITHER signal.
             state_mismatch = returncode == 0 and not passed
+            if spec["produces"] == "FailureTriage" and state == "NEEDS_HUMAN":
+                emit_summary({"status": "NEEDS_HUMAN", "node": current,
+                              "reason_code": "FAILURE_DIAGNOSIS_REQUIRED",
+                              "message": _failure_reason(artifacts, spec, state),
+                              "artifacts": [str(artifacts)]}, args.json)
+                return 2
             if returncode != 0 or state_mismatch:
                 reason_code = "STATE_NOT_SUCCESS" if state_mismatch else "COMMAND_FAILED"
                 recovered = False

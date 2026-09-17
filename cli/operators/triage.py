@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import argparse
 from cli.common import run_managed_tool
-from runners.triage_executor import CONTRACT, run
+from runners.triage_executor import CONTRACT, MissingPodError, run
 
 
 def main() -> int:
@@ -34,6 +34,8 @@ def main() -> int:
     parser.add_argument("--pod", default=None,
                         help="the pod to triage in; defaults to the environment proof's pod")
     parser.add_argument("--contract-instance", type=Path, default=None)
+    parser.add_argument("--failure-status", type=Path,
+                        help="persisted failed-node status for diagnosis before a deployment plan exists")
     # Accepted (and used as the pod source when --pod is absent) because the
     # graph's failure_triage node resolves its EnvironmentProof input as this
     # flag; refusing it made the node unrunnable from the graph.
@@ -42,7 +44,10 @@ def main() -> int:
     parser.add_argument("--call", default="speculative_attention")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    return run(args)
+    try:
+        return run(args)
+    except MissingPodError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

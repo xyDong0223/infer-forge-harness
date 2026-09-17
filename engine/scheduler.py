@@ -289,6 +289,9 @@ class TaskScheduler:
                    or (name == "pod" and not value)]
         if missing:
             raise ValueError("environment proof is not ready: " + ", ".join(missing))
+        owner = proof.get("user_id")
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("environment proof must record the supplied user_id")
         for key, expected in (
             ("base_health_check", 200), ("base_chat_completion", "non_empty"),
             ("unexpected_fallback", False),
