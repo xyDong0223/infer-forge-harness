@@ -289,6 +289,7 @@ def environment_proof(root):
     write_base_model_identity(root)
     return {
         "state": "ENVIRONMENT_READY", "pod": "test-pod", "artifact_root": str(root),
+        "user_id": "fixture-owner",
         "checks": {
             "pod_ready": True, "runtime_importable": True, "code_ready": True,
             "device_ready": True, "base_model_loaded": True, "base_prefill": True,
@@ -323,6 +324,15 @@ def test_environment_import_checks_actual_status_and_readable_evidence(tmp_path,
     with pytest.raises(ValueError):
         scheduler.bind_environment("run", proof)
     assert scheduler.store.run("run").status == "WAITING_FOR_ENVIRONMENT"
+
+
+def test_environment_binding_requires_recorded_user_id(tmp_path):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model", backend="device")
+    proof = environment_proof(tmp_path / "proof")
+    proof.pop("user_id")
+    with pytest.raises(ValueError, match="user_id"):
+        scheduler.bind_environment("run", proof)
 
 
 def test_environment_binding_fingerprints_artifacts_and_rejects_cross_environment_spec(tmp_path):

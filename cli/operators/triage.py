@@ -44,7 +44,10 @@ def main() -> int:
     parser.add_argument("--call", default="speculative_attention")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    return run(args)
+    try:
+        return run(args)
+    except ValueError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

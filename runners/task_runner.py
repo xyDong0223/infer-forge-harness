@@ -161,9 +161,8 @@ def execute(
     try:
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
         recorded_owner = contract.get("execution", {}).get("user_id")
-        if (proof_phase(contract, phase) != "environment" and recorded_owner
-                and owner != recorded_owner):
-            raise ValueError("user_id does not match the generated service contract owner; "
+        if recorded_owner and owner != recorded_owner:
+            raise ValueError("user_id does not match the prepared environment owner; "
                              "use the recorded owner or generate a plan for a new run")
         contract.setdefault("execution", {})["user_id"] = owner
         ArtifactStore(attempt.input).write_json("requested_task_contract.json", {

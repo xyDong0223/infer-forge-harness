@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from runners import task_runner
 
@@ -120,4 +121,31 @@ def test_service_owner_change_is_rejected_before_publishing_inconsistent_contrac
     assert contract == original
     status = json.loads(capsys.readouterr().out)
     assert 'does not match' in status['message']
+    Draft202012Validator(load('contracts/status.schema.yaml')).validate(status)
+
+
+def test_environment_ready_status_schema_requires_user_id():
+    schema = Draft202012Validator(load('contracts/status.schema.yaml'))
+    status = {
+        'task_id': 'kdp-001a-environment-proof',
+        'state': 'ENVIRONMENT_READY',
+        'updated_at': '2026-09-17T00:00:00+00:00',
+        'user_id': 'fixture-owner',
+    }
+    schema.validate(status)
+    with pytest.raises(ValidationError):
+        schema.validate({key: value for key, value in status.items() if key != 'user_id'})
+
+
+def test_environment_owner_change_is_rejected_before_publishing_inconsistent_contract(tmp_path, capsys):
+    contract = load('tests/fixtures/deployment-proof.yaml')
+    contract['metadata']['task_type'] = 'environment_proof'
+    contract['execution'].update(user_id='original-owner', resource_name='original-owner-environment')
+    original = copy.deepcopy(contract)
+    with patch('adapters.ClusterConfig.load') as cluster:
+        assert task_runner.execute(contract, None, tmp_path, phase='environment', user_id='new-owner') == 2
+    cluster.assert_not_called()
+    assert contract == original
+    status = json.loads(capsys.readouterr().out)
+    assert 'prepared environment owner' in status['message']
     Draft202012Validator(load('contracts/status.schema.yaml')).validate(status)

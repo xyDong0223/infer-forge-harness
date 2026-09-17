@@ -288,6 +288,17 @@ def test_executor_entrypoints_reject_source_output_before_cluster_access(runner)
     assert not (REPO_ROOT / "forbidden-runtime-output").exists()
 
 
+def test_triage_entrypoint_reports_missing_pod_without_traceback(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / EXECUTOR_COMMANDS["triage_executor"]),
+         "--out", str(tmp_path / "triage")],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "a pod is required: pass --pod or --env-status" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def deployment_report():
     return {
         "subject": "org/model", "hardware": "P800",

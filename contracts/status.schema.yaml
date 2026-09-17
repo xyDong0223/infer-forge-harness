@@ -71,4 +71,13 @@ properties:
   execution_error: {type: string}
   manifest_error: {type: string}
   status_error: {type: string}
+allOf:
+  - if:
+      properties:
+        state: {const: ENVIRONMENT_READY}
+      required: [state]
+    then:
+      required: [user_id]
+      properties:
+        user_id: {type: string, minLength: 1}
 additionalProperties: false

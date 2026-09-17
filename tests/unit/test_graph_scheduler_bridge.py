@@ -29,6 +29,7 @@ def proof(root, mode="simulation", **changes):
     write_base_model_identity(root)
     data = {
         "state": "ENVIRONMENT_READY", "pod": "test-pod", "evidence_mode": mode,
+        "user_id": "fixture-owner",
         "checks": {**{name: True for name in (
             "pod_ready", "runtime_importable", "code_ready", "device_ready",
             "base_model_loaded", "base_prefill", "base_decode",
