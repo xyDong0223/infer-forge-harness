@@ -118,50 +118,90 @@ flowchart LR
 ### 模型适配主流程
 
 ```mermaid
-flowchart LR
-    A["创建 AdaptationRun"] --> B["MiniMax-M2.5 环境证明"]
-    B --> C["目标模型身份 Intake"]
-    C --> D["运行时漂移与模型扫描"]
-    D --> E["能力匹配与缺口分类"]
-    E --> F["持久化 OperatorSpec"]
-    F --> G["Toy bring-up 与 shim 检查"]
-    G --> H["服务证明与精度基线"]
-    H --> I{"算子任务完成？"}
-    I -- 否 --> J["torch -> xpu -> integration"]
-    J --> I
-    I -- 是 --> K["重新执行最终服务与精度回归"]
-    K --> L["内存 / API / 支持矩阵"]
-    L --> M["FUNCTIONAL_READY 或 SIMULATION_PASS"]
-    D -. 失败 .-> N["诊断 / 修复 / 重试"]
-    G -. 失败 .-> N
-    K -. 失败 .-> N
-    N --> D
+flowchart TB
+    A["创建或恢复 AdaptationRun"] --> B["MiniMax-M2.5 环境证明<br/>准备并绑定 Pod、代码、运行时和 XPU"]
+    B --> C["目标模型身份 Intake<br/>固定模型与插件 revision"]
+    C --> D["同一 Pod 内<br/>运行时漂移检查与模型扫描"]
+    D --> E["能力匹配与实测缺口分类"]
+    E --> F["持久化完整 OperatorSpec<br/>异步派发算子任务"]
+    F --> G["能力评估与部署计划"]
+    G --> H["Toy bring-up<br/>dummy weights + prefill + 至少 2 token"]
+    H --> I["Shim handoff<br/>未豁免 fallback 必须进入算子任务"]
+    I --> J["目标服务证明与精度基线"]
+    J --> K{"所有必需算子<br/>通过 Scheduler 门禁？"}
+
+    subgraph O["每个算子的独立任务链"]
+        O1["PyTorch reference"] --> O2["独立数值验证"]
+        O2 --> O3["XPU 实现、构建与注册"]
+        O3 --> O4["设备正确性与 dispatch 验证"]
+        O4 --> O5["Integration task"]
+    end
+
+    F -. 创建任务 .-> O1
+    O5 -. 持久化结果与证据 .-> K
+    K -- 否 --> W["WAITING_FOR_OPERATORS<br/>worker claim / complete 后恢复同一 run"]
+    W -->|恢复同一 run| K
+    K -- 是 --> L["重新执行最终服务与精度回归<br/>证明组合后的真实模型路径"]
+    L --> M["内存 / API / 支持矩阵"]
+    M --> N["FUNCTIONAL_READY<br/>或本地 SIMULATION_PASS"]
+
+    B -. 失败 .-> X["故障归因与持久化诊断"]
+    D -. 失败 .-> X
+    H -. 失败 .-> X
+    I -. 失败 .-> X
+    J -. 失败 .-> X
+    L -. 失败 .-> X
+    O1 -. 失败 .-> X
+    O2 -. 失败 .-> X
+    O3 -. 失败 .-> X
+    O4 -. 失败 .-> X
+    O5 -. 失败 .-> X
+    X --> Y{"修复结论"}
+    Y -- 修复或重试 --> H
+    Y -- 重新发现 --> E
+    Y -- 环境或供应商阻塞 --> Z["BLOCKED / vendor handoff"]
 ```
 
-环境证明是硬门禁：真实扫描、算子发现和设备任务必须绑定同一个 Pod、代码版本和环境指纹。算子完成以后，流程会重新执行服务与精度回归，不能用替换算子之前的基线证明最终模型。
+环境证明是硬门禁：真实扫描、Toy bring-up、算子发现和设备任务必须绑定同一个 Pod、代码版本和环境指纹。算子完成以后，流程会重新执行服务与精度回归，不能用替换算子之前的基线证明最终模型。性能优化是 `FUNCTIONAL_READY` 之后的独立阶段，不属于这张功能交付图。
 
 MiniMax-M2.5 是已知可工作的环境基线，直接启动并验证 health、prefill/decode 和后端，不运行 toy bring-up。环境证明结束后保留 Pod、释放基线服务显存，再开始新模型 intake、扫描、能力匹配和缺口发现。MAT-028 toy bring-up 属于目标模型适配；目标服务（例如 Step-3.5-Flash）的真实权重只在这之后加载。
 
 ### Graph 与 Scheduler 的职责
 
 ```mermaid
-flowchart TB
-    W["Workflow YAML"] --> G["Graph Runner"]
-    G --> T["Task CLI / Operation"]
-    T --> V["Independent Validator"]
-    V --> J["Journal + Task Memory"]
-    J --> G
+flowchart LR
+    subgraph GP["Graph：生产工作流与节点恢复"]
+        W["Workflow YAML"] --> G["Graph Runner"]
+        G --> T["Task CLI"]
+        T --> O["Operation / Runner / Adapter"]
+        O --> V["独立 Validator"]
+        V --> A["Attempt artifacts<br/>logs + output + manifest"]
+        A --> J["Journal + Task Memory"]
+        J --> G
+    end
 
-    G --> B["GraphSchedulerBridge"]
-    B --> S["SQLite TaskScheduler"]
-    S --> P["PyTorch Agent"]
-    P --> X["XPU Agent"]
-    X --> I["Integration Agent"]
-    I --> S
+    G <--> B["GraphSchedulerBridge"]
 
+    subgraph SP["Scheduler：算子生命周期与租约"]
+        B --> S["SQLite TaskScheduler<br/>run + task + lease + event"]
+        S --> P["PyTorch Agent"]
+        P --> PV["Reference Validator"]
+        PV --> X["XPU Agent"]
+        X --> XV["Device / Dispatch Validator"]
+        XV --> I["Integration Agent"]
+        I --> S
+        P -. 失败 .-> Q["Diagnosis task"]
+        X -. 失败 .-> Q
+        I -. 失败 .-> Q
+        Q --> R["显式 repair / retry / blocked"]
+        R --> S
+    end
+
+    S -. 当前 attempt workspace .-> A
     S --> B
-    B --> R["Final service + accuracy snapshots"]
-    R --> D["Delivery receipt + manifest"]
+    B --> F["Fresh final service + accuracy"]
+    F --> FV["最终独立门禁"]
+    FV --> D["Delivery receipt<br/>FUNCTIONAL_READY / SIMULATION_PASS"]
 ```
 
 - **Workflow / Graph Runner**：决定节点顺序、失败边、恢复路径和可复用事实。
