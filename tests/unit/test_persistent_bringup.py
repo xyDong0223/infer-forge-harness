@@ -1,4 +1,4 @@
-"""Regressions for environment identity, retained Pods and pre-load gates."""
+"""Regressions for environment identity, retained Pods and toy bring-up gates."""
 import copy
 import json
 import subprocess
@@ -182,9 +182,10 @@ def test_all_phase_attach_repairs_interrupted_install_without_replacing_pod(tmp_
     instance = runner(tmp_path, 'all')
     instance._runtime_already_installed = Mock(return_value=False)
     instance.install_runtime = Mock()
-    instance.engine_core_drift_precheck = Mock(side_effect=ActionFailed('RUNTIME_DRIFT', 'stop after install'))
+    instance.start_server = Mock(side_effect=ActionFailed('BRINGUP_BLOCKED', 'stop after install'))
     status = instance.run()
     instance.install_runtime.assert_called_once_with(instance.contract['execution'])
+    instance.start_server.assert_called_once_with()
     instance.adapter.apply.assert_not_called()
     assert status['pod'] == 'dongxinyu03-existing'
 

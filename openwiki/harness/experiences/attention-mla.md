@@ -9,7 +9,6 @@ first_seen:
 sources:
 - repo://tools/probe/layer0_golden.py
 - repo://tools/probe/layer_swap.py
-- repo://tools/probe/engine_core_drift_precheck.py
 ---
 
 # attention-mla

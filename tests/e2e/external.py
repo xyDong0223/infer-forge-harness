@@ -404,11 +404,6 @@ class SimulatedCluster(KunlunP800Adapter):
             if argv != [model]:
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))
-        if filename == "kdp_drift_precheck.py":
-            return {"state": "DRIFT_CLEAR", "checks": [{
-                "id": "simulation-import", "verdict": "OK", "scope": "path",
-                "detail": "synthetic runtime import surface",
-            }], "summary": {"checked": 1, "drift": 0}}
         if filename == "mat027_probe.py":
             return {"state": "DRIFT_CLEAR",
                     "engine": {"name": "vllm", "path": "simulation://runtime/vllm"},

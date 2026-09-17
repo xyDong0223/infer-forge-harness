@@ -1,12 +1,11 @@
 ---
 type: experience
 title: engine-drift：vllm_kunlun 对 vllm 引擎的 API 漂移
-summary: 插件↔引擎 API 漂移的修复模式（可重放 patch）、加载前预检方法、import-order 假阳性。
+summary: 插件↔引擎 API 漂移的修复模式（可重放 patch）与真实运行验证方法。
 first_seen:
   model: GLM5.2-Int-W8A8（vllm_kunlun 0.25.1.dev vs vllm 0.25.1，15 处 drift）
 sources:
 - repo://tools/patches/patch_vllm_kunlun_drift.py
-- repo://tools/probe/engine_core_drift_precheck.py
 - repo://openwiki/harness/vllm-0251-drift-map.md
 ---
 
@@ -26,24 +25,19 @@ sources:
   exact-anchor 文本编辑，已应用报 SKIP，anchor 漂移报失败（不静默）。
 - **只活在 pod site-packages 里的修复不是修复，是给下次重装埋雷**（GLM run 的
   十三处修复曾随 pod 蒸发过一次）。
-- 部署证明在每次 install/attach 后自动重放 patch 集，再用 drift 预检验证。
+- 部署证明不自动重放 patch；修复后必须在同一 Pod 中重新执行真实验证。
 
-### 加载前预检（把 15 分钟一轮变成秒级一轮）
+### 真实运行验证
 
-- `tools/probe/engine_core_drift_precheck.py`：权重加载前做符号 resolve +
-  调用点 `inspect.signature().bind` mock 干跑。
-- gate 规则按 ModelRegistry 架构 scope + init surface：**只有调用点失败才
-  hard-gate**；裸属性引用（如 PlatformEnum.HPU/NEURON 这类未执行分支里的真缺失
-  符号）一律 report-only——健康 pod 上有 23 个这类"合法缺失"。
-
-### import-order 假阳性（预检自己的坑）
-
-- 插件先 import 会污染引擎模块导入（"Duplicate op name" 崩溃）→ 引擎侧
-  warmup 先行 + 干净子进程仲裁争议符号。
-- alias 归属只信 asname import；import-raised 错误优先级高于 missing。
+- 静态 drift precheck 已移除：它需要持续追随上游内部 API，并会因未执行分支、
+  import 顺序和 mock 签名产生误报，维护成本高于实际收益。
+- 先验证 runtime/plugin 可导入，再运行 MAT-028 dummy-weight toy bring-up，要求
+  engine construction、prefill 和至少两个 decode token。
+- toy 通过后再走 shim handoff 与目标服务证明；真实调用路径中的失败作为修复依据，
+  不从静态扫描结果推断兼容性。
 
 ## 证据入口
 
 - 漂移全景：[vLLM 0.25.1 API 漂移映射表](../vllm-0251-drift-map.md)。
-- 预检报告字段：`summary.drift_gated / drift_report_only / drift_out_of_path`
-  （互斥三桶）。
+- 修复证据必须包含原始 traceback、已安装 revision、可重放 patch diff，以及 toy
+  和服务路径的复验结果。

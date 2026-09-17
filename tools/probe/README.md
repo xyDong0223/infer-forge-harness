@@ -8,8 +8,7 @@ Groups by purpose:
 
 - Model and config: `model_support_probe.py`, `model_fingerprint_probe.py`,
   `capability_match_probe.py`, `parser_conformance_probe.py`.
-- Runtime health: `engine_core_drift_precheck.py`, `runtime_drift_probe.py`,
-  `torch_shim_probe.py`.
+- Runtime health: `runtime_drift_probe.py`, `torch_shim_probe.py`.
 - Bring-up: `toy_bringup_probe.py`, `layer0_golden.py`, `layer0_xpu.py`,
   `layer_swap.py`.
 - Operator-level: `moe_layer_probe.py`, `sliding_window_decode_probe.py`,
