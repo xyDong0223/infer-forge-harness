@@ -188,9 +188,10 @@ python3 cli/adaptation.py \
   --contract tasks/kdp-001-deployment-proof/instances/<model>.yaml
 ```
 
-To re-prove an environment whose Pod already exists, pass `--attach-pod`
-(the "Imported Context" mode): without it every `--contract` run creates a
-new FedDeployment, and a reproof must not mint a second one.
+Environment retries automatically reuse the Pod recorded in the run (including
+failed proofs), and direct proof execution attaches to the existing deployment
+before applying any manifest. Use `--attach-pod` to select a prepared Pod
+explicitly. A non-ready Pod is retained for diagnosis; it is not replaced.
 
 ```bash
 python3 cli/adaptation.py \
@@ -216,18 +217,30 @@ The proof must leave one prepared Pod with an importable runtime, a pinned
 vLLM-Kunlun code worktree, and visible target XPU devices. All runtime
 investigation must execute in that Pod and cite its code/environment fingerprint.
 
-**Repairs to runtime state must be replayable (hard constraint).** Any repair
-written into the runtime environment — plugin site-packages, the pinned
-worktree, in-pod state — must also exist in the repository as an idempotent,
-replayable patch (`tools/patches/`, exact-anchor text edits that skip
-already-applied replacements), committed before or with the run that depends
-on it. The environment proof applies the patch set after every install and
-after every attach, then verifies the result with the engine-core drift
-precheck — so a reinstalled pod self-heals instead of silently regressing to
-the unpatched state (run glm52-int-w8a8-p800-001: thirteen drift repairs
-lived only in one pod's site-packages and evaporated on the next pod). A
-repair without a replayable patch is not a repair; it is an incident
-scheduled for the next reinstall.
+**Keep one debug environment.** Import failures, operator errors, timeout and
+server crashes are reasons to inspect logs and repair/restart the affected
+process in the same Pod. Do not delete/recreate a Pod, roll the deployment, or
+reinstall a working stack to retry a model. Replacement requires a diagnosed
+Pod/node failure or an explicit environment change, with evidence preserved.
+
+**MiniMax-M2.5 is the environment gate.** Every `--phase environment` invocation,
+including one using a target-model example contract, derives the base model and
+smoke command from `config/clusters/p800-cluster.yaml`. Target weights are not a
+substitute. Require the base model identity, health, prefill/decode and backend
+evidence before model investigation.
+
+**Diagnose before repairing.** Deployment no longer auto-discovers or executes
+`tools/patches/patch_*.py`, including the commit-specific Kunlun drift repair.
+The drift precheck remains read-only. Repair only an observed incompatibility
+against the installed revisions, record the diff and evidence, and keep the
+repair replayable in versioned source. No blanket drift-patch step is required.
+
+**Toy before target weights.** Run MAT-028 with dummy weights and require engine
+construction, prefill and at least two decoded tokens. After any repair, repeat
+toy bring-up, then shim handoff, then target service proof. The deployment
+executor also runs a fresh toy probe before a new target server launch, including
+direct CLI calls; failure retains the Pod and blocks the full checkpoint load.
+The known-good MiniMax environment smoke is the deliberate real-weight baseline.
 
 **Reuse the engine's model network when it exists (hard rule).** Before
 considering any out-of-tree model implementation, check the capability

@@ -109,10 +109,9 @@ spec:
     # and a numerical comparison against the vendor kernel.
     - id: mat-007-patch-placement
       task: tasks/mat-007-patch-placement/task.yaml
-      # A patch that replaces a vendor kernel with a torch shim re-enters the
-      # shim gate, not the service proof: the fix and its operator debt are
-      # recorded in the same pass, or the debt is recorded nowhere.
-      on_success: mat-029-shim-handoff
+      # Every repair must pass dummy-weight bring-up again before shim handoff
+      # and the expensive target checkpoint load.
+      on_success: mat-028-toy-bringup
       on_failure: mat-006-failure-triage
     # Read-only and downstream of a successful service proof. Kept out of
     # KDP-001b because a capacity threshold must not be able to fail a

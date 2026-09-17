@@ -317,6 +317,11 @@ class TaskScheduler:
         if not root_value:
             raise ValueError("environment proof requires its artifact_root")
         root = Path(root_value).resolve()
+        from validators.deployment_validator import validate_environment_identity
+
+        identity_errors = validate_environment_identity(root)
+        if identity_errors:
+            raise ValueError("environment proof identity rejected: " + "; ".join(identity_errors))
         evidence_hashes = {}
         for name in sorted(required_artifacts):
             path = root / name

@@ -77,7 +77,7 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
         f"print(a.http_probe({fixture['pod']!r}, '/health', 8356)[0])"
     ))
     assert reused.returncode == 0, reused.stderr
-    assert reused.stdout.splitlines() == ["True", "200"]
+    assert reused.stdout.splitlines() == ["True", "503"]
     unexpected = _python(fixture, (
         "from adapters import get_hardware; "
         f"get_hardware()().exec({fixture['pod']!r}, 'unexpected remote command')"
@@ -88,3 +88,52 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
     assert {event["pod"] for event in events if "pod" in event} == {fixture["pod"]}
     assert len({event["pid"] for event in events}) >= 3
     assert all(event["evidence_mode"] == "simulation" for event in events)
+
+
+def test_persistent_environment_and_toy_failure_block_target_weights(tmp_path):
+    fixture = prepare_environment(tmp_path / 'external')
+    env = {**os.environ, **fixture['env']}
+
+    def proof(phase):
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / 'cli/deployment/proof.py'),
+             fixture['contract_instance'], '--execute', '--phase', phase,
+             '--artifact-dir', str(tmp_path / 'proof'), '--run-id', 'persistent',
+             *(['--attach-pod', fixture['pod']] if phase == 'service' else [])],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+        )
+        return result, json.loads(result.stdout)
+
+    first, baseline = proof('environment')
+    assert first.returncode == 0, first.stdout + first.stderr
+    identity = json.loads((Path(baseline['artifact_root']) / 'base_model_identity.json').read_text())
+    assert identity['name'] == 'MiniMax-M2.5-Int8-W8A8'
+    second, resumed = proof('environment')
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert baseline['pod'] == resumed['pod']
+    assert baseline['artifact_root'] != resumed['artifact_root']
+
+    settings = json.loads(fixture['settings'].read_text())
+    settings['toy_failure'] = True
+    fixture['settings'].write_text(json.dumps(settings))
+    failed, blocked = proof('service')
+    assert failed.returncode != 0
+    assert blocked['state'] == 'BRINGUP_BLOCKED'
+    assert blocked['pod'] == baseline['pod']
+    events = [json.loads(line) for line in fixture['events'].read_text().splitlines()]
+    scripts = [event['script'] for event in events if event['operation'] == 'exec']
+    launches = [script for script in scripts if 'echo started $!' in script]
+    assert len(launches) == 2  # two baseline proofs, no target launch
+    assert all('minimax-base-smoke' in script for script in launches)
+    assert not any('patch_vllm_kunlun_drift.py' in script for script in scripts)
+    applies = [event for event in events if event['operation'] == 'cluster'
+               and event['args'][:2] == ['apply', '-f']]
+    assert len(applies) == 1
+
+    settings.pop('toy_failure')
+    fixture['settings'].write_text(json.dumps(settings))
+    passed, ready = proof('service')
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert ready['pod'] == baseline['pod']
+    assert ready['checks']['toy_bringup'] is True
+    assert (Path(blocked['artifact_root']) / 'toy_bringup.json').is_file()

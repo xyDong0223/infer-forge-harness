@@ -36,6 +36,7 @@ from core.target import (  # noqa: E402
 from runners.task_runner import load_yaml  # noqa: E402
 from validators.deployment_validator import (  # noqa: E402
     ENVIRONMENT_ARTIFACTS, validate_deployment_status, validate_environment_status,
+    validate_environment_identity,
 )
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
@@ -710,6 +711,8 @@ def reusable_fact(
     if kind in ("EnvironmentProof", "DeploymentProof"):
         validate = validate_environment_status if kind == "EnvironmentProof" else validate_deployment_status
         try:
+            if kind == "EnvironmentProof" and validate_environment_identity(artifact_dir):
+                return None
             if validate(payload):
                 return None
             if any(not (artifact_dir / name).exists() for name in payload["artifacts"]):
@@ -1242,6 +1245,9 @@ def _run(args, resources: ExitStack) -> int:
         if operator_report:
             context["operator_report"] = str(operator_report.resolve())
         bound = bridge.run.environment.get("environment_proof")
+        failed_pod = bridge.run.environment.get("failed_environment_proof", {}).get("pod")
+        if bound is None and failed_pod and not context.get("pod"):
+            context["pod"] = failed_pod
         if bound is not None:
             if context.get("pod") not in (None, bound["pod"]):
                 raise ValueError("--set pod conflicts with the scheduler environment")

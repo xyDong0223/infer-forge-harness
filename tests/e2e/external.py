@@ -117,8 +117,8 @@ def prepare_environment(root: Path) -> dict:
     ctx["repository"]["vllm_kunlun_ref"] = PLUGIN_REVISION
     ctx["software"]["image"] = "simulation.invalid/runtime:never-pulled"
     ctx["server"].update(served_model_name=SUBJECT, max_model_len=128, dtype="float32")
-    # The environment proof and later target proof deliberately share one tiny
-    # model, so the real runner's model-identity guard can reuse its service.
+    # This target-model validation entry must never override the profile's
+    # MiniMax baseline when the environment phase normalizes the contract.
     ctx["validation"] = {"base_model": {
         "name": SUBJECT, "path": str(model), "served_model_name": SUBJECT,
         "dtype": "float32", "tensor_parallel_size": 1, "max_model_len": 128,
@@ -242,6 +242,11 @@ class SimulatedCluster(KunlunP800Adapter):
         state = self._load()
         if args == ["auth", "can-i", "create", "pods"]:
             return _result(args, "yes")
+        if args[:2] == ["get", "FedDeployment"] and "--ignore-not-found" in args:
+            for manifest in state["pods"].values():
+                if manifest["metadata"]["name"] == args[2]:
+                    return _result(args, manifest)
+            return _result(args, "")
         if args[:2] == ["apply", "-f"]:
             manifest = yaml.safe_load(Path(args[2]).read_text())
             # Kubernetes returns labels as strings, including zero-padded IDs.
@@ -290,7 +295,7 @@ class SimulatedCluster(KunlunP800Adapter):
             raise RuntimeError(f"unexpected external HTTP probe: {path}:{port}")
         if not self._load()["serving"]:
             return 503, "simulation: server not started"
-        return 200, json.dumps({"data": [{"id": self.settings["subject"]}],
+        return 200, json.dumps({"data": [{"id": self._load().get("served_model", self.settings["subject"])}],
                                 "evidence_mode": "simulation"})
 
     def exec(self, pod, script, timeout=None):
@@ -314,8 +319,10 @@ class SimulatedCluster(KunlunP800Adapter):
             filename = Path(match[1]).name
             argv = shlex.split((match[2] or "").replace("2>/dev/null", "").strip())
             return self._probe(filename, argv, config)
+        if script == "cat " + shlex.quote(str(model / "config.json")):
+            return config
         if script == "xpu_smi -m":
-            return " ".join(["0", "0", "0"] + ["0"] * 14 + ["8192", "98304"])
+            return "\n".join(" ".join([str(i), "0", "0"] + ["0"] * 14 + ["8192", "98304"]) for i in range(8))
         if script.startswith("test -f ") and " -name '*.safetensors'" in script:
             return "\n".join(str(path) for path in model.glob("*.safetensors"))
         if script.startswith("test -d ") and "git rev-parse HEAD" in script:
@@ -336,6 +343,7 @@ class SimulatedCluster(KunlunP800Adapter):
         ):
             state = self._load()
             state["serving"] = True
+            state["served_model"] = re.search(r"--served-model-name\s+(\S+)", script).group(1)
             self._save(state)
             return "SIMULATION: started"
         if script.startswith("pkill -9 -f '[v]llm.entrypoints.openai.api_server'"):
@@ -360,7 +368,7 @@ class SimulatedCluster(KunlunP800Adapter):
             if not state["serving"]:
                 raise RuntimeError("chat requested before simulated server startup")
             payload = state.get("chat_payload", {})
-            if payload.get("model") != self.settings["subject"] or not payload.get("messages"):
+            if payload.get("model") != state.get("served_model") or not payload.get("messages"):
                 raise RuntimeError("chat requires the served simulated model and messages")
             return {"choices": [{"message": {"content": "simulation: hello"},
                                  "finish_reason": "stop"}]}
@@ -396,10 +404,6 @@ class SimulatedCluster(KunlunP800Adapter):
             if argv != [model]:
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))
-        if filename.startswith("patch_") and (
-            REPO_ROOT / "tools/patches" / filename
-        ).is_file():
-            return {"returncode": 2, "stdout": "SIMULATION: patch anchors absent; not applied\n"}
         if filename == "kdp_drift_precheck.py":
             return {"state": "DRIFT_CLEAR", "checks": [{
                 "id": "simulation-import", "verdict": "OK", "scope": "path",
@@ -484,7 +488,7 @@ class SimulatedCluster(KunlunP800Adapter):
                 raise RuntimeError("bring-up uses a different synthetic checkpoint")
             tokens = [int(2 * value) for value in (1, 2, 3)]
             stages = ["CONFIG_DERIVED", "ENGINE_CONSTRUCTED", "PREFILL_OK", "DECODE_OK"]
-            return {"stage": stages[-1], "stages_passed": stages, "complete": True,
+            report = {"stage": stages[-1], "stages_passed": stages, "complete": True,
                     "config": {"architectures": config["architectures"],
                                "model_type": config["model_type"],
                                "num_hidden_layers": {"real": 2, "toy": 2},
@@ -492,6 +496,10 @@ class SimulatedCluster(KunlunP800Adapter):
                                                    "num_attention_heads": 2}},
                     "decode": {"count": len(tokens), "token_ids": tokens},
                     "simulation_workload": "scale([1,2,3])"}
+            if self.settings.get("toy_failure"):
+                report.update(stage="PREFILL_OK", stages_passed=stages[:-1], complete=False,
+                              error={"type": "RuntimeError", "message": "simulated decode failure"})
+            return report
         if filename == "mat029_probe.py":
             return {"plugin_path": "simulation://runtime/plugin", "files_scanned": 1,
                     "files_unparsable": [], "signals": []}

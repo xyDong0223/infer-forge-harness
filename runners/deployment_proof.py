@@ -29,7 +29,6 @@ _PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 # Kunlun exposes the XPU through the torch.cuda API, so a cuda-sounding log
 # line is the native path, not a fallback (see VllmKunlunRuntime.fallback_markers).
 FALLBACK_MARKERS = ("falling back to", "fallback to cpu")
-PATCH_NOT_APPLICABLE = 2
 
 
 def now() -> str:
@@ -250,13 +249,46 @@ class DeploymentProofRunner:
         self.pod = self.wait_for_pod(execution)
         self.install_runtime(execution)
 
+    def existing_environment_pod(self) -> str | None:
+        """Inspect the existing deployment before an attempt label can roll it."""
+        import yaml
+
+        execution = self.contract["execution"]
+        manifest = yaml.safe_load(render_manifest(
+            self.repo_root / execution["manifest"],
+            manifest_values(self.contract, self.attempt_id, self.workdir, self.image),
+        ))
+        name = manifest["metadata"]["name"]
+        self.adapter.assert_owned(name)
+        result = self.adapter.run([
+            "get", manifest["kind"], name, "--ignore-not-found", "-o", "json",
+        ])
+        if result.returncode:
+            raise ActionFailed("NEEDS_HUMAN", "cannot inspect existing deployment: " + result.stderr)
+        if not result.stdout.strip():
+            return None
+        resource = json.loads(result.stdout)
+        self.write("deployment_manifest.yaml", yaml.safe_dump(resource, sort_keys=False))
+        labels = resource.get("spec", {}).get("selector", {}).get("matchLabels", {})
+        if not labels:
+            raise ActionFailed("NEEDS_HUMAN", "existing deployment has no usable Pod selector; retain it")
+        selector = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
+        listed = self.adapter.run(["get", "pods", "-l", selector, "-o", "name"])
+        names = [line.split("/")[-1] for line in listed.stdout.split()]
+        if listed.returncode or len(names) != 1:
+            raise ActionFailed("NEEDS_HUMAN", "existing deployment must have exactly one Pod; retain it and diagnose")
+        self.adapter.assert_owned(names[0])
+        return names[0]
+
     def discover_base_model(self) -> None:
         model = self.contract.get("context", {}).get("model", {})
         path = model.get("path")
         if not path:
             raise ActionFailed("CONTRACT_INVALID", "base model path is missing")
         result = self.adapter.exec(self.pod or "", f"test -f {shlex.quote(path + '/config.json')} && find {shlex.quote(path)} -maxdepth 1 -type f -name '*.safetensors' | sort", timeout=120)
-        identity = {"name": model.get("name"), "path": path, "files": result.stdout.splitlines()}
+        identity = {"name": model.get("name"), "path": path,
+                    "served_model_name": self.contract["context"]["server"]["served_model_name"],
+                    "files": result.stdout.splitlines()}
         self.write("base_model_identity.json", json.dumps(identity, indent=2) + "\n")
         self.checks["base_model_loaded"] = result.returncode == 0 and bool(identity["files"])
         if not self.checks["base_model_loaded"]:
@@ -405,11 +437,17 @@ class DeploymentProofRunner:
                 )
                 return
             if code == 200:
-                self.cleanup_service_processes()
+                if self.phase == "environment":
+                    self.cleanup_service_processes()
                 self.record(
                     "start_server", True,
-                    "imported context served a different model; cleared before launch",
+                    "imported context serves a different model; replacing service in the same Pod",
                 )
+        if self.phase != "environment":
+            # Also covers direct CLI calls and failure-repair paths outside the
+            # graph. Clear only the service process tree, never the Pod/runtime.
+            self.cleanup_service_processes()
+            self.toy_bringup_before_load()
         setup = " && ".join(commands.get("setup", []))
         serve = " ".join(commands.get("serve", []))
         if not serve:
@@ -440,6 +478,52 @@ class DeploymentProofRunner:
         if result.returncode != 0:
             raise ActionFailed("SERVER_START_FAILED", result.stderr.strip())
         self.record("start_server", True, result.stdout.strip())
+
+    def toy_bringup_before_load(self) -> None:
+        """Fail closed before loading target weights in a newly launched server."""
+        from operations.deployment.toy_bringup import BringupFailed, run_probe
+        from validators.bringup_validator import validate_bringup_report
+
+        model = self.contract["context"]["model"]
+        server = self.contract["context"]["server"]
+        report = {"stage": "NOTHING_RAN", "stages_passed": [], "complete": False}
+        self.checks["toy_bringup"] = False
+        failure = None
+        try:
+            config_result = self.adapter.exec(
+                self.pod or "", "cat " + shlex.quote(model["path"] + "/config.json"), timeout=120,
+            )
+            if config_result.returncode:
+                raise BringupFailed("NEEDS_HUMAN", "cannot read target config: " + config_result.stderr)
+            real_config = json.loads(config_result.stdout)
+            if not isinstance(real_config, dict) or not real_config:
+                raise BringupFailed("CONTRACT_INVALID", "target config must be a non-empty object")
+            report = run_probe(
+                self.adapter, self.pod or "", model["path"], 2, 8,
+                int(server.get("tensor_parallel_size", 1)), 512, 900,
+                runtime=self.runtime,
+                setup=self.contract["execution"].get("commands", {}).get("setup", []),
+                workdir=self.workdir,
+            )
+            report["source_config"] = real_config
+            errors = validate_bringup_report(report, {}, real_config)
+            self.checks["toy_bringup"] = report.get("complete") is True and not errors
+            if not self.checks["toy_bringup"]:
+                failure = ActionFailed("BRINGUP_BLOCKED", "; ".join(errors) or str(report.get("error")))
+        except BringupFailed as error:
+            failure = ActionFailed(error.state, error.reason)
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError) as error:
+            failure = ActionFailed("NEEDS_HUMAN", f"{type(error).__name__}: {error}")
+        if failure:
+            report["complete"] = False
+            report["gate_failure"] = {"state": failure.state, "reason": failure.reason}
+            if not report.get("error"):
+                report["error"] = {"type": failure.state, "message": failure.reason}
+        report.update(brought_up_in=self.pod, model=dict(model))
+        self.write("toy_bringup.json", json.dumps(report, indent=2) + "\n")
+        self.record("toy_bringup", self.checks["toy_bringup"], json.dumps(report.get("error")))
+        if failure:
+            raise failure
 
     def poll_health(self, prefix: str = "") -> None:
         pod = self.pod or ""
@@ -561,75 +645,6 @@ class DeploymentProofRunner:
     def server_log_path(self) -> str:
         return self.contract["execution"].get("server_log") or f"{self.workdir}/server.log"
 
-    def apply_runtime_patches(self) -> None:
-        """Replay the repo's idempotent runtime patches (protocol hard rule).
-
-        AGENTS.md: repairs written into runtime state must also exist as
-        replayable patches under tools/patches/. This runs them after every
-        install and every attach, before the drift precheck verifies the
-        result — so a reinstalled pod self-heals instead of silently
-        regressing to the unpatched state (run glm52-int-w8a8-p800-001:
-        thirteen drift repairs lived only in one pod's site-packages and
-        evaporated on the next pod).
-
-        A patch script is an exact-anchor repair for one engine/plugin source
-        shape. On a different pair its anchors miss and it exits 2: that is
-        recorded as SKIPPED and the run continues. Other non-zero exits are
-        real execution failures and must not be mislabeled as incompatibility.
-        The drift precheck that follows is the verdict on what an unmatched
-        environment actually needs.
-        """
-        patches_dir = self.repo_root / "tools" / "patches"
-        scripts = sorted(patches_dir.glob("patch_*.py")) if patches_dir.exists() else []
-        if not scripts:
-            self.record("apply_runtime_patches", True,
-                        "no patch scripts under tools/patches/")
-            return
-        output: list[str] = []
-        skipped: list[str] = []
-        failed: list[str] = []
-        for script in scripts:
-            remote = f"/tmp/{script.name}"
-            try:
-                command = (
-                    f"{self.runtime.env_prefix()}; "
-                    f"{push_snippet(script, remote)} && python3 {remote}"
-                )
-                result = self.adapter.exec(self.pod or "", command, timeout=600)
-            except (subprocess.TimeoutExpired, OSError) as error:
-                failed.append(script.name)
-                output.append(
-                    f"$ {script.name}\n>>> {script.name}: FAILED — "
-                    f"{type(error).__name__}: {error}\n"
-                )
-                continue
-            output.append(f"$ {script.name} (exit {result.returncode})\n"
-                          f"{result.stdout}{result.stderr}")
-            if result.returncode == PATCH_NOT_APPLICABLE:
-                skipped.append(script.name)
-                output.append(
-                    f">>> {script.name}: SKIPPED — the patch set is anchored to "
-                    "one engine/plugin source shape and does not match this "
-                    "install. Not fatal; the drift precheck below reports "
-                    "what this environment actually needs.\n"
-                )
-            elif result.returncode != 0:
-                failed.append(script.name)
-                output.append(
-                    f">>> {script.name}: FAILED — exit {result.returncode} is "
-                    "not the explicit not-applicable result.\n"
-                )
-        self.write("runtime_patches.txt", "\n".join(output))
-        if failed:
-            detail = f"runtime patch execution failed: {', '.join(failed)}"
-            self.record("apply_runtime_patches", False, detail)
-            raise ActionFailed("INSTALL_FAILED", detail)
-        detail = f"replayed {len(scripts)} patch script(s)"
-        if skipped:
-            detail += (f", {len(skipped)} skipped (non-matching pair): "
-                       f"{', '.join(skipped)}")
-        self.record("apply_runtime_patches", True, detail)
-
     def engine_core_drift_precheck(self) -> None:
         """Engine-core-init drift dry-run: seconds, not one reload per drift.
 
@@ -693,9 +708,9 @@ class DeploymentProofRunner:
             raise ActionFailed(
                 "RUNTIME_DRIFT",
                 f"{len(drifts)} engine-core-init drift(s) on this deployment's "
-                "init surface, found before any weights loaded; apply "
-                "tools/patches/patch_vllm_kunlun_drift.py in the pod and "
-                f"re-run{context}: {preview}",
+                "init surface, found before any weights loaded; diagnose and repair "
+                "the observed incompatibility in this same pod, then "
+                f"re-run the precheck and toy bring-up{context}: {preview}",
             )
         self.record(
             "engine_core_drift_precheck", True, json.dumps(report.get("summary", {}))
@@ -793,17 +808,20 @@ class DeploymentProofRunner:
                     "the service phase needs a prepared pod: pass --attach-pod with the pod "
                     "recorded by the environment phase",
                 )
+            if not self.attach_pod:
+                self.attach_pod = self.existing_environment_pod()
             if self.attach_pod:
                 # Imported Context: the Pod and its runtime were prepared by an
                 # earlier attempt, so those two actions are not re-proven here.
                 self.adapter.assert_owned(self.attach_pod)
+                self.pod = self.attach_pod
                 if not self.adapter.pod_ready(self.attach_pod):
                     raise ActionFailed("NEEDS_HUMAN", f"{self.attach_pod} is not ready")
                 self.pod = self.attach_pod
                 self.checks["pod_ready"] = True
                 self.write("pod_spec.yaml", self.adapter.get("pod", self.pod, output="yaml").stdout)
                 self.record("attach_pod", True, f"imported context: {self.attach_pod}")
-                if self.phase == "environment":
+                if self.phase in ("environment", "all"):
                     # An attached Pod may only have the base image, so
                     # environment proof owns runtime installation. But
                     # reinstalling while a server from an earlier attempt is
@@ -821,11 +839,6 @@ class DeploymentProofRunner:
             else:
                 self.preflight()
                 self.prepare_environment()
-            # Protocol hard rule (AGENTS.md): repairs must be replayable. The
-            # repo's idempotent patch set is applied after any install or
-            # attach, and the drift precheck that follows verifies the result
-            # rather than trusting it — a reinstalled pod self-heals here.
-            self.apply_runtime_patches()
             if self.phase == "environment":
                 self.verify_runtime_importable()
                 # Before the first server launch: the whole point of the
@@ -842,6 +855,9 @@ class DeploymentProofRunner:
                 self.poll_health(prefix="base_")
                 self.run_chat_smoke(prefix="base_")
                 self.verify_backend(prefix="base_")
+                # Preserve proof and Pod, but free the baseline's HBM for the
+                # target's dummy-weight probe and operator investigation.
+                self.cleanup_service_processes()
                 return self.collect_artifacts("ENVIRONMENT_READY")
             # Before any (re)launch, including the service phase on an
             # attached pod: a pod that was reinstalled since the environment

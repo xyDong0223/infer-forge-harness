@@ -129,3 +129,15 @@ def _write_stage_result(
             "evidence_sha256": dict(hashes),
         })
     return {**result, "evidence": evidence, "evidence_sha256": hashes}
+
+
+def write_base_model_identity(root):
+    import json
+    from pathlib import Path
+    import yaml
+    from core.paths import REPO_ROOT
+
+    base = yaml.safe_load((REPO_ROOT / "config/clusters/p800-cluster.yaml").read_text())["validation"]["base_model"]
+    (Path(root) / "base_model_identity.json").write_text(json.dumps({
+        key: base[key] for key in ("name", "path", "served_model_name")
+    }))

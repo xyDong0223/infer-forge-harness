@@ -61,9 +61,9 @@ def validate_bringup_report(
     kept = config.get("kept_dimensions") or {}
     if real_config:
         for key in DIMENSIONS_THAT_SELECT_KERNELS:
-            if key in real_config and key in kept and kept[key] != real_config[key]:
+            if key in real_config and kept.get(key) != real_config[key]:
                 errors.append(
-                    f"{key} was changed from {real_config[key]} to {kept[key]}: shrinking a "
+                    f"{key} was changed from {real_config[key]} to {kept.get(key)}: shrinking a "
                     "kernel-selecting dimension makes this run a different code path"
                 )
     elif not kept:

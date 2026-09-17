@@ -45,6 +45,7 @@ actions:
   - run_base_prefill_decode_smoke
   - verify_base_service
   - collect_environment_fingerprint
+  - release_base_service_memory_keep_pod
 acceptance:
   pod_ready: true
   # `uv pip list` showing the package proves nothing: on 2026-09-03 vllm_kunlun
@@ -78,3 +79,7 @@ exit_states:
   pod_timeout: READINESS_TIMEOUT
   needs_human: NEEDS_HUMAN
 validator: validators/deployment_validator.py:validate_environment_status
+
+notes:
+  - deployment_manifest is recorded for creation and automatic deployment lookup;
+    explicit attach imports pod_spec without assuming ownership of a deployment.

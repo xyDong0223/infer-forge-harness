@@ -285,6 +285,8 @@ def environment_proof(root):
     ]
     for name in artifacts:
         (root / name).write_text("local test fixture: " + name)
+    from tests.scheduler_helpers import write_base_model_identity
+    write_base_model_identity(root)
     return {
         "state": "ENVIRONMENT_READY", "pod": "test-pod", "artifact_root": str(root),
         "checks": {

@@ -105,6 +105,8 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
     ]
     for name in artifact_names:
         (tmp_path / name).write_text("local test fixture: " + name, encoding="utf-8")
+    from tests.scheduler_helpers import write_base_model_identity
+    write_base_model_identity(tmp_path)
     proof.write_text(
         json.dumps(
             {
@@ -272,7 +274,7 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
     observed = {}
 
     class Scheduler:
-        store = SimpleNamespace(run=lambda run_id: SimpleNamespace(metadata={}))
+        store = SimpleNamespace(run=lambda run_id: SimpleNamespace(metadata={}, environment={}))
 
         def bind_environment(self, run_id, status, artifact_root):
             observed.update(root=artifact_root, status=status)

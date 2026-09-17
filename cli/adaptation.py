@@ -54,8 +54,7 @@ def _environment_command(
 ) -> list[str]:
     """The task_runner invocation behind `environment --contract`.
 
-    Without --attach-pod this creates a new FedDeployment; a reproof must
-    pass the prepared pod instead of minting a second one.
+    The caller restores the Pod from durable run state on a reproof.
     """
     command = [
         sys.executable,
@@ -205,8 +204,17 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
             artifact_root = args.artifact_dir or existing.metadata.get("artifact_root")
             if artifact_root is not None:
                 artifact_root = ensure_external(artifact_root)
+            # A later successful bind supersedes an older failed Pod handoff.
+            handoff = (
+                existing.environment.get("failed_environment_proof", {})
+                if getattr(existing, "status", None) == "ENVIRONMENT_FAILED"
+                else existing.environment.get("environment_proof", {})
+            )
             command = _environment_command(
-                args.contract, artifact_root, args.attach_pod, run_id=args.run_id,
+                args.contract, artifact_root,
+                args.attach_pod or handoff.get("pod")
+                or existing.environment.get("environment_proof", {}).get("pod"),
+                run_id=args.run_id,
             )
             completed = subprocess.run(
                 command, cwd=REPO_ROOT, text=True, capture_output=True, check=False,

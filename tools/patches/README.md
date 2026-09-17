@@ -1,26 +1,17 @@
-# Runtime patches
+# Runtime repairs
 
-The replayable, idempotent repair set for the vLLM-Kunlun stack. These are
-stack-specific on purpose: a repair to runtime state lives here as an
-exact-anchor text edit that skips already-applied replacements, so a
-reinstalled pod self-heals instead of silently regressing.
+Repairs must be reviewable and replayable against their recorded runtime revisions.
+Deployment and environment proof never discover or execute this directory automatically.
+Diagnose the installed source and validate a focused repair in the existing Pod,
+then repeat the drift precheck and toy bring-up before loading target weights.
 
-- `patch_vllm_kunlun_drift.py`: engine/plugin drift repairs.
-- `apply_torch_decode_patch.py`: the post-import decode wrap.
-- `vllm_kunlun_flashmla_sparse.py`: companion module the patch set deploys
-  alongside its patches.
+- `patch_vllm_kunlun_drift.py`: historical, version-specific repair reference;
+  excluded from the adaptation workflow. It is not a prerequisite for environment
+  or service proof.
 
-Hard rules, from `AGENTS.md`:
+- `apply_torch_decode_patch.py`: explicit post-import decode wrap.
+- `vllm_kunlun_flashmla_sparse.py`: companion sparse-MLA implementation.
 
-- A repair written into a pod but not committed here is an incident scheduled
-  for the next reinstall, not a repair.
-- Patch order can matter; do not assume one step's anchor exists until a prior
-  step created it.
-- Probe and stage the complete patch set before writing, and roll back earlier
-  writes if a later write fails. Exit `2` means the source shape is not
-  applicable and may be skipped; missing targets and other failures are fatal.
-- Prefer content/anchor compatibility over a commit allowlist. Commit identity
-  is useful evidence, but equivalent cherry-picks and rebuilt wheels can share
-  the same compatible source shape.
-- A patch must be verified on a fresh install, not only on a pod that was
-  already repaired by hand.
+Record compatible revisions and exact source anchors for any manual repair.
+Stage changes before writing and roll back partial failures. Prefer registered
+operator overrides over text edits, and validate a repair with device evidence.

@@ -44,6 +44,7 @@ context:
 actions:
   - preflight
   - prepare_environment
+  - toy_bringup_before_load
   - start_server
   - poll_health
   - run_chat_smoke
@@ -134,6 +135,7 @@ artifacts:
 exit_states:
   pass: DEPLOYMENT_READY
   install_failed: INSTALL_FAILED
+  bringup_blocked: BRINGUP_BLOCKED
   startup_failed: SERVER_START_FAILED
   health_timeout: READINESS_TIMEOUT
   api_failed: API_SMOKE_FAILED
