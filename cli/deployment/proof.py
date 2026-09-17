@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="Where to write the plan (plan mode)")
     parser.add_argument("--artifact-dir", type=Path, help="External run root, or allocated attempt output/")
     parser.add_argument("--run-id", help="Durable run identity for allocated attempts")
+    parser.add_argument("--user-id", help="Resource owner's user ID, supplied by the user (legacy fallback: USER_ID)")
     parser.add_argument(
         "--phase",
         choices=["all", "environment", "service"],

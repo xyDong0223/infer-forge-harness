@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from adapters.kunlun_p800 import ClusterConfig, KunlunP800Adapter, SafetyViolation, push_snippet
@@ -45,6 +46,16 @@ class TestSafetyGuard(unittest.TestCase):
 
 
 class TestHarnessConfig(unittest.TestCase):
+    def test_explicit_user_id_overrides_environment_without_truncation(self) -> None:
+        with patch.dict(os.environ, {"KUBECONFIG": __file__, "USER_ID": "wrong-owner"}):
+            config = ClusterConfig.load(CONFIG, user_id="team-member")
+            self.assertEqual(config.resource_prefix, "team-member-")
+            self.assertEqual(os.environ["USER_ID"], "wrong-owner")
+            adapter = KunlunP800Adapter(config)
+            adapter.assert_owned("team-member-environment-base")
+            with self.assertRaises(SafetyViolation):
+                adapter.assert_owned("team-environment-base")
+
     def test_repository_config_loads_with_env_kubeconfig(self) -> None:
         os.environ["KUBECONFIG"] = __file__  # any existing readable path
         config = ClusterConfig.load(CONFIG)

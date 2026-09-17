@@ -90,9 +90,12 @@ def test_existing_deployment_is_attached_without_apply_or_install(tmp_path):
     assert manifest['spec']['selector']['matchLabels']['infer.kunlun/attempt-id'] == 'original'
 
 
-def test_environment_phase_replaces_target_contract_with_minimax(tmp_path, monkeypatch):
-    monkeypatch.setenv('USER_ID', 'fixture')
+@pytest.mark.parametrize('source', ['environment', 'contract'])
+def test_environment_phase_replaces_target_contract_with_minimax(tmp_path, monkeypatch, source):
+    monkeypatch.setenv('USER_ID', 'fixture' if source == 'environment' else 'wrong-owner')
     contract = yaml.safe_load(CONTRACT.read_text())
+    if source == 'contract':
+        contract['execution']['user_id'] = 'fixture-team'
     contract['execution']['server_log'] = '/workspace/base-reproof.log'
     with patch('adapters.ClusterConfig.load', return_value=SimpleNamespace(namespace='pd-test')), \
             patch('runners.deployment_proof.DeploymentProofRunner') as constructor:
@@ -100,6 +103,9 @@ def test_environment_phase_replaces_target_contract_with_minimax(tmp_path, monke
         task_runner._execute(contract, tmp_path, 'fixture-pod', 'environment', None,
                              lambda status, code: code)
     actual = constructor.call_args.kwargs['contract']
+    owner = 'fixture' if source == 'environment' else 'fixture-team'
+    assert actual['execution']['user_id'] == owner
+    assert actual['execution']['resource_name'] == f'{owner}-environment-base'
     assert actual['execution']['server_log'] == '/workspace/base-reproof.log'
     assert actual['context']['model']['name'] == 'MiniMax-M2.5-Int8-W8A8'
     assert actual['checks']['chat']['payload']['model'] == 'minimax-base-smoke'
@@ -113,13 +119,16 @@ def test_failed_environment_retry_restores_pod_from_scheduler(tmp_path):
     parser = _parser()
     _run(parser.parse_args(['--state', str(tmp_path / 'state.db'), 'create-run',
                            '--run-id', 'retry', '--model', 'Qwen3', '--backend', 'kunlun']), scheduler)
-    scheduler.record_environment_failure('retry', {'pod': 'fixture-existing'}, 'failed')
+    scheduler.record_environment_failure(
+        'retry', {'pod': 'fixture-existing', 'user_id': 'fixture-team'}, 'failed',
+    )
     args = parser.parse_args(['environment', '--run-id', 'retry', '--contract', str(CONTRACT)])
     failed = subprocess.CompletedProcess([], 6, json.dumps({'pod': 'fixture-existing', 'state': 'INSTALL_FAILED'}), '')
     with patch('cli.adaptation.subprocess.run', return_value=failed) as command:
         _run(args, scheduler)
     argv = command.call_args.args[0]
     assert argv[argv.index('--attach-pod') + 1] == 'fixture-existing'
+    assert argv[argv.index('--user-id') + 1] == 'fixture-team'
 
 
 @pytest.mark.parametrize('corruption', ['changed', 'missing'])

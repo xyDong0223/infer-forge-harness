@@ -52,6 +52,10 @@ stale accuracy after a fresh service proof, and refusal to import a simulation
 proof into a real run. Each case checks that the scenario did not modify
 repository source files.
 
+The environment-input case also removes legacy `USER_ID`, checks the persisted
+missing-input rejection before cluster access, supplies `--user-id`, and resumes
+the same run in a new process using its recorded ID and Pod.
+
 **SIMULATION_PASS proves process integration, not device correctness, actual
 model accuracy or performance.** Read the receipt's evidence mode and Journal
 context; an intermediate node's `*_READY` state alone is not hardware evidence.

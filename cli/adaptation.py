@@ -53,7 +53,7 @@ def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
 
 def _environment_command(
     contract: Path, artifact_dir: Path | None, attach_pod: str | None,
-    run_id: str | None = None,
+    run_id: str | None = None, user_id: str | None = None,
 ) -> list[str]:
     """The task_runner invocation behind `environment --contract`.
 
@@ -73,6 +73,8 @@ def _environment_command(
         command += ["--attach-pod", attach_pod]
     if run_id:
         command += ["--run-id", run_id]
+    if user_id is not None:
+        command += ["--user-id", user_id]
     return command
 
 
@@ -111,6 +113,7 @@ def _parser() -> argparse.ArgumentParser:
              "creating a new FedDeployment; required for re-proofs of an existing run",
     )
     environment.add_argument("--artifact-dir", type=Path)
+    environment.add_argument("--user-id", help="Resource owner's user ID, supplied by the user; reused on retry")
 
     discover = sub.add_parser("discover", help="convert a gap report into torch tasks")
     discover.add_argument("--run-id", required=True)
@@ -220,6 +223,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                 args.attach_pod or handoff.get("pod")
                 or existing.environment.get("environment_proof", {}).get("pod"),
                 run_id=args.run_id,
+                user_id=(args.user_id if args.user_id is not None else
+                         handoff.get("user_id") or
+                         existing.environment.get("environment_proof", {}).get("user_id")),
             )
             completed = subprocess.run(
                 command, cwd=REPO_ROOT, text=True, capture_output=True, check=False,
@@ -232,7 +238,10 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                     + (completed.stderr.strip() or completed.stdout[-500:])
                 ) from error
             if completed.returncode != 0:
-                error = f"environment task failed with exit code {completed.returncode}: {proof.get('state', 'UNKNOWN')}"
+                outcome = proof.get("state") or proof.get("status", "UNKNOWN")
+                error = f"environment task failed with exit code {completed.returncode}: {outcome}"
+                if proof.get("message"):
+                    error += ": " + proof["message"]
                 run = scheduler.record_environment_failure(args.run_id, proof, error)
                 return {"command": "environment", "run": run.to_dict(), "proof": proof, "error": error}
         root = args.status.parent if args.status else proof.get("artifact_root")

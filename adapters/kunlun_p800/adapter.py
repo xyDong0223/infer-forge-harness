@@ -49,8 +49,9 @@ class ClusterConfig:
     context: str | None = None
 
     @classmethod
-    def load(cls, path: Path | str = DEFAULT_CONFIG) -> "ClusterConfig":
+    def load(cls, path: Path | str = DEFAULT_CONFIG, *, user_id: str | None = None) -> "ClusterConfig":
         import yaml
+        from core.user_identity import resolve_user_id
 
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         cluster = raw.get("cluster", {})
@@ -69,11 +70,15 @@ class ClusterConfig:
         ]
         if missing:
             raise ValueError(f"harness config is missing cluster.{', cluster.'.join(missing)}")
+        owner = resolve_user_id(user_id)
+        prefix = str(cluster["resource_prefix"])
+        if owner:
+            prefix = prefix.replace("${USER_ID}", owner).replace("<USER_ID>", owner)
         return cls(
             kubeconfig=kubeconfig,
             namespace=cluster["namespace"],
             container=cluster["container"],
-            resource_prefix=os.path.expandvars(str(cluster["resource_prefix"])).replace("${USER_ID}", "<USER_ID>"),
+            resource_prefix=os.path.expandvars(prefix).replace("${USER_ID}", "<USER_ID>"),
             deployment_kind=cluster["deployment_kind"],
             context=cluster.get("context"),
         )

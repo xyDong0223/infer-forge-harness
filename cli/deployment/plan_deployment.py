@@ -35,6 +35,7 @@ def main() -> int:
     parser.add_argument("--placed-patch", help="mat-007 placement report, if one exists")
     parser.add_argument("--device", default="p800")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--user-id", help="Resource owner's user ID supplied by the user (legacy fallback: USER_ID)")
     parser.add_argument(
         "--runtime-artifact-root", type=Path,
         help="external run root for downstream service attempts (not the planner output)",

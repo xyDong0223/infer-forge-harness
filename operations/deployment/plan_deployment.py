@@ -172,15 +172,16 @@ def _cluster_profile() -> dict:
 
 def render_instance(
     report: dict, request: dict, runtime_artifact_root: str | Path | None = None,
+    user_id: str | None = None,
 ) -> str:
-    import os
+    from core.user_identity import resolve_user_id
 
     import yaml
 
     values = {item["parameter"]: item["value"] for item in report["parameters"]}
     model = request.get("model") or {}
     profile = _cluster_profile()
-    user_id = os.environ.get("USER_ID", "").strip()
+    user_id = resolve_user_id(user_id)
     subject = str(report["subject"])
     artifact_root = ensure_external(
         runtime_artifact_root if runtime_artifact_root is not None
@@ -241,6 +242,7 @@ def render_instance(
             "startup_timeout_seconds": timeout,
         },
         "execution": {
+            **({"user_id": user_id} if user_id else {}),
             "mode": "execute",
             "namespace": profile["namespace"],
             "resource_name": f"{user_id}-kdp001-{subject.lower()}" if user_id
@@ -300,7 +302,8 @@ def execute(args) -> int:
     report = plan(request, classification, load_device_spec(args.device), patch)
     (out / "deployment_plan.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     (out / "kdp_instance.yaml").write_text(
-        render_instance(report, request, runtime_artifact_root=args.runtime_artifact_root),
+        render_instance(report, request, runtime_artifact_root=args.runtime_artifact_root,
+                        user_id=getattr(args, "user_id", None)),
         encoding="utf-8",
     )
 

@@ -56,7 +56,7 @@ def manifest_values(contract: dict[str, Any], attempt_id: str, workdir: str, ima
     target = context["target"]
     server = context["server"]
     return {
-        "USER_ID": execution["resource_name"].split("-", 1)[0],
+        **({"USER_ID": execution["user_id"]} if execution.get("user_id") else {}),
         "RESOURCE_NAME": execution["resource_name"],
         "NAMESPACE": execution["namespace"],
         "TASK_ID": contract["metadata"]["name"],

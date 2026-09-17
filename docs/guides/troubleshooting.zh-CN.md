@@ -32,7 +32,8 @@ JSON 的同一信息位于 `progress`；并行算子各自的下一步位于 `ta
 | runtime path overlaps the source repository | 将数据库、Journal 和产物移到外部运行目录，不把 checkout 当 workspace |
 | output already owned / attempt already has a formal result | 保留旧 attempt；重新领取或为独立 CLI 选择新的外部输出位置 |
 | target 为 planned / unknown | 对照[兼容性矩阵](../../compatibility/matrix.yaml)；增加配置不等于实现支持，不能改状态绕过门禁 |
-| ownership / prefix 拒绝 | 核对外部 `USER_ID`、资源名和实际加载的[集群配置](../../config/README.md) |
+| `INPUT_REQUIRED: execution.user_id` | 向使用者获取其 ID，以 `--user-id <使用者ID>` 传给 environment/proof 命令；Graph 用 `--set user_id=<使用者ID>`。也可配置契约 `execution.user_id`，兼容已有 `USER_ID` 环境变量；不要从主机用户名或示例资源名猜测 |
+| ownership / prefix 拒绝 | 核对使用者传入的 `--user-id`、契约 `execution.user_id`（或兼容的 `USER_ID`）、资源名和实际加载的[集群配置](../../config/README.md) |
 | discovery 要求 environment proof | 先执行或导入完整环境证明；重新证明已有 Pod 时显式使用 `--attach-pod` |
 | Graph 为 WAITING_FOR_OPERATORS / exit 3 | 由外部 worker 完成对应任务，再恢复同一个 Graph/run |
 | 提交因 lease、hash 或 identity 被拒绝 | 核对当前 claim、证据字节与 output 所有权；旧 token 和旧 attempt 不能用于新任务提交 |
