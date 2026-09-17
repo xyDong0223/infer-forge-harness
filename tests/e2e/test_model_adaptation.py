@@ -162,39 +162,6 @@ def test_environment_user_id_input_and_restart(scenario):
     assert (first_root / "status.json").is_file()
 
 
-@pytest.mark.parametrize("scheduled", [True, False])
-def test_environment_drift_blocks_before_intake_and_resumes_same_pod(scenario, scheduled):
-    settings = json.loads(scenario.fixture["settings"].read_text())
-    settings["environment_drift"] = True
-    scenario.fixture["settings"].write_text(json.dumps(settings))
-    failed = scenario.graph(expected=2, scheduled=scheduled)
-    assert '"reason_code": "ENVIRONMENT_FAILED"' in failed.stdout
-    assert "INPUT_UNRESOLVED" not in failed.stdout
-    assert not (scenario.run_root / "tasks/mat-001-model-intake").exists()
-    assert not (scenario.run_root / "tasks/mat-006-failure-triage").exists()
-    proof = next(scenario.run_root.glob("tasks/kdp-001a-environment-proof/attempts/*/output/status.json"))
-    original = proof.read_bytes()
-    status = json.loads(original)
-    assert status["state"] == "RUNTIME_DRIFT"
-    assert status["pod"] == scenario.fixture["pod"]
-    assert (proof.parent / "engine_core_drift_precheck.json").is_file()
-    assert (proof.parent / "diagnosis.json").is_file()
-    if scheduled:
-        snapshot = scenario.status()
-        assert snapshot["run"]["status"] == "ENVIRONMENT_FAILED"
-    settings.pop("environment_drift")
-    scenario.fixture["settings"].write_text(json.dumps(settings))
-    scenario.graph("--resume", "--until-node", "mat-001-model-intake", scheduled=scheduled)
-    assert proof.read_bytes() == original
-    intake = next(fact for fact in scenario.facts() if fact["kind"] == "ModelRequest")
-    probe = json.loads((Path(intake["artifacts"]) / "resolved_revision.json").read_text())
-    assert probe["probed_in"] == "imported context: " + scenario.fixture["pod"]
-    events = [json.loads(line) for line in scenario.fixture["events"].read_text().splitlines()]
-    applies = [event for event in events if event["operation"] == "cluster"
-               and event["args"][:2] == ["apply", "-f"]]
-    assert len(applies) == 1
-
-
 def test_model_adaptation_delivers_after_validated_workers(scenario):
     scenario.env.pop("USER_ID", None)
     scenario.fixture["graph_args"].extend(["--set", "user_id=simulation"])

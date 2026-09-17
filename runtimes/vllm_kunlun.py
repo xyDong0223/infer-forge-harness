@@ -4,7 +4,7 @@ A runtime is the inference framework stack a service runs on (vllm-kunlun
 today, sglang-kunlun planned). Everything here is *static environment
 identity* — where the venv lives, where site-packages are, what the engine
 module is called. Behavioural differences (launch command, readiness shape,
-in-process model capture, drift precheck) grow on this class in phase 2.
+in-process model capture) grow on this class in phase 2.
 
 The values come from `config/profiles/p800-vllm-kunlun.yaml`, never from
 code: 19 files used to hardcode `/opt/vllm_kunlun` and drifted freely.

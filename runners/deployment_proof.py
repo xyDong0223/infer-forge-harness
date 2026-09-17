@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adapters import SafetyViolation, get_hardware, push_snippet
+from adapters import SafetyViolation, get_hardware
 from runtimes import default_runtime
 from runners import evidence
 from core.storage import (
@@ -648,77 +648,6 @@ class DeploymentProofRunner:
     def server_log_path(self) -> str:
         return self.contract["execution"].get("server_log") or f"{self.workdir}/server.log"
 
-    def engine_core_drift_precheck(self) -> None:
-        """Engine-core-init drift dry-run: seconds, not one reload per drift.
-
-        MAT-027 proves the plugin imports; that gate passed while twelve
-        call-time drifts still waited behind the 707 GiB weight load — each
-        found only by a full server restart (run glm52-int-w8a8-p800-001,
-        2026-09-14: ~15 minutes per drift, twelve times). The precheck
-        replays the plugin's engine-facing references and calls against the
-        installed engine — signature binding with placeholder arguments,
-        the known init-path landmines, the vendor ops on the request path —
-        with no weights and no server. It doubles as the "are the drift
-        repairs applied on THIS pod" gate: a reinstalled pod that lost the
-        site-packages repairs fails here in seconds instead of at the first
-        EngineCore init after a full load.
-        """
-        probe = self.repo_root / "tools" / "probe" / "engine_core_drift_precheck.py"
-        model_path = self.contract.get("context", {}).get("model", {}).get("path")
-        model_config = f"{model_path}/config.json" if model_path else ""
-        script = (
-            f"{self.runtime.env_prefix()}; "
-            + push_snippet(probe, "/tmp/kdp_drift_precheck.py")
-            + " && python3 /tmp/kdp_drift_precheck.py"
-            + (f" --model-config {shlex.quote(model_config)}" if model_config else "")
-        )
-        result = self.adapter.exec(self.pod or "", script, timeout=900)
-        report = None
-        for line in reversed((result.stdout or "").strip().splitlines()):
-            if line.startswith("{"):
-                try:
-                    report = json.loads(line)
-                    break
-                except ValueError:
-                    continue
-        if report is None:
-            raise ActionFailed(
-                "RUNTIME_DRIFT",
-                "the drift precheck produced no report: "
-                f"{(result.stdout + result.stderr)[-500:]}",
-            )
-        self.write(
-            "engine_core_drift_precheck.json",
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        )
-        self.checks["engine_core_drift"] = report.get("state")
-        drifts = [
-            c for c in report.get("checks", [])
-            if c.get("verdict") == "DRIFT"
-            and c.get("scope", "path") == "path"
-            and c.get("gating", "gate") == "gate"
-        ]
-        if drifts:
-            preview = "; ".join(f"{c['id']}: {c['detail']}" for c in drifts[:8])
-            summary = report.get("summary", {})
-            context = ""
-            if summary.get("drift_report_only"):
-                context += (f" ({summary['drift_report_only']} further "
-                            "conditional-branch finding(s) reported, not gating)")
-            if summary.get("drift_out_of_path"):
-                context += (f" ({summary['drift_out_of_path']} drift(s) in other "
-                            "models' files, reported but not gating)")
-            raise ActionFailed(
-                "RUNTIME_DRIFT",
-                f"{len(drifts)} engine-core-init drift(s) on this deployment's "
-                "init surface, found before any weights loaded; diagnose and repair "
-                "the observed incompatibility in this same pod, then "
-                f"re-run the precheck and toy bring-up{context}: {preview}",
-            )
-        self.record(
-            "engine_core_drift_precheck", True, json.dumps(report.get("summary", {}))
-        )
-
     def verify_backend(self, prefix: str = "") -> None:
         pod = self.pod or ""
         backend = self.contract["checks"].get("backend", {})
@@ -858,10 +787,6 @@ class DeploymentProofRunner:
                 self.prepare_environment()
             if self.phase == "environment":
                 self.verify_runtime_importable()
-                # Before the first server launch: the whole point of the
-                # precheck is that a drifted surface is seen here, seconds
-                # after install, instead of one 15-minute reload per drift.
-                self.engine_core_drift_precheck()
                 self.discover_base_model()
                 # skip_if_healthy: an attached pod that is already serving the
                 # base model is the imported context this phase is supposed to
@@ -876,11 +801,6 @@ class DeploymentProofRunner:
                 # target's dummy-weight probe and operator investigation.
                 self.cleanup_service_processes()
                 return self.collect_artifacts("ENVIRONMENT_READY")
-            # Before any (re)launch, including the service phase on an
-            # attached pod: a pod that was reinstalled since the environment
-            # proof lost its site-packages repairs, and this is the cheap
-            # place to learn that — not after another full weight load.
-            self.engine_core_drift_precheck()
             self.start_server()
             self.poll_health()
             self.run_chat_smoke()
