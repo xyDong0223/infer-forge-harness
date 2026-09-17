@@ -45,7 +45,7 @@ def interactive(tmp_path, monkeypatch):
         if isinstance(outcome, Exception):
             raise outcome
         out = Path(command[command.index("--artifact-dir") + 1])
-        proof(out, state=outcome)
+        proof(out, state=outcome, user_id=command[command.index("--user-id") + 1])
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("observed fixture runtime output")
         return SimpleNamespace(returncode=0 if outcome == "ENVIRONMENT_READY" else 1,
