@@ -701,6 +701,11 @@ def reusable_fact(
     ):
         return None
     detail = hit.get("detail") or {}
+    if kind == "DeploymentPlan":
+        digest = payload.get("instance_sha256")
+        if (not digest or digest != file_digest(artifact_dir / "kdp_instance.yaml")
+                or detail.get("status_sha256") != file_digest(artifact_dir / spec["state_file"])):
+            return None
     if skill is not None:
         method = skill.get("method")
         recorded = detail.get("skill")
@@ -926,11 +931,12 @@ def bind_proven_environment(context: dict, environment: dict, journal: Path) -> 
     artifacts = Path(proof["artifacts"])
     status = read_status(artifacts, NODES["environment_proof"])
     owner = status.get("user_id")
-    if owner:
-        if resolve_user_id(context.get("user_id"), owner) != owner:
-            raise Unresolved("user_id does not match the prepared environment owner; "
-                             "resume with the recorded owner or create a new run")
-        context["user_id"] = owner
+    if not isinstance(owner, str) or not owner.strip():
+        raise Unresolved("environment proof must record the supplied user_id before Graph can resume")
+    if resolve_user_id(context.get("user_id"), owner) != owner:
+        raise Unresolved("user_id does not match the prepared environment owner; "
+                         "resume with the recorded owner or create a new run")
+    context["user_id"] = resolve_user_id(recorded=owner)
     proven = proof_fingerprint(artifacts)
     if environment.get("environment_fingerprint") not in (None, proven):
         raise Unresolved("current environment proof fingerprint does not match --env")

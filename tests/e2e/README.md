@@ -67,6 +67,10 @@ from the Journal, and retrying intake in the same Pod. The resulting UNKNOWN
 diagnosis remains NEEDS_HUMAN; it cannot enter patch placement or vendor handoff.
 Changing an established run's owner is rejected before external operations and
 leaves its generated plan and prepared environment unchanged.
+Environment CLI retries and imports enforce that owner across successful and
+failed handoffs, even if ambient USER_ID changes. Generated-plan tampering blocks
+service, triage and patch placement before external operations; intact plans
+remain reusable after restart.
 
 The environment-drift case rejects a synthetic runtime incompatibility before
 intake in both scheduler-connected and standalone Graph modes, retains the failed

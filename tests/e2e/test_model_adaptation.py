@@ -185,6 +185,57 @@ def test_graph_rejects_manual_deployment_contract(scenario):
     assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
 
 
+@pytest.mark.parametrize("prepared_failed", [False, True])
+def test_environment_retry_and_import_preserve_recorded_owner(scenario, prepared_failed):
+    arguments = ["environment", "--run-id", scenario.run_id, "--health-interval-seconds", "0"]
+    settings = json.loads(scenario.fixture["settings"].read_text())
+    if prepared_failed:
+        settings["environment_drift"] = True
+        scenario.fixture["settings"].write_text(json.dumps(settings))
+    prepared = json.loads(scenario.adaptation(*arguments, "--user-id", "simulation",
+                                            expected=6 if prepared_failed else 0).stdout)
+    before = scenario.status()["run"]
+    events_before = scenario.fixture["events"].read_text().splitlines()
+    rejected = scenario.adaptation(*arguments, "--user-id", "another-owner",
+                                   "--attach-pod", prepared["proof"]["pod"], expected=2)
+    assert "user_id does not match" in rejected.stdout
+    assert scenario.status()["run"] == before
+    added = scenario.fixture["events"].read_text().splitlines()[len(events_before):]
+    assert all(json.loads(line)["operation"] == "bootstrap" for line in added)
+    # Import cannot change the owner either, including the failed-handoff path.
+    if not prepared_failed:
+        imported = scenario.root / "wrong-owner-status.json"
+        imported.write_text(json.dumps({**prepared["proof"], "user_id": "another-owner"}))
+        result = scenario.adaptation("environment", "--run-id", scenario.run_id,
+                                     "--status", str(imported), expected=2)
+        assert "user_id does not match" in result.stdout
+        assert scenario.status()["run"] == before
+    settings.pop("environment_drift", None)
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    scenario.env["USER_ID"] = "ambient-other-owner"
+    resumed = json.loads(scenario.adaptation(*arguments).stdout)
+    assert resumed["proof"]["user_id"] == "simulation"
+    assert resumed["proof"]["pod"] == prepared["proof"]["pod"]
+
+
+@pytest.mark.parametrize("node", ["kdp-001b-service-proof", "mat-006-failure-triage", "mat-007-patch-placement"])
+def test_graph_rejects_modified_generated_plan(scenario, node):
+    scenario.graph("--until-node", "mat-005-deployment-plan")
+    plan = next(fact for fact in scenario.facts() if fact["kind"] == "DeploymentPlan")
+    path = Path(plan["artifacts"]) / "kdp_instance.yaml"
+    original = path.read_bytes()
+    status = json.loads((path.parent / "plan_status.json").read_text())
+    assert status["instance_sha256"] == hashlib.sha256(original).hexdigest()
+    path.write_bytes(original + b'\n# changed after planning\n')
+    before = scenario.fixture["events"].read_text().splitlines()
+    rejected = scenario.graph("--from-node", node, expected=2)
+    assert "INPUT_UNRESOLVED" in rejected.stdout
+    added = scenario.fixture["events"].read_text().splitlines()[len(before):]
+    assert all(json.loads(line)["operation"] == "bootstrap" for line in added)
+    path.write_bytes(original)
+    scenario.graph("--resume", "--until-node", "mat-005-deployment-plan")
+
+
 @pytest.mark.parametrize("scheduled", [True, False])
 def test_preplan_failure_is_preserved_for_triage_and_restart(scenario, scheduled):
     settings = json.loads(scenario.fixture["settings"].read_text())

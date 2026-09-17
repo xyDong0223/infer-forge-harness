@@ -22,6 +22,7 @@ from typing import Any
 from .contracts import AdaptationRun, BugReport, DiagnosticTask, OperatorSpec, OperatorTask, TaskEvent
 from .result_validation import validate_result
 from core.storage import ArtifactStore, RunPaths, WritePolicyError, default_state_root, ensure_external, safe_component
+from core.user_identity import environment_user_id
 
 
 _STAGES = ("torch", "xpu", "integration")
@@ -292,6 +293,7 @@ class TaskScheduler:
         owner = proof.get("user_id")
         if not isinstance(owner, str) or not owner.strip():
             raise ValueError("environment proof must record the supplied user_id")
+        owner = environment_user_id(run.environment, owner)
         for key, expected in (
             ("base_health_check", 200), ("base_chat_completion", "non_empty"),
             ("unexpected_fallback", False),
@@ -346,7 +348,7 @@ class TaskScheduler:
             **run.environment,
             "environment_proof": {
                 "pod": proof["pod"],
-                "user_id": proof.get("user_id"),
+                "user_id": owner,
                 "checks": dict(checks),
                 "artifacts": list(artifacts),
                 "fingerprint": fingerprint,
@@ -365,10 +367,14 @@ class TaskScheduler:
         run = self.store.run(run_id)
         if run is None:
             raise KeyError(f"unknown run: {run_id}")
+        owner = environment_user_id(run.environment, proof.get("user_id"))
+        previous = (run.environment.get("failed_environment_proof", {})
+                    if run.status == "ENVIRONMENT_FAILED"
+                    else run.environment.get("environment_proof", {}))
         run.status = "ENVIRONMENT_FAILED"
         run.environment = {**run.environment, "failed_environment_proof": {
-            "state": proof.get("state", "FAILED"), "pod": proof.get("pod"),
-            "user_id": proof.get("user_id"),
+            "state": proof.get("state", "FAILED"), "pod": proof.get("pod") or previous.get("pod"),
+            "user_id": owner,
             "artifact_root": proof.get("artifact_root"),
             "checks": proof.get("checks", {}), "artifacts": proof.get("artifacts", []),
             "diagnosis": proof.get("reason", error),

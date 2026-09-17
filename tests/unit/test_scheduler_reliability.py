@@ -335,6 +335,30 @@ def test_environment_binding_requires_recorded_user_id(tmp_path):
         scheduler.bind_environment("run", proof)
 
 
+@pytest.mark.parametrize("previous_failed", [False, True])
+@pytest.mark.parametrize("incoming_failed", [False, True])
+def test_environment_owner_cannot_change_through_scheduler_handoffs(tmp_path, previous_failed, incoming_failed):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model")
+    proof = environment_proof(tmp_path / "proof")
+    if previous_failed:
+        scheduler.record_environment_failure("run", {**proof, "state": "INSTALL_FAILED"}, "failed")
+    else:
+        scheduler.bind_environment("run", proof)
+    before = scheduler.store.run("run").to_dict()
+    with pytest.raises(ValueError, match="user_id does not match"):
+        if incoming_failed:
+            scheduler.record_environment_failure("run", {**proof, "user_id": "other"}, "failed")
+        else:
+            scheduler.bind_environment("run", {**proof, "user_id": "other"})
+    assert scheduler.store.run("run").to_dict() == before
+    scheduler.record_environment_failure("run", {"state": "FAILED"}, "missing output")
+    failed = scheduler.store.run("run").environment["failed_environment_proof"]
+    assert failed["user_id"] == proof["user_id"]
+    assert failed["pod"] == proof["pod"]
+    scheduler.bind_environment("run", proof)
+
+
 def test_environment_binding_fingerprints_artifacts_and_rejects_cross_environment_spec(tmp_path):
     scheduler = TaskScheduler(tmp_path / "state.db")
     scheduler.create_run(run_id="run", model_id="model", backend="device")

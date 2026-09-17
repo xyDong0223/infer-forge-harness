@@ -35,6 +35,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
 from core.storage import RunPaths, default_state_root, ensure_external, safe_component  # noqa: E402
+from core.user_identity import environment_user_id
 from engine.scheduler import EventStore  # noqa: E402
 from engine.progress import graph_progress, render_progress, run_progress  # noqa: E402
 
@@ -229,9 +230,7 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                 args.attach_pod or handoff.get("pod")
                 or existing.environment.get("environment_proof", {}).get("pod"),
                 run_id=args.run_id,
-                user_id=(args.user_id if args.user_id is not None else
-                         handoff.get("user_id") or
-                         existing.environment.get("environment_proof", {}).get("user_id")),
+                user_id=environment_user_id(existing.environment, args.user_id),
                 evidence_mode=existing.metadata.get("evidence_mode"),
                 health_interval_seconds=args.health_interval_seconds,
             )

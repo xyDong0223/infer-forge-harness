@@ -25,6 +25,10 @@ python cli/deployment/proof.py /external/generated-service.yaml \
 ```
 
 同一环境的恢复必须沿用已记录的 user ID；切换所有者会被拒绝，应为新所有者建立新 run。
+此检查覆盖 CLI 重试、成功或失败 handoff 的 scheduler 导入，以及独立 Graph 恢复。
+缺少 user ID 的旧环境证明必须重新提供完整证明，不能从当前 shell 的 USER_ID 补猜。
+MAT-005 将生成 YAML 的 SHA-256 写入计划状态，Journal 验证状态及 YAML 摘要后才允许复用。
+旧计划缺少摘要或文件已变动时不再复用，需重新执行 MAT-005。
 生成文件属于 run，不写回仓库；测试夹具使用合成数据，
 不作为 Agent 的部署模板。
 

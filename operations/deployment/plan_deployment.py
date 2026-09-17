@@ -15,6 +15,7 @@ marked `assumption` so a reader can tell the difference.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sys
 from pathlib import Path
@@ -312,7 +313,9 @@ def execute(args) -> int:
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     gate = validate_deployment_plan(report, contract, request)
     (out / "plan_status.json").write_text(
-        json.dumps({"state": report["state"], "validator": {"passed": not gate, "errors": gate}}, indent=2),
+        json.dumps({"state": report["state"],
+                    "instance_sha256": hashlib.sha256((out / "kdp_instance.yaml").read_bytes()).hexdigest(),
+                    "validator": {"passed": not gate, "errors": gate}}, indent=2),
         encoding="utf-8",
     )
     if gate:
