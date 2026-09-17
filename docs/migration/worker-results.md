@@ -6,6 +6,23 @@ Existing run and task rows remain readable; no state database rewrite is needed.
 
 ## Claims and leases
 
+Agent assignments should use the scoped public entry point:
+
+```bash
+python3 cli/adaptation.py --state /external/state.sqlite context --run-id <run>
+python3 cli/adaptation.py --state /external/state.sqlite context \
+  --run-id <run> --task-id <task>
+python3 cli/adaptation.py --state /external/state.sqlite claim \
+  --run-id <run> --task-id <task> --worker <worker> --stage torch
+```
+
+`--task-id` requires `--run-id`; a foreign task, unknown identity or mismatched
+stage is rejected before recovering leases or creating attempts. A valid task
+that is busy or not ready returns an empty list. Omit `--task-id` to take ready
+work within the run. Selection **and expired-lease recovery** share the same
+run/task/stage filters. Legacy unscoped claims remain available for intentional
+database-wide worker pools, not for assigning one run's work to an Agent.
+
 Keep the `lease_token`, `lease_expires` and `attempt` returned by `claim`.
 `complete`, `fail`, and `resolve-diagnosis` require that token, even if the worker
 name is unchanged. An expired or superseded token cannot publish a result.
@@ -23,6 +40,52 @@ For historical interruptions, `run_adaptation.py --state <db> reconcile
 --run-id <run>` repairs missing diagnosis tasks and missing successors.
 Successors are created only after revalidating the persisted evidence; legacy
 bare verdicts are returned as `blocked` with reasons, not silently promoted.
+
+## Read-only context and claim-time packet
+
+`context` opens the existing database read-only and uses the same progress
+projection as `status`. It never creates a run/database, claims work, recovers a
+lease, allocates an attempt or validates/promotes evidence. Unknown identities
+fail closed. A failed task can still be read successfully.
+
+The versioned response is documented in
+[`agent_context.schema.yaml`](../../contracts/agent_context.schema.yaml):
+
+- `run` and compact `tasks` describe the existing run, without task lease tokens.
+- `task_context` (when selected) includes the current task/input/workspace,
+  canonical OperatorSpec, run/environment identity, accepted upstream results
+  or diagnosis source failure, and acceptance/guidance references with hashes.
+- `acceptance.required_evidence` comes directly from the existing validator;
+  schema and validator source references supply the full rules. It does not
+  invent tensor tolerances or change acceptance semantics.
+- `claimed_packet` points to the frozen `input/task.json` and its hash, if a
+  managed attempt exists. `task_context` is a live projection; it can show
+  `succeeded` while that claim-time packet still records `running`.
+- `restart.execution_context` contains the last persisted graph input snapshot;
+  `restart.resume_command` retains the existing command suggestion. Historical
+  runs may have no structured snapshot. `evidence_revalidated: false` is explicit.
+
+New managed claims extend the existing `input/task.json` with this task packet;
+they do not create a second Task model. Existing top-level `task_id`, `run_id`,
+`stage`, `attempt`, and `input` remain present. A retry always freezes a new
+packet in a fresh attempt, preserving the previous packet. Context/packets do
+not grant a lease: keep the claim response separately and renew before expiry.
+Guidance hashes identify the source used at dispatch, not proof of correctness.
+
+Executing the connected Graph records `metadata.graph_execution_context`
+(schema version 1), including absolute workflow/state/artifact paths, workflow
+SHA-256, ordered `--env`/`--set` values, resolved graph inputs and recovery/watch
+settings. It is saved before runtime execution after the relevant inputs have
+resolved. Plan-only queries do not save it, and rejected inputs before runtime
+do not replace the previous usable snapshot. The host process environment is
+not copied. Supply credentials through the external execution environment, not
+`--env`/`--set`, since explicit graph settings are durable run data.
+
+P0 supplies recovery data. P1 now adds `advance --run-id` and one-shot Graph
+`submit-decision`; see [the interaction protocol](codex-interaction.zh-CN.md).
+The existing Graph CLI remains available. Both paths retain identity, workflow
+and evidence checks. Producer delegation authentication, Pod locks and process
+cancellation remain later phases.
 
 ## Result envelope
 

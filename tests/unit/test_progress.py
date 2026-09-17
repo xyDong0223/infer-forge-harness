@@ -58,7 +58,10 @@ def test_unclaimed_running_and_expired_are_distinct_read_only_states(scheduler):
     pending = view(scheduler)
     assert pending["reason_code"] == "WORKER_UNCLAIMED"
     assert pending["next_action"]["command"][3] == scheduler.store.path
-    assert "database-wide" in pending["next_action"]["instruction"]
+    assert "scoped to this run/task" in pending["next_action"]["instruction"]
+    command = pending["next_action"]["command"]
+    assert command[command.index("--run-id") + 1] == "r"
+    assert command[command.index("--task-id") + 1] == scheduler.store.tasks("r")[0].task_id
     claimed = scheduler.claim_ready("worker", stage="torch", lease_seconds=100)[0]
     before = [event.to_dict() for event in scheduler.store.events("r")]
     assert view(scheduler)["reason_code"] == "WORKER_RUNNING"
@@ -169,6 +172,28 @@ def test_evidence_rejection_is_not_hidden_by_succeeded_task_rows(scheduler, tmp_
     progress = view(scheduler)
     assert progress["state"] == "BLOCKED"
     assert "hash mismatch" in progress["summary"]
+
+
+@pytest.mark.parametrize("environment_state", ["WAITING_FOR_ENVIRONMENT", "ENVIRONMENT_FAILED"])
+def test_old_recovery_success_cannot_hide_missing_or_failed_environment(tmp_path, environment_state):
+    scheduler = TaskScheduler(tmp_path / "recovery.sqlite")
+    try:
+        # A real-mode run starts at this gate; creating its record performs no
+        # deployment and supplies no fabricated environment proof.
+        scheduler.create_run(run_id="r", model_id="m")
+        scheduler.record_graph_transition("r", "graph_progress", {
+            "status": "READY", "reason_code": "GRAPH_RECOVERY_SUCCEEDED", "node": "service",
+        })
+        if environment_state == "ENVIRONMENT_FAILED":
+            scheduler.record_environment_failure("r", {}, "proof invalidated after recovery")
+        before = list(scheduler.store.db.iterdump())
+        progress = view(scheduler)
+        assert progress["state"] == "BLOCKED"
+        assert progress["reason_code"] == environment_state
+        assert progress["next_action"]["action"] == "PROVE_ENVIRONMENT"
+        assert list(scheduler.store.db.iterdump()) == before
+    finally:
+        scheduler.store.close()
 
 
 def test_latest_environment_attempt_takes_precedence_over_old_failure(scheduler):

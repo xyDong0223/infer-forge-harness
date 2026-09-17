@@ -65,6 +65,8 @@ def _main() -> int:
     parser.add_argument("--auto-recover", action="store_true",
                         help="on a failed node, consult the brain before following the "
                              "failure edge: decide -> act -> rerun, bounded by --recovery-budget")
+    parser.add_argument("--interaction-mode", choices=("headless", "codex"), default="headless",
+                        help="codex returns a durable decision handoff instead of waiting for a brain")
     parser.add_argument("--recovery-budget", type=int, default=3,
                         help="repair attempts per failed node before the failure edge applies")
     parser.add_argument("--brain", choices=("rule", "agent"), default="agent",

@@ -52,6 +52,19 @@ stale accuracy after a fresh service proof, and refusal to import a simulation
 proof into a real run. Each case checks that the scenario did not modify
 repository source files.
 
+P0 Agent-interface cases additionally share one scheduler database across two
+runs, check scoped claim/rejection without recovering the other run's expired
+lease, compare runtime files before/after context queries, inspect frozen claim
+packets, and rebuild the existing Graph invocation from persisted execution
+inputs in a new process through full simulated delivery.
+
+P1 cases in `test_codex_interaction.py` use that same production graph and an
+existing external toy-runtime fault. They cover worker/decision boundaries,
+fresh-process advance, evidence-bound decision rejection, one-shot recovery,
+same-ID replay without new execution, stale evidence, durable budget exhaustion,
+and final simulated delivery. Additional test modules are registered through
+the scenario's `local.additional_tests` entries.
+
 The environment-input case starts without a seed YAML, checks the generated
 contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
 missing-input rejection against the shared status schema before cluster access,

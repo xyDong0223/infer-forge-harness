@@ -1,0 +1,60 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Read-only Agent context over existing scheduler contracts
+type: object
+required: [schema_version, run, tasks, task_context, claimed_packet, restart, evidence_revalidated, progress, task_progress]
+properties:
+  schema_version: {const: 1}
+  run: {type: object}
+  tasks: {type: array, items: {type: object}}
+  task_context:
+    anyOf:
+      - {$ref: '#/$defs/task_packet'}
+      - {type: 'null'}
+  claimed_packet:
+    anyOf:
+      - {$ref: '#/$defs/file_reference'}
+      - {type: 'null'}
+  restart:
+    type: object
+    required: [execution_context, resume_command]
+    properties:
+      execution_context: {type: [object, 'null']}
+      resume_command: {type: [array, 'null'], items: {type: string}}
+  evidence_revalidated: {const: false}
+  handoff: {type: [object, 'null']}
+  progress: {type: object}
+  task_progress: {type: array}
+$defs:
+  file_reference:
+    type: object
+    required: [path, sha256]
+    properties:
+      path: {type: string}
+      sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+  task_packet:
+    type: object
+    required: [schema_version, task_id, run_id, operator_key, stage, attempt, input, run_identity, environment, operator_spec, upstream_tasks, acceptance, guidance, evidence_revalidated]
+    not: {required: [lease_token]}
+    properties:
+      schema_version: {const: 1}
+      task_id: {type: string}
+      run_id: {type: string}
+      operator_key: {type: string}
+      stage: {enum: [torch, xpu, integration, diagnosis]}
+      attempt: {type: integer, minimum: 0}
+      input: {type: object}
+      run_identity: {type: object}
+      environment: {type: object}
+      operator_spec: {type: [object, 'null']}
+      upstream_tasks: {type: array, items: {type: object}}
+      acceptance:
+        type: object
+        required: [required_evidence, result_identity, result_schema, validator, output_directory]
+        properties:
+          required_evidence: {type: array, items: {type: string}}
+          result_identity: {type: object}
+          result_schema: {$ref: '#/$defs/file_reference'}
+          validator: {$ref: '#/$defs/file_reference'}
+          output_directory: {type: [string, 'null']}
+      guidance: {type: object}
+      evidence_revalidated: {const: false}

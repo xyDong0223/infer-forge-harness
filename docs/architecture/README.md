@@ -1,5 +1,8 @@
 # Architecture
 
+- [`codex-integration-plan.zh-CN.md`](codex-integration-plan.zh-CN.md): proposed
+  incremental plan for Codex-led model adaptation, including task handoffs,
+  independent validation, shared-Pod execution, and migration acceptance.
 - [`implementation-layers.zh-CN.md`](implementation-layers.zh-CN.md): current
   implementation guide in Chinese, covering abstraction layers, their purpose,
   target axes, execution flow, and migration boundaries.

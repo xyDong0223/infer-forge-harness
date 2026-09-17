@@ -383,7 +383,8 @@ class TaskScheduler:
     ) -> AdaptationRun:
         """Persist graph handoffs without changing the environment status meaning."""
         if key not in {"graph_environment_required", "graph_environment",
-                       "graph_discovery", "graph_shim_discovery", "graph_delivery", "graph_progress"}:
+                       "graph_discovery", "graph_shim_discovery", "graph_delivery", "graph_progress",
+                       "graph_execution_context", "graph_handoffs", "graph_decisions"}:
             raise ValueError(f"unsupported graph transition: {key}")
         run = self.store.run(run_id)
         if run is None:
@@ -430,24 +431,47 @@ class TaskScheduler:
 
     @atomic_transition
     def claim_ready(self, worker_id: str, stage: str | None = None, lease_seconds: float = 300,
-                    limit: int = 1) -> list[OperatorTask]:
+                    limit: int = 1, *, run_id: str | None = None,
+                    task_id: str | None = None) -> list[OperatorTask]:
+        """Claim ready work, recovering expired leases only within the requested scope."""
         if not worker_id or limit <= 0 or not math.isfinite(lease_seconds) or lease_seconds <= 0:
             raise ValueError("worker, positive limit and positive finite lease_seconds are required")
         if stage is not None and stage not in {*_STAGES, _DIAGNOSIS_STAGE}:
             raise ValueError(f"invalid stage: {stage}")
+        if task_id is not None and run_id is None:
+            raise ValueError("task_id requires run_id")
+        if run_id is not None and self.store.run(run_id) is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if task_id is not None:
+            task = self.store.get_task(task_id)
+            if task is None:
+                raise KeyError(f"unknown task: {task_id}")
+            if task.run_id != run_id:
+                raise ValueError(f"task {task_id} does not belong to run {run_id}")
+            if stage is not None and task.stage != stage:
+                raise ValueError(f"task {task_id} stage {task.stage} does not match requested stage {stage}")
+        clauses: list[str] = []
+        scope_args: list[Any] = []
+        for column, value in (("run_id", run_id), ("task_id", task_id), ("stage", stage)):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                scope_args.append(value)
+        scope = " AND " + " AND ".join(clauses) if clauses else ""
         now = time.time()
         # Claiming is a single IMMEDIATE transaction.  The conditional update
         # then remains safe even when several workers race on the same queue.
         claimed: list[OperatorTask] = []
         claim_events: list[tuple[str, str, dict[str, Any], str]] = []
         db = self.store.db
-        db.execute("UPDATE tasks SET status='pending', lease_token=NULL, lease_worker=NULL, lease_expires=NULL, updated_at=? WHERE status='running' AND lease_expires <= ?", (now, now))
-        sql = "SELECT * FROM tasks WHERE status='pending'"
-        args: tuple[Any, ...] = ()
-        if stage:
-            sql += " AND stage=?"
-            args = (stage,)
-        candidates = db.execute(sql + " ORDER BY created_at", args).fetchall()
+        db.execute(
+            "UPDATE tasks SET status='pending', lease_token=NULL, lease_worker=NULL, "
+            "lease_expires=NULL, updated_at=? WHERE status='running' AND lease_expires <= ?" + scope,
+            (now, now, *scope_args),
+        )
+        candidates = db.execute(
+            "SELECT * FROM tasks WHERE status='pending'" + scope + " ORDER BY created_at",
+            tuple(scope_args),
+        ).fetchall()
         for row in candidates:
             if len(claimed) >= limit or not self._deps_succeeded(row["run_id"], row["operator_key"], row["stage"]):
                 continue
@@ -470,13 +494,12 @@ class TaskScheduler:
                         "input": str(paths.input), "scratch": str(paths.scratch),
                         "output": str(paths.output), "logs": str(paths.logs),
                     }
-                    ArtifactStore(paths.input).write_json("task.json", {
-                        "task_id": row["task_id"], "run_id": row["run_id"],
-                        "stage": row["stage"], "attempt": row["attempt"] + 1,
-                        "input": payload,
-                    })
                     db.execute("UPDATE tasks SET input_json=? WHERE task_id=?",
                                (json.dumps(payload, sort_keys=True), row["task_id"]))
+                    from .context import task_packet
+                    ArtifactStore(paths.input).write_json(
+                        "task.json", task_packet(self.store, run, self.store.get_task(row["task_id"])),
+                    )
                 claimed.append(self.store._task(db.execute("SELECT * FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()))
                 claim_events.append((row["run_id"], "task_claimed", {
                     "worker_id": worker_id, "stage": row["stage"], "attempt": row["attempt"] + 1,
