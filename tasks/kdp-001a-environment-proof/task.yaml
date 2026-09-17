@@ -74,6 +74,14 @@ artifacts:
   - base_chat_result
 exit_states:
   input_required: INPUT_REQUIRED
+  contract_invalid: CONTRACT_INVALID
+  blocked: BLOCKED
+  model_not_found: MODEL_NOT_FOUND
+  code_not_ready: CODE_NOT_READY
+  device_not_ready: DEVICE_NOT_READY
+  startup_failed: SERVER_START_FAILED
+  api_failed: API_SMOKE_FAILED
+  fallback_detected: UNEXPECTED_FALLBACK
   pass: ENVIRONMENT_READY
   runtime_drift: RUNTIME_DRIFT
   install_failed: INSTALL_FAILED

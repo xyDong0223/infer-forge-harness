@@ -12,7 +12,9 @@ spec:
     - id: kdp-001a-environment-proof
       task: tasks/kdp-001a-environment-proof/task.yaml
       on_success: mat-001-model-intake
-      on_failure: mat-006-failure-triage
+      # Model triage consumes a successful proof; a failed environment must be
+      # diagnosed from its retained Pod/evidence before resuming this same node.
+      on_failure: NEEDS_HUMAN
     - id: mat-001-model-intake
       task: tasks/mat-001-model-intake/task.yaml
       on_success: mat-027-runtime-drift
@@ -153,8 +155,7 @@ spec:
       on_success: DELIVERED
       on_failure: mat-006-failure-triage
   notes:
-    - Intake keeps its own XPU-free probe Pod; every later in-pod inspection reuses
-      the environment proof's pod.
+    - Intake and every later in-pod inspection reuse the environment proof's Pod.
     - The environment half is provable without launch parameters, so the scan runs
       before any parameter is chosen.
     - Nodes marked PLANNED have no validator yet and must not be claimed as

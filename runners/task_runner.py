@@ -50,11 +50,15 @@ def build_plan(
     require_supported(resolved)
     phase = proof_phase(contract, phase)
     actions = contract.get("actions", [])
-    if phase == "environment":
-        actions = load_yaml(REPO_ROOT / "tasks/kdp-001a-environment-proof/task.yaml")["actions"]
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        actions = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")["actions"]
     return {
         "task_id": contract.get("metadata", {}).get("name"),
-        "task_type": contract.get("metadata", {}).get("task_type"),
+        "task_type": {"environment": "environment_proof", "service": "service_proof"}.get(
+            phase, contract.get("metadata", {}).get("task_type"),
+        ),
         "mode": "PLAN_ONLY",
         "phase": phase,
         "actions": actions,
@@ -198,6 +202,20 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         contract.clear()
         contract.update(generated)
         contract["artifacts"]["directory"] = str(target_dir)
+    phase_task = {"environment": "kdp-001a-environment-proof",
+                  "service": "kdp-001b-service-proof"}.get(phase)
+    if phase_task:
+        # Normalize the phase contract while preserving the target launch
+        # settings imported from the deployment plan for service execution.
+        phase_contract = load_yaml(REPO_ROOT / "tasks" / phase_task / "task.yaml")
+        for field in ("actions", "acceptance", "exit_states"):
+            contract[field] = phase_contract[field]
+        contract["artifacts"] = {
+            "directory": str(target_dir),
+            "collect": list(dict.fromkeys([
+                *phase_contract["artifacts"], "task_contract", "reproduce_command",
+            ])),
+        }
     contract.setdefault("context", {})["resolved_target"] = {
         "model": target.model if target else target_context.model,
         "hardware": target_context.hardware,

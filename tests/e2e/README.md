@@ -59,6 +59,13 @@ the same run in a new process using its recorded ID and Pod. A separate case
 rejects a manual Graph contract override before cluster access. Full delivery
 asserts that service execution consumes the real MAT-005 generated contract.
 
+The environment-drift case rejects a synthetic runtime incompatibility before
+intake in both scheduler-connected and standalone Graph modes, retains the failed
+proof and Pod, and resumes into intake on that same Pod. Environment failures
+stop at a diagnostic terminal; model triage requires a successful environment.
+Workflow intake requires EnvironmentProof and never creates its standalone
+ephemeral probe Pod.
+
 The completion case checks persisted fact order and actual adapter commands:
 MiniMax baseline launch precedes intake; target toy follows discovery and precedes
 target service launch. Boundary cases check that omitted `--phase` and explicit

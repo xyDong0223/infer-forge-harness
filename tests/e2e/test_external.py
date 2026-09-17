@@ -117,6 +117,38 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path, pha
     assert all(event["evidence_mode"] == "simulation" for event in events)
 
 
+@pytest.mark.parametrize("fault", ["failed-proof", "different-pod"])
+def test_intake_rejects_invalid_environment_before_cluster_access(tmp_path, fault):
+    fixture = prepare_environment(tmp_path / "external")
+    env = {**os.environ, **fixture["env"]}
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "cli/deployment/proof.py"),
+         fixture["contract_instance"], "--execute", "--phase", "environment",
+         "--artifact-dir", str(tmp_path / "proof")],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    status = json.loads(result.stdout)
+    proof = Path(status["artifact_root"]) / "status.json"
+    extra = ["--attach-pod", fixture["pod"] + "-wrong"]
+    if fault == "failed-proof":
+        proof = tmp_path / "failed-status.json"
+        proof.write_text(json.dumps({**status, "state": "RUNTIME_DRIFT"}))
+        extra = []
+    count = len(fixture["events"].read_text().splitlines())
+    rejected = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "cli/intake/model_intake.py"),
+         "--model-id", fixture["subject"], "--model-path", fixture["model_path"],
+         "--attempt-id", "rejected", "--out", str(tmp_path / "intake"),
+         "--env-status", str(proof), *extra],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert rejected.returncode != 0
+    assert "CONTRACT_INVALID" in rejected.stdout + rejected.stderr
+    events = [json.loads(line) for line in fixture["events"].read_text().splitlines()[count:]]
+    assert all(event["operation"] == "bootstrap" for event in events)
+
+
 def test_persistent_environment_and_toy_failure_block_target_weights(tmp_path):
     fixture = prepare_environment(tmp_path / 'external')
     env = {**os.environ, **fixture['env']}

@@ -81,13 +81,13 @@ class Scenario:
             "cli/adaptation.py", ["--state", str(self.state), *arguments], expected,
         )
 
-    def graph(self, *arguments: str, expected: int | None = 0):
+    def graph(self, *arguments: str, expected: int | None = 0, scheduled: bool = True):
         return self.process("cli/workflow/graph.py", [
             *self.fixture["graph_args"],
             "--workflow", str(REPO_ROOT / "workflows/model_adaptation.yaml"),
-            "--scheduler-state", str(self.state), "--run-id", self.run_id,
+            *(["--scheduler-state", str(self.state), "--run-id", self.run_id] if scheduled else []),
             "--artifact-root", str(self.run_root),
-            "--operator-report", str(self.fixture["operator_report"]),
+            *(["--operator-report", str(self.fixture["operator_report"])] if scheduled else []),
             "--execute", "--json", "--watch-interval", "0", *arguments,
         ], expected)
 
@@ -170,6 +170,39 @@ def test_graph_rejects_manual_deployment_contract(scenario):
     assert json.loads((scenario.fixture["root"] / "cluster.json").read_text())["pods"] == {}
 
 
+@pytest.mark.parametrize("scheduled", [True, False])
+def test_environment_drift_blocks_before_intake_and_resumes_same_pod(scenario, scheduled):
+    settings = json.loads(scenario.fixture["settings"].read_text())
+    settings["environment_drift"] = True
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    failed = scenario.graph(expected=2, scheduled=scheduled)
+    assert '"reason_code": "ENVIRONMENT_FAILED"' in failed.stdout
+    assert "INPUT_UNRESOLVED" not in failed.stdout
+    assert not (scenario.run_root / "tasks/mat-001-model-intake").exists()
+    assert not (scenario.run_root / "tasks/mat-006-failure-triage").exists()
+    proof = next(scenario.run_root.glob("tasks/kdp-001a-environment-proof/attempts/*/output/status.json"))
+    original = proof.read_bytes()
+    status = json.loads(original)
+    assert status["state"] == "RUNTIME_DRIFT"
+    assert status["pod"] == scenario.fixture["pod"]
+    assert (proof.parent / "engine_core_drift_precheck.json").is_file()
+    assert (proof.parent / "diagnosis.json").is_file()
+    if scheduled:
+        snapshot = scenario.status()
+        assert snapshot["run"]["status"] == "ENVIRONMENT_FAILED"
+    settings.pop("environment_drift")
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    scenario.graph("--resume", "--until-node", "mat-001-model-intake", scheduled=scheduled)
+    assert proof.read_bytes() == original
+    intake = next(fact for fact in scenario.facts() if fact["kind"] == "ModelRequest")
+    probe = json.loads((Path(intake["artifacts"]) / "resolved_revision.json").read_text())
+    assert probe["probed_in"] == "imported context: " + scenario.fixture["pod"]
+    events = [json.loads(line) for line in scenario.fixture["events"].read_text().splitlines()]
+    applies = [event for event in events if event["operation"] == "cluster"
+               and event["args"][:2] == ["apply", "-f"]]
+    assert len(applies) == 1
+
+
 def test_model_adaptation_delivers_after_validated_workers(scenario):
     scenario.env.pop("USER_ID", None)
     scenario.fixture["graph_args"].extend(["--set", "user_id=simulation"])
@@ -205,6 +238,14 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     executed = yaml.safe_load((Path(service_fact["artifacts"]) / "task_contract.yaml").read_text())
     assert executed["metadata"]["generated_by"] == "mat-005-deployment-plan"
     assert executed["execution"]["commands"]["serve"] == planned["execution"]["commands"]["serve"]
+
+
+    intake_events = [event for event in external if event["operation"] == "exec"
+                     and "python3 /tmp/mat001_probe.py" in event["script"]]
+    assert {event["pod"] for event in intake_events} == {scenario.fixture["pod"]}
+    intake_fact = next(fact for fact in scenario.facts() if fact["kind"] == "ModelRequest")
+    intake_probe = json.loads((Path(intake_fact["artifacts"]) / "resolved_revision.json").read_text())
+    assert intake_probe["probed_in"] == "imported context: " + scenario.fixture["pod"]
     memory = json.loads((scenario.run_root / "task_memory.json").read_text())
     assert memory["next_loop_block"]["sub_target"] == "mat-026-operator-candidate-integration"
     assert memory["completed_loop_blocks"][-1]["state"] == "WAITING_FOR_OPERATORS"

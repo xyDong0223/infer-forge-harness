@@ -25,6 +25,7 @@ context:
     hardware: Kunlunxin-3-P800
     namespace: ${KUNLUN_NAMESPACE}
 actions:
+  - engine_core_drift_precheck
   - toy_bringup_before_load
   - start_server
   - poll_health
@@ -42,6 +43,9 @@ artifacts:
   - chat_result
   - reproduce_command
 exit_states:
+  contract_invalid: CONTRACT_INVALID
+  blocked: BLOCKED
+  runtime_drift: RUNTIME_DRIFT
   pass: DEPLOYMENT_READY
   bringup_blocked: BRINGUP_BLOCKED
   startup_failed: SERVER_START_FAILED
