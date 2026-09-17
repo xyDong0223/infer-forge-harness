@@ -740,13 +740,17 @@ class DeploymentProofRunner:
     def collect_artifacts(self, state: str, reason: str = "") -> dict[str, Any]:
         import yaml
 
-        self.write("task_contract.yaml", yaml.safe_dump(self.contract, sort_keys=False, allow_unicode=True))
+        contract_path = self.write(
+            "task_contract.yaml", yaml.safe_dump(self.contract, sort_keys=False, allow_unicode=True),
+        )
+        reproduce = ["python3", "cli/deployment/proof.py", str(contract_path.resolve()),
+                     "--execute", "--phase", self.phase]
+        if self.pod:
+            reproduce.extend(["--attach-pod", self.pod])
         self.write(
             "reproduce_command.txt",
-            "KUBECONFIG={kubeconfig} python3 cli/deployment/proof.py {contract} --execute\n".format(
-                kubeconfig=self.adapter.config.kubeconfig,
-                contract=self.contract["metadata"]["name"],
-            ),
+            f"KUBECONFIG={shlex.quote(str(self.adapter.config.kubeconfig))} "
+            + shlex.join(reproduce) + "\n",
         )
         status = {
             "task_id": self.contract["metadata"]["name"],

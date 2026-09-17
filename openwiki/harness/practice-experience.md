@@ -41,11 +41,12 @@ claims: .claims/practice-experience.json
 推荐顺序：
 
 ```text
-model intake
-  -> environment proof
+MiniMax-M2.5 environment proof (direct launch, no toy)
+  -> target model intake
   -> model scan
   -> capability match
   -> gap classification
+  -> target toy bring-up and shim handoff
   -> service bring-up
   -> independent accuracy
   -> baseline freeze

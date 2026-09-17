@@ -174,6 +174,19 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     assert [(task["stage"], task["status"]) for task in before["tasks"]] == [("torch", "pending")]
     events = [event["event_type"] for event in before["events"]]
     assert events.index("environment_bound") < events.index("operator_discovered")
+    kinds = [fact["kind"] for fact in scenario.facts()]
+    ordered = ["EnvironmentProof", "ModelRequest", "ModelSupportCard", "CapabilityMatch",
+               "GapClassification", "ToyBringupReport", "TorchShimRegistry", "DeploymentProof"]
+    assert [kinds.index(kind) for kind in ordered] == sorted(kinds.index(kind) for kind in ordered)
+    external = [json.loads(line) for line in scenario.fixture["events"].read_text().splitlines()]
+    scripts = [event["script"] for event in external if event["operation"] == "exec"]
+    base_launch = next(i for i, script in enumerate(scripts)
+                       if "echo started $!" in script and "minimax-base-smoke" in script)
+    intake = next(i for i, script in enumerate(scripts) if "python3 /tmp/mat001_probe.py" in script)
+    toy = next(i for i, script in enumerate(scripts) if "python3 /tmp/mat028_probe.py" in script)
+    target_launch = next(i for i, script in enumerate(scripts)
+                         if "echo started $!" in script and "minimax-base-smoke" not in script)
+    assert base_launch < intake < toy < target_launch
     memory = json.loads((scenario.run_root / "task_memory.json").read_text())
     assert memory["next_loop_block"]["sub_target"] == "mat-026-operator-candidate-integration"
     assert memory["completed_loop_blocks"][-1]["state"] == "WAITING_FOR_OPERATORS"

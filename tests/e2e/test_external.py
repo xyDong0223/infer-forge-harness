@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 from core.paths import REPO_ROOT
 from tests.e2e.external import SETTINGS_ENV, prepare_environment
@@ -56,11 +57,12 @@ def test_unexpected_external_access_fails_closed(tmp_path, command):
     assert "RuntimeError" in result.stderr
 
 
-def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
+@pytest.mark.parametrize("phase_args", [[], ["--phase", "environment"]])
+def test_real_environment_cli_validates_raw_simulated_observations(tmp_path, phase_args):
     fixture = prepare_environment(tmp_path / "external")
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "cli/deployment/proof.py"),
-         fixture["contract_instance"], "--execute", "--phase", "environment",
+         fixture["contract_instance"], "--execute", *phase_args,
          "--artifact-dir", str(tmp_path / "proof"), "--run-id", "boundary-smoke"],
         cwd=tmp_path, env={**os.environ, **fixture["env"]},
         capture_output=True, text=True, timeout=30, check=False,
@@ -70,6 +72,13 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
     assert validate_environment_status(status) == []
     assert status["evidence_mode"] == "simulation"
     assert status["pod"] == fixture["pod"]
+    assert status["phase"] == "environment"
+    assert "toy_bringup" not in status["checks"]
+    assert not (Path(status["artifact_root"]) / "toy_bringup.json").exists()
+    contract = yaml.safe_load((Path(status["artifact_root"]) / "task_contract.yaml").read_text())
+    assert "toy_bringup_before_load" not in contract["actions"]
+    assert contract["acceptance"]["base_prefill"] is True
+    assert contract["exit_states"]["pass"] == "ENVIRONMENT_READY"
     assert (Path(status["artifact_root"]) / "environment_fingerprint.txt").is_file()
     reused = _python(fixture, (
         "from adapters import get_hardware; "
@@ -85,6 +94,11 @@ def test_real_environment_cli_validates_raw_simulated_observations(tmp_path):
     assert unexpected.returncode != 0
     assert "unexpected external exec command" in unexpected.stderr
     events = [json.loads(line) for line in fixture["events"].read_text().splitlines()]
+    scripts = [event["script"] for event in events if event["operation"] == "exec"]
+    launches = [script for script in scripts if "echo started $!" in script]
+    assert len(launches) == 1
+    assert "minimax-base-smoke" in launches[0]
+    assert not any("mat028_probe.py" in script for script in scripts)
     assert {event["pod"] for event in events if "pod" in event} == {fixture["pod"]}
     assert len({event["pid"] for event in events}) >= 3
     assert all(event["evidence_mode"] == "simulation" for event in events)

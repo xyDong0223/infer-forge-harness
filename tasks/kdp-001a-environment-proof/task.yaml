@@ -40,6 +40,7 @@ actions:
   - preflight
   - prepare_environment
   - verify_runtime_importable
+  - engine_core_drift_precheck
   - discover_base_model
   - start_base_model
   - run_base_prefill_decode_smoke
@@ -81,5 +82,7 @@ exit_states:
 validator: validators/deployment_validator.py:validate_environment_status
 
 notes:
+  - MiniMax-M2.5 is the known-good environment baseline; launch it directly without
+    toy bring-up. Return ENVIRONMENT_READY before target intake, scanning or loading.
   - deployment_manifest is recorded for creation and automatic deployment lookup;
     explicit attach imports pod_spec without assuming ownership of a deployment.

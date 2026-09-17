@@ -215,5 +215,9 @@ def test_bringup_failure_is_declared_by_shared_and_deployment_contracts():
         contract = yaml.safe_load(path.read_text())
         if 'exit_states' not in contract:
             continue
+        if contract['metadata']['task_type'] == 'environment_proof':
+            assert contract['exit_states']['pass'] == 'ENVIRONMENT_READY'
+            assert 'toy_bringup_before_load' not in contract['actions']
+            continue
         assert 'BRINGUP_BLOCKED' in contract['exit_states'].values(), path
         assert 'toy_bringup_before_load' in contract['actions'], path
