@@ -88,6 +88,7 @@ artifacts:
 
 exit_states:
   pass: ENVIRONMENT_READY
+  runtime_drift: RUNTIME_DRIFT
   install_failed: INSTALL_FAILED
   pod_timeout: READINESS_TIMEOUT
   needs_human: NEEDS_HUMAN

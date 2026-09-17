@@ -152,7 +152,11 @@ def execute(
     try:
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
         contract.setdefault("execution", {})["user_id"] = owner
-        ArtifactStore(attempt.input).write_json("task_contract.json", contract)
+        ArtifactStore(attempt.input).write_json("requested_task_contract.json", {
+            "requested_phase": phase,
+            "effective_phase": proof_phase(contract, phase),
+            "contract": contract,
+        })
         return _execute(contract, target_dir, attach_pod, phase, target, finish)
     except (ValueError, OSError, RuntimeError) as error:
         return finish({"status": "BLOCKED", "message": str(error), "task_id": task_id}, 2)
@@ -183,6 +187,12 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         environment_contract = load_yaml(REPO_ROOT / "tasks/kdp-001a-environment-proof/task.yaml")
         for field in ("actions", "acceptance", "exit_states"):
             contract[field] = environment_contract[field]
+        contract["artifacts"] = {
+            "directory": str(target_dir),
+            "collect": list(dict.fromkeys([
+                *environment_contract["artifacts"], "task_contract", "reproduce_command",
+            ])),
+        }
         profile = load_yaml(REPO_ROOT / "config" / "clusters" / "p800-cluster.yaml")
         base = profile.get("validation", {}).get("base_model", {})
         deployment = profile.get("deployment", {})
@@ -235,6 +245,14 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
         "revisions": target_context.revisions,
         "compatibility": bundle.compatibility,
     }
+    contract["metadata"]["task_type"] = {
+        "environment": "environment_proof", "service": "service_proof",
+    }.get(phase, task_type)
+    attempt = locate_attempt(target_dir)
+    if attempt is not None:
+        # Keep the request for diagnosis, but replay only the effective contract
+        # that is also passed to the runner and saved in output/task_contract.yaml.
+        ArtifactStore(attempt.input).write_json("task_contract.json", contract)
     errors = validate_executable(contract)
     if errors:
         return finish({"status": "CONTRACT_INVALID", "errors": errors}, 2)

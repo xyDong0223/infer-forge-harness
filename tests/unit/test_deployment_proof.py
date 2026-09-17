@@ -294,6 +294,8 @@ def test_reproduce_command_preserves_phase_contract_and_pod(tmp_path, phase):
     assert Path(command[3]).is_file()
     assert command[command.index("--phase") + 1] == phase
     assert command[command.index("--attach-pod") + 1] == runner.pod
+    assert Path(command[command.index("--artifact-dir") + 1]).is_absolute()
+    assert Path(command[command.index("--artifact-dir") + 1]) != runner.artifact_dir
 
 
 if __name__ == "__main__":

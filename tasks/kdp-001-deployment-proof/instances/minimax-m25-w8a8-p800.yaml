@@ -152,6 +152,7 @@ artifacts:
 
 exit_states:
   pass: ENVIRONMENT_READY
+  runtime_drift: RUNTIME_DRIFT
   install_failed: INSTALL_FAILED
   startup_failed: SERVER_START_FAILED
   health_timeout: READINESS_TIMEOUT
