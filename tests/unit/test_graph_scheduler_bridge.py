@@ -25,6 +25,8 @@ def write(path, payload):
 def proof(root, mode="simulation", **changes):
     for name in ENVIRONMENT_ARTIFACTS:
         write(root / name, {"fixture": name})
+    from tests.scheduler_helpers import write_base_model_identity
+    write_base_model_identity(root)
     data = {
         "state": "ENVIRONMENT_READY", "pod": "test-pod", "evidence_mode": mode,
         "checks": {**{name: True for name in (

@@ -351,6 +351,8 @@ def environment_bundle(bundle: Path) -> None:
     ]
     for name in names:
         (bundle / name).write_text("fixture evidence", encoding="utf-8")
+    from tests.scheduler_helpers import write_base_model_identity
+    write_base_model_identity(bundle)
     (bundle / "status.json").write_text(json.dumps({
         "state": "ENVIRONMENT_READY", "pod": "prepared-pod", "artifacts": names,
         "checks": {

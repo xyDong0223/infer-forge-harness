@@ -36,6 +36,7 @@ from core.target import (  # noqa: E402
 from runners.task_runner import load_yaml  # noqa: E402
 from validators.deployment_validator import (  # noqa: E402
     ENVIRONMENT_ARTIFACTS, validate_deployment_status, validate_environment_status,
+    validate_environment_identity,
 )
 
 # How to invoke each node, and which recorded facts it needs. `artifacts` is the
@@ -710,6 +711,8 @@ def reusable_fact(
     if kind in ("EnvironmentProof", "DeploymentProof"):
         validate = validate_environment_status if kind == "EnvironmentProof" else validate_deployment_status
         try:
+            if kind == "EnvironmentProof" and validate_environment_identity(artifact_dir):
+                return None
             if validate(payload):
                 return None
             if any(not (artifact_dir / name).exists() for name in payload["artifacts"]):

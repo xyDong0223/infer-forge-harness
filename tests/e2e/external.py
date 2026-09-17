@@ -319,6 +319,8 @@ class SimulatedCluster(KunlunP800Adapter):
             filename = Path(match[1]).name
             argv = shlex.split((match[2] or "").replace("2>/dev/null", "").strip())
             return self._probe(filename, argv, config)
+        if script == "cat " + shlex.quote(str(model / "config.json")):
+            return config
         if script == "xpu_smi -m":
             return "\n".join(" ".join([str(i), "0", "0"] + ["0"] * 14 + ["8192", "98304"]) for i in range(8))
         if script.startswith("test -f ") and " -name '*.safetensors'" in script:

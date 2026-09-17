@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
+
+import yaml
+
+from core.paths import REPO_ROOT
 
 
 ENVIRONMENT_ARTIFACTS = (
@@ -60,3 +66,18 @@ def validate_environment_status(status: dict[str, Any]) -> list[str]:
         if required not in artifacts:
             errors.append(f"{required} must be part of the evidence bundle")
     return errors
+
+
+def validate_environment_identity(artifact_root: Path) -> list[str]:
+    """Verify persisted baseline identity, including imported proof bundles."""
+    try:
+        profile = yaml.safe_load((REPO_ROOT / "config/clusters/p800-cluster.yaml").read_text())
+        expected = profile["validation"]["base_model"]
+        identity = json.loads((Path(artifact_root) / "base_model_identity.json").read_text())
+        if not isinstance(identity, dict):
+            return ["base_model_identity.json must contain an object"]
+        return [f"base_model_identity.{key} must equal configured {expected[key]!r}"
+                for key in ("name", "path", "served_model_name")
+                if not expected.get(key) or identity.get(key) != expected[key]]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return [f"cannot validate base_model_identity.json: {error}"]

@@ -37,18 +37,27 @@ class BringupFailed(ToolFailed):
 
 
 def run_probe(adapter: KunlunP800Adapter, pod: str, model_path: str, layers: int, experts: int,
-              tp_size: int, max_len: int, timeout: int) -> dict:
+              tp_size: int, max_len: int, timeout: int, *,
+              runtime=None, setup: list[str] | None = None, workdir: str | None = None) -> dict:
     push = push_snippet(PROBE, '/tmp/mat028_probe.py')
+    context = [f"cd {shlex.quote(workdir)}"] if workdir else []
+    context += [(runtime or default_runtime()).env_prefix(), *(setup or [])]
     script = (
-        f"{default_runtime().env_prefix()}; "
+        " && ".join(context) + " && "
         f"{push} && "
         f"python3 /tmp/mat028_probe.py {shlex.quote(model_path)} {layers} {experts} "
-        f"{tp_size} {max_len} 2>/dev/null"
+        f"{tp_size} {max_len}"
     )
     result = adapter.exec(pod, script, timeout=timeout)
     for line in reversed(result.stdout.strip().splitlines()):
         if line.startswith("{"):
-            return json.loads(line)
+            try:
+                report = json.loads(line)
+            except ValueError as error:
+                raise BringupFailed("NEEDS_HUMAN", "probe returned invalid JSON: " + line[-800:]) from error
+            if not isinstance(report, dict) or result.returncode:
+                raise BringupFailed("NEEDS_HUMAN", f"probe exited {result.returncode}: {result.stderr[-800:]}")
+            return report
     raise BringupFailed(
         "NEEDS_HUMAN",
         "probe produced no JSON, which usually means the process died rather than raised: "

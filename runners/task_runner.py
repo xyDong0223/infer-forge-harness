@@ -16,6 +16,7 @@ from validators.contract_validator import (
 from validators.deployment_validator import (
     validate_deployment_status,
     validate_environment_status,
+    validate_environment_identity,
 )
 from core.contracts import TargetContext
 from core.target import bind_subject, contract_target, load_target, require_supported
@@ -224,7 +225,7 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
     )
     status = runner.run()
     gate = (
-        validate_environment_status(status)
+        validate_environment_status(status) + validate_environment_identity(target_dir)
         if phase == "environment"
         else validate_deployment_status(status)
     )

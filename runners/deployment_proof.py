@@ -268,6 +268,7 @@ class DeploymentProofRunner:
         if not result.stdout.strip():
             return None
         resource = json.loads(result.stdout)
+        self.write("deployment_manifest.yaml", yaml.safe_dump(resource, sort_keys=False))
         labels = resource.get("spec", {}).get("selector", {}).get("matchLabels", {})
         if not labels:
             raise ActionFailed("NEEDS_HUMAN", "existing deployment has no usable Pod selector; retain it")
@@ -285,7 +286,9 @@ class DeploymentProofRunner:
         if not path:
             raise ActionFailed("CONTRACT_INVALID", "base model path is missing")
         result = self.adapter.exec(self.pod or "", f"test -f {shlex.quote(path + '/config.json')} && find {shlex.quote(path)} -maxdepth 1 -type f -name '*.safetensors' | sort", timeout=120)
-        identity = {"name": model.get("name"), "path": path, "files": result.stdout.splitlines()}
+        identity = {"name": model.get("name"), "path": path,
+                    "served_model_name": self.contract["context"]["server"]["served_model_name"],
+                    "files": result.stdout.splitlines()}
         self.write("base_model_identity.json", json.dumps(identity, indent=2) + "\n")
         self.checks["base_model_loaded"] = result.returncode == 0 and bool(identity["files"])
         if not self.checks["base_model_loaded"]:
@@ -483,20 +486,44 @@ class DeploymentProofRunner:
 
         model = self.contract["context"]["model"]
         server = self.contract["context"]["server"]
+        report = {"stage": "NOTHING_RAN", "stages_passed": [], "complete": False}
+        self.checks["toy_bringup"] = False
+        failure = None
         try:
+            config_result = self.adapter.exec(
+                self.pod or "", "cat " + shlex.quote(model["path"] + "/config.json"), timeout=120,
+            )
+            if config_result.returncode:
+                raise BringupFailed("NEEDS_HUMAN", "cannot read target config: " + config_result.stderr)
+            real_config = json.loads(config_result.stdout)
+            if not isinstance(real_config, dict) or not real_config:
+                raise BringupFailed("CONTRACT_INVALID", "target config must be a non-empty object")
             report = run_probe(
                 self.adapter, self.pod or "", model["path"], 2, 8,
                 int(server.get("tensor_parallel_size", 1)), 512, 900,
+                runtime=self.runtime,
+                setup=self.contract["execution"].get("commands", {}).get("setup", []),
+                workdir=self.workdir,
             )
+            report["source_config"] = real_config
+            errors = validate_bringup_report(report, {}, real_config)
+            self.checks["toy_bringup"] = report.get("complete") is True and not errors
+            if not self.checks["toy_bringup"]:
+                failure = ActionFailed("BRINGUP_BLOCKED", "; ".join(errors) or str(report.get("error")))
         except BringupFailed as error:
-            raise ActionFailed("BRINGUP_BLOCKED", str(error)) from error
+            failure = ActionFailed(error.state, error.reason)
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError) as error:
+            failure = ActionFailed("NEEDS_HUMAN", f"{type(error).__name__}: {error}")
+        if failure:
+            report["complete"] = False
+            report["gate_failure"] = {"state": failure.state, "reason": failure.reason}
+            if not report.get("error"):
+                report["error"] = {"type": failure.state, "message": failure.reason}
         report.update(brought_up_in=self.pod, model=dict(model))
         self.write("toy_bringup.json", json.dumps(report, indent=2) + "\n")
-        errors = validate_bringup_report(report, {})
-        self.checks["toy_bringup"] = report.get("complete") is True and not errors
         self.record("toy_bringup", self.checks["toy_bringup"], json.dumps(report.get("error")))
-        if not self.checks["toy_bringup"]:
-            raise ActionFailed("BRINGUP_BLOCKED", "; ".join(errors) or str(report.get("error")))
+        if failure:
+            raise failure
 
     def poll_health(self, prefix: str = "") -> None:
         pod = self.pod or ""
@@ -794,7 +821,7 @@ class DeploymentProofRunner:
                 self.checks["pod_ready"] = True
                 self.write("pod_spec.yaml", self.adapter.get("pod", self.pod, output="yaml").stdout)
                 self.record("attach_pod", True, f"imported context: {self.attach_pod}")
-                if self.phase == "environment":
+                if self.phase in ("environment", "all"):
                     # An attached Pod may only have the base image, so
                     # environment proof owns runtime installation. But
                     # reinstalling while a server from an earlier attempt is

@@ -13,6 +13,7 @@ properties:
       - PENDING
       - PLANNED
       - RUNNING
+      - BRINGUP_BLOCKED
       - DEPLOYMENT_READY
       - VALIDATED
       - PASS

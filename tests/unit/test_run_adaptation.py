@@ -105,6 +105,8 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
     ]
     for name in artifact_names:
         (tmp_path / name).write_text("local test fixture: " + name, encoding="utf-8")
+    from tests.scheduler_helpers import write_base_model_identity
+    write_base_model_identity(tmp_path)
     proof.write_text(
         json.dumps(
             {
