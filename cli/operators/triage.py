@@ -47,6 +47,8 @@ def main() -> int:
     try:
         return run(args)
     except ValueError as error:
+        if str(error) != "a pod is required: pass --pod or --env-status":
+            raise
         parser.error(str(error))
 
 
