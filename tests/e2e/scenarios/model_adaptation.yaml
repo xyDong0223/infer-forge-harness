@@ -30,6 +30,14 @@ tiers:
           - test_codex_stale_and_conflicting_decisions_are_rejected
           - test_codex_source_evidence_change_rejects_decision
           - test_codex_recovery_budget_survives_failure_and_restart
+      - test: tests/e2e/test_managed_worker.py
+        cases:
+          - test_managed_worker_three_stage_measured_completion
+          - test_managed_worker_wrong_candidate_is_rejected_without_execution
+          - test_managed_worker_forged_receipt_does_not_promote
+          - test_managed_worker_wrong_numerics_fail_despite_successful_processes
+          - test_managed_worker_crash_after_validation_replays_before_submit
+          - test_managed_worker_dead_coordinator_requires_process_and_receipt_reconciliation
     real_components:
       - cli
       - workflow

@@ -21,12 +21,12 @@
 
 ## Worker 的领取与提交
 
-`STATE` 必须指向已有外部数据库。claim 按阶段领取，当前没有 `--run-id` 过滤参数；worker 必须能处理该数据库对应阶段的任务，并核对返回的 run 和环境身份。
+`STATE` 必须指向已有外部数据库。Agent 使用 `--run-id` 定向领取，可进一步指定 `--task-id`；选择和过期恢复都受同一 scope 约束。核对返回的 run、stage 和环境身份。
 
 ```bash
 STATE="/absolute/path/to/state.sqlite"
 python cli/adaptation.py --state "$STATE" claim \
-  --worker torch-agent-01 --stage torch --limit 1 --lease-seconds 300
+  --run-id "$RUN_ID" --worker torch-agent-01 --stage torch --limit 1 --lease-seconds 300
 ```
 
 从返回任务读取 `task_id`、`lease_token`、`attempt` 和 `input.workspace`，不要自行生成。调查文件放 `scratch/`，正式证据放当前 `output/`；每阶段证据角色、哈希和独立验证要求以 [worker 协议](../docs/migration/worker-results.md)为准。
@@ -43,6 +43,10 @@ python cli/adaptation.py --state "$STATE" complete \
 ```
 
 `--lease-token=...` 的等号避免把以 `-` 开头的 token 误当成选项。失败用 `fail` 保存原始错误，不提交空 PASS；证据校验失败也会进入持久化诊断。
+
+显式 `managed-v2` 新 run 另用 `freeze-candidate`、`validate-worker` 产生验证凭据，
+`execution-status`、`reconcile-execution` 和 `reconcile-validation` 处理本地执行恢复。
+完整参数及尚未支持的真实 Pod/device 边界见 [受管 worker 协议](../docs/migration/managed-worker.zh-CN.md)。
 
 ## 诊断后的恢复
 
@@ -90,8 +94,8 @@ python cli/adaptation.py --state "$STATE" status --run-id "$RUN_ID" --format tex
 | `COMPLETED` | Graph 已记录最终功能/模拟交付，或某个任务已完成；查看 location 和原始状态 |
 
 `WORKER_UNCLAIMED` 只表示任务未被领取。当前没有 worker 可用性注册表，不能
-据此断言没有配置 worker。提示里的 `claim` 命令仍按数据库和 stage 领取，
-没有 run 过滤；执行者必须核对返回的任务身份。命令只作为建议显示，不会自动执行。
+据此断言没有配置 worker。提示里的 `claim` 命令带 run/task scope，
+执行者仍须核对返回身份。命令只作为建议显示，不会自动执行。
 
 Scheduler 模式下，Graph 将最近一条说明存入 run 的 `metadata.graph_progress`
 和事件历史。新进程查询时会结合当前队列重新计算算子等待、租约和诊断状态；

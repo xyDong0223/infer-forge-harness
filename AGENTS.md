@@ -101,6 +101,13 @@ durable diagnosis protocol below. Never replay an accepted decision whose
 execution has no completion receipt. P1 does not provide Pod resource locks or
 replace the required independent execution of validation.
 
+For explicit `worker_protocol: managed-v2` runs, read the
+[managed worker protocol](docs/migration/managed-worker.zh-CN.md): freeze the
+candidate, execute the fixed validation Runner, then submit its persisted result.
+Inspect/reconcile known local executions before recovering interrupted work.
+The current P2 increment supports local supervision and simulation, not the
+trusted real Pod/device drivers; unsupported real execution must remain blocked.
+
 ### Source ownership
 
 Put host-side argument parsing and command entry points under `cli/`. Implement

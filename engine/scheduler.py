@@ -237,6 +237,8 @@ class TaskScheduler:
         mode = run.metadata.get("evidence_mode", "real")
         if mode not in ("real", "simulation"):
             raise ValueError("evidence_mode must be real or simulation")
+        if run.metadata.get("worker_protocol") not in (None, "legacy-v1", "managed-v2"):
+            raise ValueError("worker_protocol must be legacy-v1 or managed-v2")
         if mode == "real":
             run.metadata["environment_required"] = True
             run.status = "WAITING_FOR_ENVIRONMENT"
@@ -264,6 +266,12 @@ class TaskScheduler:
         run = self.store.run(run_id)
         if run is None:
             raise KeyError(f"unknown run: {run_id}")
+        resource_identity = None
+        if run.metadata.get("worker_protocol") == "managed-v2":
+            from .execution import canonical_resource
+            resource_identity = canonical_resource(proof.get("resource_identity"))
+            if resource_identity is None:
+                raise ValueError("managed-v2 environment proof requires cluster, namespace, and pod_uid resource_identity")
         mode = proof.get("evidence_mode", "real")
         if mode not in {"real", "simulation"}:
             raise ValueError("environment proof evidence_mode must be real or simulation")
@@ -342,6 +350,10 @@ class TaskScheduler:
         previous = run.environment.get("environment_proof", {}).get("fingerprint")
         if previous and previous != fingerprint and self.store.tasks(run_id):
             raise ValueError("environment changed after discovery; existing tasks cannot inherit a new proof")
+        old_resource = run.environment.get("environment_proof", {}).get("resource_identity")
+        if (resource_identity is not None and old_resource is not None
+                and old_resource != resource_identity and self.store.tasks(run_id)):
+            raise ValueError("environment resource identity changed after discovery")
         run.environment = {
             **run.environment,
             "environment_proof": {
@@ -353,6 +365,7 @@ class TaskScheduler:
                 "artifact_root": str(root),
                 "evidence_sha256": evidence_hashes,
                 "evidence_mode": mode,
+                **({"resource_identity": resource_identity} if resource_identity is not None else {}),
             },
         }
         run.status = "ENVIRONMENT_READY"
@@ -395,6 +408,34 @@ class TaskScheduler:
             self.store.update_run(run)
             self._emit(run_id, key, dict(payload))
         return run
+
+    @atomic_transition
+    def record_managed_transition(self, run_id: str, key: str, payload: dict[str, Any]) -> AdaptationRun:
+        """Persist trusted candidate/validation coordination, not worker assertions."""
+        if key not in {"managed_candidates", "managed_validations"}:
+            raise ValueError(f"unsupported managed transition: {key}")
+        run = self.store.run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        if run.metadata.get(key) != payload:
+            run.metadata[key] = dict(payload)
+            self.store.update_run(run)
+            self._emit(run_id, key, dict(payload))
+        return run
+
+    def has_active_execution(self, task_id: str) -> bool:
+        """Lease expiry cannot release an executing or uncertain managed action."""
+        from .execution import has_active_task_execution
+
+        if has_active_task_execution(self.store, task_id):
+            return True
+        task = self.store.get_task(task_id)
+        if task is None:
+            return False
+        run = self.store.run(task.run_id)
+        return any(record.get("identity", {}).get("task_id") == task_id
+                   and record.get("state") == "executing"
+                   for record in run.metadata.get("managed_validations", {}).values())
 
     @atomic_transition
     def discover_operator(self, run_id: str, spec: OperatorSpec) -> OperatorTask:
@@ -463,17 +504,24 @@ class TaskScheduler:
         claimed: list[OperatorTask] = []
         claim_events: list[tuple[str, str, dict[str, Any], str]] = []
         db = self.store.db
-        db.execute(
-            "UPDATE tasks SET status='pending', lease_token=NULL, lease_worker=NULL, "
-            "lease_expires=NULL, updated_at=? WHERE status='running' AND lease_expires <= ?" + scope,
-            (now, now, *scope_args),
-        )
+        expired = db.execute(
+            "SELECT task_id FROM tasks WHERE status='running' AND lease_expires <= ?" + scope,
+            (now, *scope_args),
+        ).fetchall()
+        for item in expired:
+            if not self.has_active_execution(item["task_id"]):
+                db.execute(
+                    "UPDATE tasks SET status='pending', lease_token=NULL, lease_worker=NULL, "
+                    "lease_expires=NULL, updated_at=? WHERE task_id=?",
+                    (now, item["task_id"]),
+                )
         candidates = db.execute(
             "SELECT * FROM tasks WHERE status='pending'" + scope + " ORDER BY created_at",
             tuple(scope_args),
         ).fetchall()
         for row in candidates:
-            if len(claimed) >= limit or not self._deps_succeeded(row["run_id"], row["operator_key"], row["stage"]):
+            if (len(claimed) >= limit or self.has_active_execution(row["task_id"])
+                    or not self._deps_succeeded(row["run_id"], row["operator_key"], row["stage"])):
                 continue
             token = secrets.token_urlsafe(18)
             cur = db.execute("UPDATE tasks SET status='running',attempt=attempt+1,lease_token=?,lease_worker=?,lease_expires=?,updated_at=? WHERE task_id=? AND status='pending'", (token, worker_id, now + lease_seconds, now, row["task_id"]))
@@ -525,6 +573,17 @@ class TaskScheduler:
                 return False
         if stage == "torch":
             return True
+        if run.metadata.get("worker_protocol") == "managed-v2":
+            for previous in _STAGES[:_STAGES.index(stage)]:
+                predecessor = self.store.get_task(f"{run_id}:{key}:{previous}")
+                if predecessor is None or predecessor.status != "succeeded":
+                    return False
+                submission = predecessor.output.get("_submission", {})
+                controller = submission.get("worker")
+                if (not controller or submission.get("attempt") != predecessor.attempt
+                        or validate_result(predecessor, run, predecessor.output, controller)):
+                    return False
+            return True
         prev = _STAGES[_STAGES.index(stage) - 1]
         row = self.store.db.execute("SELECT status FROM tasks WHERE run_id=? AND operator_key=? AND stage=?", (run_id, key, prev)).fetchone()
         return bool(row and row["status"] == "succeeded")
@@ -566,6 +625,8 @@ class TaskScheduler:
         if not task:
             raise KeyError(task_id)
         row = self._owned_lease(task_id, worker_id, lease_token)
+        if self.has_active_execution(task_id):
+            raise ValueError("cannot complete a task with active or uncertain execution")
         worker_id, lease_token = row["lease_worker"], row["lease_token"]
         output = {} if result is None else result
         if not isinstance(output, dict):
@@ -584,7 +645,9 @@ class TaskScheduler:
                        "validation_errors": errors},
             )
         self._owned_lease(task_id, worker_id, lease_token)
-        output = {**output, "_submission": {"worker": worker_id, "attempt": task.attempt}}
+        from .managed_validation import managed_result_binding
+        binding = managed_result_binding(self.store.run(task.run_id), output)
+        output = {**output, "_submission": {"worker": worker_id, "attempt": task.attempt, **binding}}
         try:
             self._record_attempt(task, output, "PASS")
         except (OSError, WritePolicyError) as exc:
@@ -641,6 +704,8 @@ class TaskScheduler:
         if not task:
             raise KeyError(task_id)
         self._owned_lease(task_id, worker_id, lease_token)
+        if self.has_active_execution(task_id):
+            raise ValueError("cannot fail a task with active or uncertain execution")
         report = BugReport.from_error(task_id, error)
         # Attach the failed task's execution contract when the runner did not
         # provide context itself.  This gives diagnosis workers enough detail
@@ -791,8 +856,19 @@ class TaskScheduler:
     def recover(self, force: bool = False) -> int:
         clause = "1=1" if force else "lease_expires <= ?"
         args: tuple[Any, ...] = () if force else (time.time(),)
-        cur = self.store.db.execute(f"UPDATE tasks SET status='pending',lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? WHERE status='running' AND {clause}", (time.time(), *args))
-        return cur.rowcount
+        rows = self.store.db.execute(
+            f"SELECT task_id FROM tasks WHERE status='running' AND {clause}", args,
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            if self.has_active_execution(row["task_id"]):
+                continue
+            cur = self.store.db.execute(
+                "UPDATE tasks SET status='pending',lease_token=NULL,lease_worker=NULL,lease_expires=NULL,updated_at=? WHERE task_id=?",
+                (time.time(), row["task_id"]),
+            )
+            recovered += cur.rowcount
+        return recovered
 
     @atomic_transition
     def reconcile(self, run_id: str) -> dict[str, Any]:

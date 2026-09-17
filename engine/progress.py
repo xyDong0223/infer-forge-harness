@@ -234,6 +234,42 @@ def run_progress(store, run_id, *, graph=None, now=None):
     def result(view):
         return {"progress": view, "task_progress": task_views}
 
+    from .execution import list_executions
+    active_executions = list_executions(store, run_id, active_only=True)
+    if active_executions:
+        unknown = any(item.get("state") in {"STARTING", "UNKNOWN"} for item in active_executions)
+        execution_view = explanation(
+            "BLOCKED" if unknown else "RUNNING", "executions",
+            "EXECUTION_UNCERTAIN" if unknown else "EXECUTION_ACTIVE",
+            "An execution still owns its task/resource; lease expiry does not prove termination.",
+            "main_agent", "INSPECT_EXECUTION",
+            "Inspect execution records and logs. Reconcile known local process identity before reclaiming; "
+            "never force unlock a Pod or rerun an unknown execution.",
+            command=adaptation_command(store.path, "execution-status", "--run-id", run_id, "--active-only"),
+            evidence=[item.get("log_path") for item in active_executions], observed_at=now,
+            execution_ids=[item["execution_id"] for item in active_executions])
+        busy = {item.get("task_id") for item in active_executions}
+        task_views[:] = [({**execution_view, "location": view["location"]}
+                         if view["location"] in busy else view) for view in task_views]
+        return result(execution_view)
+
+    validations = [item for item in run.metadata.get("managed_validations", {}).values()
+                   if item.get("state") == "executing"]
+    if validations:
+        view = explanation(
+            "BLOCKED", "validation", "VALIDATION_COORDINATOR_UNCERTAIN",
+            "A validation coordinator has no final receipt; do not repeat its probes.",
+            "main_agent", "RECONCILE_VALIDATION",
+            "Inspect the recorded controller and child executions. Reconcile confirmed dead local "
+            "controllers only after all child executions are known to have terminated.",
+            command=adaptation_command(store.path, "reconcile-validation", "--run-id", run_id,
+                                       "--validation-id", validations[0]["validation_id"]),
+            observed_at=now, validation_ids=[item["validation_id"] for item in validations])
+        busy = {item.get("identity", {}).get("task_id") for item in validations}
+        task_views[:] = [({**view, "location": item["location"]}
+                         if item["location"] in busy else item) for item in task_views]
+        return result(view)
+
     handoff = active_graph_handoff(run)
     if handoff:
         pending = handoff["state"] == "pending"

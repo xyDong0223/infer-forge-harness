@@ -104,6 +104,8 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--environment", type=Path)
     create.add_argument("--metadata", type=Path)
     create.add_argument("--artifact-root", type=Path, help="External run directory")
+    create.add_argument("--worker-protocol", choices=("managed-v2",),
+                        help="Require frozen candidates and runner-owned validation receipts")
 
     environment = sub.add_parser(
         "environment",
@@ -193,6 +195,37 @@ def _parser() -> argparse.ArgumentParser:
     renew.add_argument("--worker", required=True)
     renew.add_argument("--lease-token", required=True)
     renew.add_argument("--lease-seconds", type=float, default=300.0)
+
+    freeze = sub.add_parser("freeze-candidate", help="bind a producer's immutable attempt-local candidate")
+    validate = sub.add_parser("validate-worker", help="execute independent measurements for a frozen candidate")
+    execute = sub.add_parser("execute-worker", help="supervise one local task process with durable identity")
+    for command in (freeze, validate, execute):
+        command.add_argument("--task-id", required=True)
+        command.add_argument("--worker", required=True, help="current lease-owning controller")
+        command.add_argument("--lease-token", required=True)
+    freeze.add_argument("--producer", required=True)
+    freeze.add_argument("--candidate-root", type=Path, required=True)
+    freeze.add_argument("--base-revision", required=True)
+    validate.add_argument("--validator", required=True)
+    validate.add_argument("--candidate-id", required=True)
+    validate.add_argument("--validation-id", required=True)
+    validate.add_argument("--evidence", type=Path, required=True)
+    validate.add_argument("--timeout", type=float, default=300)
+    execute.add_argument("--execution-id", required=True)
+    execute.add_argument("--cwd", type=Path, required=True)
+    execute.add_argument("--output-dir", type=Path, required=True)
+    execute.add_argument("--resource", type=Path, help="JSON stable cluster/namespace/pod_uid identity")
+    execute.add_argument("--timeout", type=float, default=300)
+    execute.add_argument("argv", nargs=argparse.REMAINDER)
+    executions = sub.add_parser("execution-status", help="read durable execution records without recovery")
+    executions.add_argument("--run-id", required=True)
+    executions.add_argument("--active-only", action="store_true")
+    observe = sub.add_parser("reconcile-execution", help="observe a local process group; never force unlock")
+    observe.add_argument("--run-id", required=True)
+    observe.add_argument("--execution-id", required=True)
+    validation_recovery = sub.add_parser("reconcile-validation", help="close a dead local validation coordinator without replay")
+    validation_recovery.add_argument("--run-id", required=True)
+    validation_recovery.add_argument("--validation-id", required=True)
     return parser
 
 
@@ -211,6 +244,8 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
 
     if args.command in {"create", "create-run"}:
         metadata = _json_file(args.metadata, field="metadata")
+        if args.worker_protocol:
+            metadata["worker_protocol"] = args.worker_protocol
         metadata.setdefault("environment_required", True)
         artifact_root = args.artifact_root or metadata.get("artifact_root")
         explicit_root = artifact_root is not None
@@ -219,6 +254,8 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         metadata["artifact_root"] = str(ensure_external(artifact_root))
         existing = scheduler.store.run(args.run_id)
         if existing is not None:
+            if args.worker_protocol and existing.metadata.get("worker_protocol") != args.worker_protocol:
+                raise ValueError("cannot retroactively change an existing run's worker protocol")
             saved_root = existing.metadata.get("artifact_root")
             if explicit_root and saved_root and (
                 ensure_external(saved_root) != ensure_external(artifact_root)
@@ -247,6 +284,8 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
             existing = scheduler.store.run(args.run_id)
             if existing is None:
                 raise ValueError(f"unknown run: {args.run_id}")
+            from runners.managed_boundary import require_supported_runtime
+            require_supported_runtime(existing)
             artifact_root = args.artifact_dir or existing.metadata.get("artifact_root")
             if artifact_root is not None:
                 artifact_root = ensure_external(artifact_root)
@@ -361,6 +400,53 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         )
         return {"command": "renew-lease", "task": task.to_dict()}
 
+    if args.command == "freeze-candidate":
+        from engine.managed_validation import freeze_candidate
+        return {"command": args.command, "candidate": freeze_candidate(
+            scheduler, args.task_id, args.worker, args.lease_token, args.producer,
+            args.candidate_root, args.base_revision)}
+
+    if args.command == "validate-worker":
+        from runners.worker_validation import validate_worker
+        return {"command": args.command, **validate_worker(
+            scheduler, args.task_id, args.worker, args.lease_token, args.validator,
+            args.candidate_id, args.validation_id,
+            _json_file(ensure_external(args.evidence), field="evidence"), timeout=args.timeout)}
+
+    if args.command == "execute-worker":
+        from runners.managed_execution import execute_managed
+        task = scheduler.store.get_task(args.task_id)
+        if task is None:
+            raise ValueError(f"unknown task: {args.task_id}")
+        command = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+        record = execute_managed(
+            scheduler, task.run_id, args.execution_id, command, cwd=args.cwd,
+            output_dir=args.output_dir, task_id=args.task_id, worker=args.worker,
+            lease_token=args.lease_token,
+            resource=None if args.resource is None else _json_file(args.resource, field="resource"),
+            timeout=args.timeout)
+        return {"command": args.command, "execution": record,
+                "blocked": record["state"] != "SUCCEEDED"}
+
+    if args.command == "execution-status":
+        from engine.execution import list_executions
+        if scheduler.store.run(args.run_id) is None:
+            raise ValueError(f"unknown run: {args.run_id}")
+        return {"command": args.command, "run_id": args.run_id,
+                "executions": list_executions(scheduler.store, args.run_id, active_only=args.active_only)}
+
+    if args.command == "reconcile-execution":
+        from runners.managed_execution import reconcile_local_execution
+        record = reconcile_local_execution(scheduler, args.run_id, args.execution_id)
+        return {"command": args.command, "execution": record,
+                "blocked": record["state"] not in {"SUCCEEDED", "FAILED"}}
+
+    if args.command == "reconcile-validation":
+        from runners.validation_recovery import reconcile_local_validation
+        receipt = reconcile_local_validation(scheduler, args.run_id, args.validation_id)
+        return {"command": args.command, "receipt": receipt,
+                "blocked": receipt["state"] == "executing"}
+
     if args.command == "context":
         return {"command": "context", **run_context(scheduler.store, args.run_id, args.task_id)}
 
@@ -390,11 +476,15 @@ def main(argv: list[str] | None = None) -> int:
     store = None
     try:
         # Observations never create/migrate a DB, allocate attempts, or recover leases.
-        readonly = args.command in {"status", "context"}
-        if args.command in {"advance", "submit-decision"}:
+        readonly = args.command in {"status", "context", "execution-status"}
+        if args.command in {"advance", "submit-decision", "reconcile-execution", "reconcile-validation",
+                            "freeze-candidate", "validate-worker", "execute-worker"}:
             probe = EventStore(args.state, readonly=True)
             try:
-                if probe.run(args.run_id) is None:
+                if getattr(args, "task_id", None):
+                    if probe.get_task(args.task_id) is None:
+                        raise ValueError(f"unknown task: {args.task_id}")
+                elif probe.run(args.run_id) is None:
                     raise ValueError(f"unknown run: {args.run_id}")
             finally:
                 probe.close()

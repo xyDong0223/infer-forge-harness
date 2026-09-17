@@ -434,6 +434,7 @@ openwiki/      上游、插件和项目工程经验参考
 | [`tests/e2e/README.md`](tests/e2e/README.md) | 本地必选场景、真实设备 Smoke、真实模型回归及新增能力模板 |
 | [`docs/migration/runtime-write-policy.zh-CN.md`](docs/migration/runtime-write-policy.zh-CN.md) | 外部 run root、attempt、manifest 和写入约束 |
 | [`docs/migration/worker-results.md`](docs/migration/worker-results.md) | worker 结果 envelope、租约和证据要求 |
+| [`docs/migration/managed-worker.zh-CN.md`](docs/migration/managed-worker.zh-CN.md) | P2 本地受管候选验证、进程恢复及设备侧待接入边界 |
 | [`docs/guides/performance-analysis.md`](docs/guides/performance-analysis.md) | 性能阶段边界和指标解释 |
 | [`openwiki/harness/`](openwiki/harness/) | 已沉淀的模型适配、运行时漂移和算子接入经验 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 修改边界、场景要求和提交规范 |

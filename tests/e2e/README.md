@@ -65,6 +65,16 @@ same-ID replay without new execution, stale evidence, durable budget exhaustion,
 and final simulated delivery. Additional test modules are registered through
 the scenario's `local.additional_tests` entries.
 
+P2 cases in `test_managed_worker.py` exercise the worker subflow through the
+production CLI: immutable candidates, three independent managed probes, explicit
+numerical thresholds and a discriminating negative control, measured simulated
+dispatch and loopback HTTP, rejection of forged receipts, and restart both before
+submission and after killing a validation coordinator. Recovery first proves the
+child process group terminated, then closes the orphan receipt; lease expiry alone
+does not unlock a new attempt. These cases do not run the complete model-delivery
+graph or prove real XPU/model-service readiness. The builtin real XPU/integration
+driver is deliberately unsupported and returns `BLOCKED`.
+
 The environment-input case starts without a seed YAML, checks the generated
 contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
 missing-input rejection against the shared status schema before cluster access,

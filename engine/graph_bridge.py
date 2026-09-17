@@ -18,6 +18,7 @@ from validators.operator_lifecycle_validator import validate_dispatch, validate_
 
 from .discovery import operator_specs_from_report
 from .result_validation import validate_result
+from .managed_validation import managed_result_binding
 from .scheduler import EventStore, TaskScheduler
 
 
@@ -446,6 +447,8 @@ class GraphSchedulerBridge:
                     "stage": task.stage, "status": task.status, "attempt": task.attempt,
                     "evidence_sha256": task.output.get("evidence_sha256", {}),
                     "submission": task.output.get("_submission", {}),
+                    **({"managed_validation": binding} if
+                       (binding := managed_result_binding(run, task.output)) else {}),
                 }
                 for task in sorted(tasks, key=lambda task: task.task_id)
             ],

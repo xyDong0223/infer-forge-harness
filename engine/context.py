@@ -9,6 +9,7 @@ from core.paths import REPO_ROOT
 from .progress import run_progress
 from .result_validation import STAGE_EVIDENCE
 from .interaction import active_graph_handoff
+from .managed_validation import requires_managed_validation
 
 
 def resource_reference(path: Path) -> dict:
@@ -54,6 +55,8 @@ def task_packet(store, run, task) -> dict:
         "operator_spec": spec.to_dict() if spec is not None else None,
         "upstream_tasks": upstream,
         "acceptance": {
+            "worker_protocol": run.metadata.get("worker_protocol", "legacy-v1"),
+            "managed_validation_required": requires_managed_validation(run, task),
             "required_evidence": list(STAGE_EVIDENCE[task.stage]),
             "result_identity": {
                 "task_id": task.task_id, "operator_key": task.operator_key,
@@ -65,6 +68,17 @@ def task_packet(store, run, task) -> dict:
             "validator": resource_reference(REPO_ROOT / "engine/result_validation.py"),
             "output_directory": task.input.get("workspace", {}).get("output"),
         },
+        "managed_candidates": [
+            value for value in run.metadata.get("managed_candidates", {}).values()
+            if value.get("identity", {}).get("task_id") == task.task_id
+            and value.get("identity", {}).get("attempt") == task.attempt
+        ],
+        "managed_validations": [
+            {key: value for key, value in record.items() if key != "lease_token_sha256"}
+            for record in run.metadata.get("managed_validations", {}).values()
+            if record.get("identity", {}).get("task_id") == task.task_id
+            and record.get("identity", {}).get("attempt") == task.attempt
+        ],
         "guidance": {
             "agent_protocol": resource_reference(REPO_ROOT / "AGENTS.md"),
             "worker_results": resource_reference(REPO_ROOT / "docs/migration/worker-results.md"),

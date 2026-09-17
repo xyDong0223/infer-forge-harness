@@ -1402,6 +1402,8 @@ def execute_graph_decision(args, handoff: dict, decision, scheduler) -> dict:
         environment, execute=True,
     )
     try:
+        from runners.managed_boundary import require_supported_runtime
+        require_supported_runtime(bridge.run)
         bound = bridge.run.environment.get("environment_proof")
         failed = bridge.run.environment.get("failed_environment_proof", {})
         pod = (bound or failed).get("pod")
@@ -1626,6 +1628,8 @@ def _run(args, resources: ExitStack) -> int:
         )
         resources.callback(bridge.close)
         if args.execute:
+            from runners.managed_boundary import require_supported_runtime
+            require_supported_runtime(bridge.run)
             _progress_context.get()["scheduler"] = bridge.scheduler
             from engine.interaction import current_graph_handoff
             handoff = current_graph_handoff(bridge.scheduler, args.run_id)

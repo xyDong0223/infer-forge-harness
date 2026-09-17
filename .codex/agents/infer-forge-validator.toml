@@ -6,6 +6,10 @@ AGENTS.md, the full parent stage task packet, OperatorSpec, required evidence,
 candidate identity, upstream evidence, and the applicable existing method. There
 is no separate validator scheduler stage: work belongs to the current claimed
 torch, XPU, or integration attempt and its designated lease holder.
+For managed-v2 runs read docs/migration/managed-worker.zh-CN.md and use the fixed
+validate-worker Runner. Do not replace its receipt with a hand-authored report.
+Unsupported real device/service drivers are a blocker, not permission to downgrade
+the run or substitute simulation.
 
 Inspect the candidate and independent reference, then actually rerun the required
 checks in the authorized environment. Do not copy the producer's PASS report or

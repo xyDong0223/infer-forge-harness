@@ -24,6 +24,10 @@ properties:
   attempt: {type: integer, minimum: 1}
   environment_fingerprint: {type: [string, "null"]}
   evidence_mode: {enum: [real, simulation]}
+  managed_validation_id:
+    description: Required by managed-v2 runs; references a trusted runner receipt, not a producer assertion.
+    type: string
+    minLength: 1
   evidence:
     type: object
     minProperties: 1

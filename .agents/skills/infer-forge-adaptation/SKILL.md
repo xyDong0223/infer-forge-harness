@@ -36,7 +36,9 @@ old resource names. Keep simulation evidence separate from real readiness.
 ## Advance to a meaningful boundary
 
 Use `advance --run-id RUN` with the same state database after checking its saved
-configuration. Consume the returned boundary and referenced artifacts rather
+configuration and resolving any uncertain execution/validation boundary below.
+Independent eligible worker tasks may still proceed on disjoint resources.
+Consume the returned boundary and referenced artifacts rather
 than repeatedly issuing the command:
 
 - Missing inputs or a blocked outcome: report the exact missing input/evidence
@@ -64,11 +66,17 @@ Use the project roles `infer-forge-implementer`, `infer-forge-diagnoser`, and
 They inherit the user's model and permissions. Do not create a role for every
 graph node or assume that a subagent has a separate worktree.
 
-Before an assignment, read `context --run-id RUN --task-id TASK`. Claim with both
+Before an assignment, read `context --run-id RUN --task-id TASK`. For
+`worker_protocol: managed-v2`, read the [managed worker protocol](../../../docs/migration/managed-worker.zh-CN.md)
+before freezing, validating, or recovering. Its real Pod/device drivers are not
+yet supported: that is a blocker, not permission to downgrade the protocol.
+
+Claim with both
 `--run-id RUN --task-id TASK`, the matching stage, and a worker identity that
-identifies the actual producer. A main controller submitting on behalf of that
-producer must retain that same worker identity; do not relabel the producer as
-the controller. Explicitly name the lease holder and who renews/submits. Only the
+identifies the actual lease holder. For legacy results preserve the producer's
+original worker identity when submitting on their behalf. Managed runs separately
+record controller, producer, and validator; do not relabel one as another.
+Explicitly name who renews/submits. Only the
 current claim token authorizes submission; the frozen `input/task.json` does not
 contain it. Keep the token with the designated holder.
 
@@ -86,6 +94,8 @@ reference, recording commands, candidate identity, environment, logs, and result
 in its assigned current-attempt output directory. A different validator name or
 another conversation is not evidence of independent testing. Do not invent a
 validator scheduler stage: validation is part of the claimed stage's result.
+Managed-v2 uses `freeze-candidate` and `validate-worker`; only the persisted Runner
+receipt supports `complete`. Do not author a substitute PASS receipt.
 
 Use the existing `complete`, `fail`, and diagnosis commands with the current
 lease. Consume persisted results and evidence, not only child summaries. On a
@@ -98,14 +108,19 @@ One controller owns a run. Independent source work and CPU investigations may
 proceed in parallel when write paths are disjoint. The controller must serialize
 shared Pod changes, candidate installation, device tests, toy probes, and service
 regression. Multiple task leases do not grant concurrent Pod mutation rights.
-P1 does not provide automatic Pod resource locks, managed execution cancellation,
-or the P2 independent-validation execution gate.
+Legacy/P1 execution has no automatic resource/process guarantees. Managed-v2
+adds same-database occupancy and local execution supervision, not a sandbox or a
+complete remote Pod driver. Read the supported boundary before using it.
 
 Before re-claiming after interruption, inspect accepted results and whether the
 old local/remote execution is still running. Lease expiry is not process death.
 If execution ownership is uncertain, retain the Pod and evidence and stop new
-mutations until resolved. Re-claims use fresh attempts; never overwrite an older
+mutations to the affected task/attempt and shared resource until resolved. This
+does not stop independent eligible source/CPU tasks on disjoint paths/resources.
+Re-claims use fresh attempts; never overwrite an older
 attempt or recreate the proven Pod simply to retry.
+For managed runs inspect `execution-status`; `reconcile-execution` only confirms
+known local process-group absence, never force-unlocks unknown remote work.
 
 Report the run/task IDs, actual verdict, durable evidence paths, and next action.
 Keep `SIMULATION_PASS` explicitly distinct from hardware readiness.

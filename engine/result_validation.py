@@ -28,7 +28,7 @@ NEXT_ACTIONS = {
 }
 
 
-def validate_result(
+def _validate_legacy_result(
     task: OperatorTask | DiagnosticTask,
     run: AdaptationRun,
     result: dict[str, Any],
@@ -145,4 +145,20 @@ def validate_result(
         expected_hashes = {key: hashes.get(key) for key in evidence if key != report_key}
         if report.get("evidence_sha256") != expected_hashes:
             errors.append("validation report does not bind the submitted evidence hashes")
+    return errors
+
+
+def validate_result(task, run, result: dict[str, Any], worker: str) -> list[str]:
+    """Apply the recorded run protocol; uploaded reports cannot enable v2 trust."""
+    from .managed_validation import requires_managed_validation, validate_managed_result
+
+    producer = worker
+    if requires_managed_validation(run, task):
+        validation_id = result.get("managed_validation_id")
+        receipt = (run.metadata.get("managed_validations", {}).get(validation_id)
+                   if isinstance(validation_id, str) else None)
+        if receipt:
+            producer = receipt.get("producer", worker)
+    errors = _validate_legacy_result(task, run, result, producer)
+    errors.extend(validate_managed_result(task, run, result, worker))
     return errors

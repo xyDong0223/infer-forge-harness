@@ -4,6 +4,12 @@ This migration makes scheduler gates enforce the existing evidence protocol.
 Old success-shaped result dictionaries are intentionally no longer sufficient.
 Existing run and task rows remain readable; no state database rewrite is needed.
 
+New runs can explicitly select `worker_protocol: managed-v2`; its frozen candidates,
+runner-owned execution receipts and supported rollout boundary are specified in
+[the managed worker protocol](managed-worker.zh-CN.md). The schema-1 envelope
+remains, with `managed_validation_id` required by that run policy. Historical
+results are not retroactively treated as independently measured managed results.
+
 ## Claims and leases
 
 Agent assignments should use the scoped public entry point:
