@@ -17,7 +17,7 @@ from tests.unit.test_preflight_gates import BRINGUP
 from operations.deployment.toy_bringup import BringupFailed
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACT = ROOT / 'tasks/kdp-001-deployment-proof/instances/qwen3-8b-p800.yaml'
+CONTRACT = ROOT / 'tests/fixtures/deployment-proof.yaml'
 
 
 def runner(tmp_path, phase='service'):
@@ -231,10 +231,8 @@ def test_environment_states_are_declared_by_shared_status_schema(state):
 
 
 def test_environment_contracts_declare_drift_rejection():
-    # Both the environment task and standalone environment instances execute
-    # the same read-only runtime drift gate before baseline model loading.
+    # Generated environments inherit the Task's read-only runtime drift gate.
     paths = list((ROOT / 'tasks/kdp-001a-environment-proof').rglob('*.yaml'))
-    paths += list((ROOT / 'tasks/kdp-001-deployment-proof/instances').glob('*.yaml'))
     environment_contracts = []
     for path in paths:
         contract = yaml.safe_load(path.read_text())
@@ -244,3 +242,10 @@ def test_environment_contracts_declare_drift_rejection():
         assert contract['exit_states']['pass'] == 'ENVIRONMENT_READY', path
         assert 'RUNTIME_DRIFT' in contract['exit_states'].values(), path
     assert environment_contracts
+
+
+def test_generated_environment_contract_declares_drift_rejection():
+    from operations.deployment.environment_contract import build_environment_contract
+    contract = build_environment_contract('fixture')
+    assert 'RUNTIME_DRIFT' in contract['exit_states'].values()
+    assert 'base_model_identity' in contract['artifacts']['collect']

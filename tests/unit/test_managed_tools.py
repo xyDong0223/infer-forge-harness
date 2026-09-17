@@ -2,6 +2,9 @@
 
 import argparse
 import json
+import os
+import re
+import shlex
 from pathlib import Path
 import runpy
 import subprocess
@@ -288,6 +291,17 @@ def test_executor_entrypoints_reject_source_output_before_cluster_access(runner)
     assert not (REPO_ROOT / "forbidden-runtime-output").exists()
 
 
+def test_triage_entrypoint_reports_missing_pod_without_traceback(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / EXECUTOR_COMMANDS["triage_executor"]),
+         "--out", str(tmp_path / "triage")],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "a pod is required: pass --pod or --env-status" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def deployment_report():
     return {
         "subject": "org/model", "hardware": "P800",
@@ -331,3 +345,29 @@ def test_generated_contract_preserves_supplied_owner(runtime, monkeypatch):
     ))
     assert rendered["execution"]["user_id"] == "team-member"
     assert rendered["execution"]["resource_name"].startswith("team-member-kdp001-")
+
+
+def test_generated_serve_preserves_shell_sensitive_model_arguments(runtime):
+    marker = runtime / "unexpected-shell-execution"
+    subject = f"Org/Model name'; touch {marker}; # $(touch {marker})"
+    source = f"/models/a path/quote' and $(touch {marker})"
+    report = {**deployment_report(), "subject": subject}
+    contract = yaml.safe_load(render_instance(report, {"model": {"source": source}},
+                                             runtime / "service", user_id="fixture"))
+    command = contract["execution"]["commands"]["serve"][0]
+    argv = shlex.split(command)
+    assert argv[argv.index("--model") + 1] == source
+    assert argv[argv.index("--served-model-name") + 1] == subject
+    assert re.fullmatch(r"[a-z0-9.-]+", contract["execution"]["resource_name"])
+    assert re.fullmatch(r"/workspace/server_[a-z0-9.-]+\.log", contract["execution"]["server_log"])
+    # Run the generated shell command against a recording executable; the
+    # shell must pass the original arguments and never interpret their contents.
+    bindir = runtime / "bin"
+    bindir.mkdir()
+    recorder = bindir / "python"
+    recorder.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    recorder.chmod(0o755)
+    result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True,
+                            env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}, check=True)
+    assert json.loads(result.stdout) == argv[1:]
+    assert not marker.exists()

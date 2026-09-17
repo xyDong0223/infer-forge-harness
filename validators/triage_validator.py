@@ -17,6 +17,37 @@ Qwen3-8B on P800 is the second case, which is why it exists as a verdict.
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import json
+from pathlib import Path
+
+
+def validate_failure_evidence(report: dict, root: Path) -> list[str]:
+    """An unclassified failure is a diagnosis handoff, never TRIAGE_READY."""
+    errors = []
+    source = report.get("source_status")
+    state = source.get("state", source.get("status")) if isinstance(source, dict) else None
+    if not isinstance(state, str) or not state or state.endswith(("_READY", "_PASS")) or state == "PASS":
+        errors.append("source_status must contain a failed task state")
+    if report.get("state") != "NEEDS_HUMAN" or report.get("verdict") != "UNKNOWN":
+        errors.append("unclassified failure must remain NEEDS_HUMAN/UNKNOWN")
+    if report.get("next_action") != "DIAGNOSE_TASK":
+        errors.append("unclassified failure requires task diagnosis")
+    entries = report.get("evidence") or []
+    if not entries:
+        errors.append("failure evidence is required")
+    for entry in entries:
+        path = (root / entry["path"]).resolve()
+        if root.resolve() not in path.parents or not path.is_file():
+            errors.append("failure evidence must be a file in the current output")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != entry.get("sha256"):
+            errors.append("failure evidence hash mismatch")
+    try:
+        if json.loads((root / "failure_evidence/source_status.json").read_text()) != source:
+            errors.append("source status snapshot does not match the report")
+    except (ValueError, OSError):
+        errors.append("source status snapshot is required")
+    return errors
 
 LAYERS = {"vllm_upstream", "vllm_kunlun_plugin", "kunlun_ops_vendor", "torch_xmlir_vendor"}
 OWNED_LAYERS = {"vllm_upstream", "vllm_kunlun_plugin"}

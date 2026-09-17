@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -12,6 +13,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from validators.triage_validator import validate_triage  # noqa: E402
+from validators.triage_validator import validate_failure_evidence
+from operations.operators.failure_triage import collect_failure
+
+
+def test_unclassified_failure_cannot_be_promoted_or_use_tampered_evidence(tmp_path):
+    source = tmp_path / "failed.json"
+    source.write_text(json.dumps({"state": "CONTRACT_INVALID", "reason": "missing model identity"}))
+    out = tmp_path / "triage"
+    report = collect_failure(source, out)
+    assert validate_failure_evidence(report, out) == []
+    promoted = {**report, "state": "TRIAGE_READY"}
+    assert validate_failure_evidence(promoted, out)
+    (out / "failure_evidence/source_status.json").write_text('{}')
+    assert validate_failure_evidence(report, out)
 
 CONTRACT_PATH = ROOT / "tasks" / "mat-006-failure-triage" / "task.yaml"
 

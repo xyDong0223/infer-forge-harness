@@ -112,6 +112,7 @@ def test_create_discover_claim_and_status_emit_json(tmp_path: Path) -> None:
             {
                 "state": "ENVIRONMENT_READY",
                 "pod": "prepared-pod",
+                "user_id": "fixture-owner",
                 "checks": {
                     "pod_ready": True,
                     "runtime_importable": True,

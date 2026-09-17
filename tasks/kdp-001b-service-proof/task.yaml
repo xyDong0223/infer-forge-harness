@@ -15,9 +15,8 @@ spec:
   consumes: [EnvironmentProof, DeploymentPlan]
   runs_with: |
     python3 cli/deployment/proof.py \
-      tasks/kdp-001-deployment-proof/instances/<model>.yaml --execute --phase service \
+      <DeploymentPlan artifact_root>/kdp_instance.yaml --execute --phase service \
       --attach-pod <pod from the environment proof's status.json>
-  instances_shared_with: kdp-001a-environment-proof
 context:
   model:
     name: ${MODEL_NAME}
@@ -43,6 +42,7 @@ artifacts:
   - chat_result
   - reproduce_command
 exit_states:
+  input_required: INPUT_REQUIRED
   contract_invalid: CONTRACT_INVALID
   blocked: BLOCKED
   runtime_drift: RUNTIME_DRIFT

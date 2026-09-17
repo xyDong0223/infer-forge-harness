@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import tempfile
 import unittest
 import json
@@ -478,6 +479,7 @@ def environment_bundle(bundle: Path) -> None:
     write_base_model_identity(bundle)
     (bundle / "status.json").write_text(json.dumps({
         "state": "ENVIRONMENT_READY", "pod": "prepared-pod", "artifacts": names,
+        "user_id": "fixture-owner",
         "checks": {
             "pod_ready": True, "runtime_importable": True, "code_ready": True,
             "device_ready": True, "base_model_loaded": True, "base_prefill": True,
@@ -915,6 +917,23 @@ class FactReliabilityTest(unittest.TestCase):
             self.assertIsNone(reusable_fact(NODES["model_scan"], "demo", journal, changed))
             (root / "environment_fingerprint.txt").write_text("changed stack")
             self.assertIsNone(reusable_fact(NODES["environment_proof"], "demo", journal, ENVIRONMENT))
+
+    def test_ownerless_ready_proof_cannot_bind_ambient_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = root / "journal.jsonl"
+            environment_bundle(root)
+            status_path = root / "status.json"
+            status = json.loads(status_path.read_text())
+            status.pop("user_id", None)
+            status_path.write_text(json.dumps(status))
+            record_fact(journal, NODES["environment_proof"], "demo", root, ENVIRONMENT)
+            context, env = {"subject": "demo"}, dict(ENVIRONMENT)
+            with patch.dict(os.environ, {"USER_ID": "different-owner"}):
+                with self.assertRaisesRegex(Unresolved, "supplied user_id"):
+                    bind_proven_environment(context, env, journal)
+            self.assertNotIn("pod", context)
+            self.assertNotIn("user_id", context)
 
     def test_invalid_environment_proof_cannot_supply_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:

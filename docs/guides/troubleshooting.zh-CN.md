@@ -8,7 +8,7 @@ JSON 的同一信息位于 `progress`；并行算子各自的下一步位于 `ta
 
 | reason_code | 下一步 |
 | --- | --- |
-| `START_GRAPH` | 提供 `model_path`、`contract_instance`，用 `--execute` 首次执行当前 run 的 Graph |
+| `START_GRAPH` | 提供 `model_path`、`user_id`，由 harness 生成契约，用 `--execute` 首次执行当前 run 的 Graph |
 | `ENVIRONMENT_COMMAND_FAILED` | 环境证明已被接受，但节点执行失败；查看退出码和日志，修复后按提示不带 `--resume` 重跑环境节点，再恢复完整 Graph |
 | `WORKER_UNCLAIMED` / `DIAGNOSIS_PENDING` | 启动对应 stage 的 worker 并领取任务，核对返回 run；不代表已经证实没有 worker |
 | `WORKER_RUNNING` | 看当前 attempt 的日志并按需续租；有效租约不是存活证明 |

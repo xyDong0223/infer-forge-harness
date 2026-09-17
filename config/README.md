@@ -22,7 +22,7 @@ Before following the [real adaptation steps](../README.md#运行真实模型适�
 1. Replace development-cluster image, queue, node-pool, PVC and mount assumptions with confirmed resources.
 2. Set external `KUBECONFIG`. Ask the user for their resource-owner ID and pass `--user-id <user-supplied-id>` to the environment/proof/planner CLI (Graph: `--set user_id=<user-supplied-id>`); contracts can record `execution.user_id`. Explicit input takes precedence over the contract and legacy `USER_ID` environment variable. Never infer the ID from the host login or example resource names. Check namespace, context, container, deployment kind and resource ownership prefix.
 3. Check runtime paths, setup commands and proxy settings against the actual image and network.
-4. Pin model/plugin revisions and the matching deployment contract. Check the cluster profile's validation base model as well as the target model.
+4. Pin model/plugin revisions and check the cluster profile's validation base model. The harness generates environment contracts from this profile; MAT-005 generates target contracts from intake and planning evidence. Do not copy a model-specific YAML.
 5. Choose a persistent external state directory, inspect the plan and prove the environment before discovery.
 
 `ClusterConfig.load(path)` accepts an explicit profile, but some production

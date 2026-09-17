@@ -289,6 +289,7 @@ def environment_proof(root):
     write_base_model_identity(root)
     return {
         "state": "ENVIRONMENT_READY", "pod": "test-pod", "artifact_root": str(root),
+        "user_id": "fixture-owner",
         "checks": {
             "pod_ready": True, "runtime_importable": True, "code_ready": True,
             "device_ready": True, "base_model_loaded": True, "base_prefill": True,
@@ -323,6 +324,39 @@ def test_environment_import_checks_actual_status_and_readable_evidence(tmp_path,
     with pytest.raises(ValueError):
         scheduler.bind_environment("run", proof)
     assert scheduler.store.run("run").status == "WAITING_FOR_ENVIRONMENT"
+
+
+def test_environment_binding_requires_recorded_user_id(tmp_path):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model", backend="device")
+    proof = environment_proof(tmp_path / "proof")
+    proof.pop("user_id")
+    with pytest.raises(ValueError, match="user_id"):
+        scheduler.bind_environment("run", proof)
+
+
+@pytest.mark.parametrize("previous_failed", [False, True])
+@pytest.mark.parametrize("incoming_failed", [False, True])
+def test_environment_owner_cannot_change_through_scheduler_handoffs(tmp_path, previous_failed, incoming_failed):
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model")
+    proof = environment_proof(tmp_path / "proof")
+    if previous_failed:
+        scheduler.record_environment_failure("run", {**proof, "state": "INSTALL_FAILED"}, "failed")
+    else:
+        scheduler.bind_environment("run", proof)
+    before = scheduler.store.run("run").to_dict()
+    with pytest.raises(ValueError, match="user_id does not match"):
+        if incoming_failed:
+            scheduler.record_environment_failure("run", {**proof, "user_id": "other"}, "failed")
+        else:
+            scheduler.bind_environment("run", {**proof, "user_id": "other"})
+    assert scheduler.store.run("run").to_dict() == before
+    scheduler.record_environment_failure("run", {"state": "FAILED"}, "missing output")
+    failed = scheduler.store.run("run").environment["failed_environment_proof"]
+    assert failed["user_id"] == proof["user_id"]
+    assert failed["pod"] == proof["pod"]
+    scheduler.bind_environment("run", proof)
 
 
 def test_environment_binding_fingerprints_artifacts_and_rejects_cross_environment_spec(tmp_path):
@@ -384,3 +418,18 @@ def test_failed_reproof_pauses_real_work_until_same_environment_is_ready(tmp_pat
     assert not scheduler.claim_ready("worker", stage="torch")
     scheduler.bind_environment("run", proof)
     assert scheduler.claim_ready("worker", stage="torch")[0].task_id == task.task_id
+
+
+@pytest.mark.parametrize("owner", [None, ""])
+def test_failed_pod_without_recorded_owner_is_rejected(tmp_path, monkeypatch, owner):
+    monkeypatch.setenv("USER_ID", "ambient-owner")
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model")
+    before = scheduler.store.run("run").to_dict()
+    proof = {"state": "INSTALL_FAILED", "pod": "prepared-pod", "user_id": owner}
+    with pytest.raises(ValueError, match="Pod must record its supplied user_id"):
+        scheduler.record_environment_failure("run", proof, "failed")
+    assert scheduler.store.run("run").to_dict() == before
+    # Missing caller input remains recordable before any Pod has been selected.
+    scheduler.record_environment_failure("run", {"state": "INPUT_REQUIRED"}, "missing user_id")
+    assert scheduler.store.run("run").environment["failed_environment_proof"]["pod"] is None

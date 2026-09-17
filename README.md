@@ -209,15 +209,9 @@ PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider \
 - vLLM-Kunlun 镜像、插件 revision 和运行时版本已固定；
 - `KUBECONFIG` 等凭据只存在于外部环境；
 - 状态数据库和所有运行产物位于源码目录之外；
-- 使用匹配模型的 deployment contract，或准备一个内容完整的实例。
+- 由使用者提供资源归属 ID，并核对集群配置。
 
-仓库内已有示例实例：
-
-- [`qwen3-8b-p800.yaml`](tasks/kdp-001-deployment-proof/instances/qwen3-8b-p800.yaml)
-- [`glm52-int-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/glm52-int-w8a8-p800.yaml)
-- [`minimax-m25-w8a8-p800.yaml`](tasks/kdp-001-deployment-proof/instances/minimax-m25-w8a8-p800.yaml)
-
-示例不包含模型权重或凭据，但保留了原开发环境的镜像、资源名称和路径；接入其他环境时必须逐项核对和替换，见[配置接入说明](config/README.md)。
+环境契约由 harness 根据[集群配置](config/README.md)和环境 Task 自动生成；目标服务契约由 MAT-005 根据 intake、分类与部署规划产物生成。Graph 从 Journal 取得对应契约，不接受手工指定的 `contract_instance`。生成的 YAML 只保存在 run 的 attempt 中，不复制已有模型示例。
 
 ### 1. 创建或恢复 run
 
@@ -230,7 +224,7 @@ RUN_ROOT="$INFER_FORGE_STATE_ROOT/runs/$RUN_ID"
 MODEL_PATH="/mounted/models/MyModel"
 MODEL_REVISION="<model-revision>"
 PLUGIN_REVISION="<vllm-kunlun-commit>"
-CONTRACT="/path/to/pinned-deployment-contract.yaml"
+USER_ID="<user-supplied-id>"
 
 python cli/adaptation.py --state "$STATE" create-run \
   --run-id "$RUN_ID" \
@@ -254,7 +248,7 @@ python cli/workflow/graph.py \
   --env hardware=P800 \
   --env stack_commit="$PLUGIN_REVISION" \
   --set model_path="$MODEL_PATH" \
-  --set contract_instance="$CONTRACT" \
+  --set user_id="$USER_ID" \
   --until-node kdp-001a-environment-proof \
   --json
 ```
@@ -270,7 +264,7 @@ python cli/workflow/graph.py \
   --env hardware=P800 \
   --env stack_commit="$PLUGIN_REVISION" \
   --set model_path="$MODEL_PATH" \
-  --set contract_instance="$CONTRACT" \
+  --set user_id="$USER_ID" \
   --operator-report /path/to/measured-operators.json \
   --shim-registry /path/to/shim-registry.json \
   --execute --resume --json
@@ -354,7 +348,7 @@ python cli/workflow/graph.py \
   --env hardware=P800 \
   --env stack_commit="$PLUGIN_REVISION" \
   --set model_path="$MODEL_PATH" \
-  --set contract_instance="$CONTRACT" \
+  --set user_id="$USER_ID" \
   --execute --resume --json
 ```
 

@@ -35,6 +35,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from engine import AdaptationRun, TaskScheduler, load_report, operator_specs_from_report  # noqa: E402
 from core.storage import RunPaths, default_state_root, ensure_external, safe_component  # noqa: E402
+from core.user_identity import environment_user_id
 from engine.scheduler import EventStore  # noqa: E402
 from engine.progress import graph_progress, render_progress, run_progress  # noqa: E402
 
@@ -52,8 +53,9 @@ def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
 
 
 def _environment_command(
-    contract: Path, artifact_dir: Path | None, attach_pod: str | None,
+    contract: Path | None, artifact_dir: Path | None, attach_pod: str | None,
     run_id: str | None = None, user_id: str | None = None,
+    evidence_mode: str | None = None, health_interval_seconds: float | None = None,
 ) -> list[str]:
     """The task_runner invocation behind `environment --contract`.
 
@@ -62,7 +64,7 @@ def _environment_command(
     command = [
         sys.executable,
         str(REPO_ROOT / "cli" / "deployment" / "proof.py"),
-        str(contract),
+        *([str(contract)] if contract is not None else []),
         "--execute",
         "--phase",
         "environment",
@@ -75,6 +77,10 @@ def _environment_command(
         command += ["--run-id", run_id]
     if user_id is not None:
         command += ["--user-id", user_id]
+    if evidence_mode:
+        command += ["--evidence-mode", evidence_mode]
+    if health_interval_seconds is not None:
+        command += ["--health-interval-seconds", str(health_interval_seconds)]
     return command
 
 
@@ -104,9 +110,10 @@ def _parser() -> argparse.ArgumentParser:
         help="run or import the deployment environment proof before discovery",
     )
     environment.add_argument("--run-id", required=True)
-    source = environment.add_mutually_exclusive_group(required=True)
+    source = environment.add_mutually_exclusive_group()
     source.add_argument("--status", type=Path, help="status.json from an environment-proof task")
-    source.add_argument("--contract", type=Path, help="deployment task contract to execute")
+    source.add_argument("--contract", type=Path, help="external generated proof to replay; omit to generate from the harness profile")
+    environment.add_argument("--health-interval-seconds", type=float)
     environment.add_argument(
         "--attach-pod",
         help="prove against an already-prepared Pod (Imported Context) instead of "
@@ -205,6 +212,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
     if args.command in {"environment", "prove-environment", "bind-environment"}:
         if args.status:
             proof = _json_file(args.status, field="environment status")
+            # Imported ownership must agree with an explicit caller identity;
+            # do this before either binding or recording a failed handoff.
+            environment_user_id({"environment_proof": proof}, args.user_id)
         else:
             existing = scheduler.store.run(args.run_id)
             if existing is None:
@@ -223,9 +233,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
                 args.attach_pod or handoff.get("pod")
                 or existing.environment.get("environment_proof", {}).get("pod"),
                 run_id=args.run_id,
-                user_id=(args.user_id if args.user_id is not None else
-                         handoff.get("user_id") or
-                         existing.environment.get("environment_proof", {}).get("user_id")),
+                user_id=environment_user_id(existing.environment, args.user_id),
+                evidence_mode=existing.metadata.get("evidence_mode"),
+                health_interval_seconds=args.health_interval_seconds,
             )
             completed = subprocess.run(
                 command, cwd=REPO_ROOT, text=True, capture_output=True, check=False,

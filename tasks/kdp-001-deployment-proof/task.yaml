@@ -6,7 +6,7 @@ metadata:
   version: 0.1.0
 context:
   model:
-    name: Qwen3-8B
+    name: ${MODEL_NAME}
     path: ${MODEL_PATH}
   target:
     hardware: Kunlunxin-3-P800
@@ -39,6 +39,7 @@ artifacts:
   - chat_result
   - reproduce_command
 exit_states:
+  input_required: INPUT_REQUIRED
   contract_invalid: CONTRACT_INVALID
   blocked: BLOCKED
   runtime_drift: RUNTIME_DRIFT
