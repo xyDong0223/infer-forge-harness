@@ -10,6 +10,8 @@ _PLACEHOLDER = re.compile(r"\$\{[^}]+\}")
 
 
 def validate_task_contract(contract: dict[str, Any]) -> list[str]:
+    if not isinstance(contract, dict):
+        return ["task contract must be an object"]
     errors: list[str] = []
     for field in ("api_version", "kind", "metadata", "context", "actions", "acceptance"):
         if field not in contract:
@@ -17,11 +19,17 @@ def validate_task_contract(contract: dict[str, Any]) -> list[str]:
     if contract.get("kind") != "Task":
         errors.append("kind must be Task")
     metadata = contract.get("metadata", {})
+    if not isinstance(metadata, dict):
+        errors.append("metadata must be an object")
+        metadata = {}
     for field in ("name", "task_type"):
-        if not metadata.get(field):
+        if not isinstance(metadata.get(field), str) or not metadata[field].strip():
             errors.append(f"metadata.{field} is required")
     if not isinstance(contract.get("actions"), list) or not contract.get("actions"):
         errors.append("actions must be a non-empty list")
+    for field in ("context", "acceptance", "execution", "checks"):
+        if field in contract and not isinstance(contract[field], dict):
+            errors.append(f"{field} must be an object")
     return errors
 
 

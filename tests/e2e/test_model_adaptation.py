@@ -202,6 +202,14 @@ def test_environment_retry_and_import_preserve_recorded_owner(scenario, prepared
     assert scenario.status()["run"] == before
     added = scenario.fixture["events"].read_text().splitlines()[len(events_before):]
     assert all(json.loads(line)["operation"] == "bootstrap" for line in added)
+    # An explicit caller cannot import another owner's proof, even if the
+    # proof matches the run's previous owner (including failed handoffs).
+    imported = scenario.root / "same-owner-status.json"
+    imported.write_text(json.dumps(prepared["proof"]))
+    result = scenario.adaptation("environment", "--run-id", scenario.run_id,
+                                 "--status", str(imported), "--user-id", "another-owner", expected=2)
+    assert "user_id does not match" in result.stdout
+    assert scenario.status()["run"] == before
     # Import cannot change the owner either, including the failed-handoff path.
     if not prepared_failed:
         imported = scenario.root / "wrong-owner-status.json"
@@ -572,3 +580,44 @@ def test_simulation_proof_cannot_unlock_real_run(scenario):
     assert snapshot["run"]["status"] == "ENVIRONMENT_FAILED"
     assert "environment_proof" not in snapshot["run"]["environment"]
     assert snapshot["tasks"] == []
+
+
+@pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("failure", ["negative_interval", "invalid_contract", "invalid_metadata", "list_contract", "malformed_yaml"])
+def test_proof_input_rejections_publish_standard_status(scenario, execute, failure):
+    arguments = ["--artifact-dir", str(scenario.root / "rejections")]
+    if execute:
+        arguments.append("--execute")
+    if failure == "negative_interval":
+        arguments += ["--health-interval-seconds", "-1"]
+    else:
+        contract = scenario.root / "invalid.yaml"
+        contract.write_text({
+            "invalid_contract": "kind: Task\n",
+            "invalid_metadata": "kind: Task\nmetadata: broken\n",
+            "list_contract": "- not-a-contract\n",
+            "malformed_yaml": "metadata: [\n",
+        }[failure])
+        arguments.insert(0, str(contract))
+    before = scenario.status()["run"]
+    events_before = scenario.fixture["events"].read_text().splitlines()
+    schema = yaml.safe_load((REPO_ROOT / "contracts/status.schema.yaml").read_text())
+    outputs = []
+    for _ in range(2):
+        result = scenario.process("cli/deployment/proof.py", arguments, expected=2)
+        emitted = json.loads(result.stdout)
+        Draft202012Validator(schema).validate(emitted)
+        assert emitted["state"] == ("BLOCKED" if failure == "malformed_yaml" else "CONTRACT_INVALID")
+        if execute:
+            output = Path(emitted["artifact_root"])
+            assert json.loads((output / "status.json").read_text()) == emitted
+            manifest = json.loads(Path(emitted["manifest_path"]).read_text())
+            assert manifest["outcome"] == emitted["state"]
+            assert (output.parent / "input/rejected_task_contract.json").is_file()
+            outputs.append(output)
+    if execute:
+        assert outputs[0] != outputs[1]
+        assert all((output / "status.json").is_file() for output in outputs)
+    assert scenario.status()["run"] == before
+    added = scenario.fixture["events"].read_text().splitlines()[len(events_before):]
+    assert all(json.loads(line)["operation"] == "bootstrap" for line in added)

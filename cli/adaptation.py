@@ -212,6 +212,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
     if args.command in {"environment", "prove-environment", "bind-environment"}:
         if args.status:
             proof = _json_file(args.status, field="environment status")
+            # Imported ownership must agree with an explicit caller identity;
+            # do this before either binding or recording a failed handoff.
+            environment_user_id({"environment_proof": proof}, args.user_id)
         else:
             existing = scheduler.store.run(args.run_id)
             if existing is None:

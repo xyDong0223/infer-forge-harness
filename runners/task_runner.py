@@ -33,8 +33,28 @@ def load_yaml(path: Path) -> dict[str, Any]:
         import yaml
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("PyYAML is required to run tasks") from exc
-    with path.open(encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return yaml.safe_load(handle) or {}
+    except yaml.YAMLError as error:
+        raise ValueError(f"invalid YAML: {path}: {error}") from error
+
+
+def _section(contract: Any, key: str) -> dict:
+    value = contract.get(key) if isinstance(contract, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _task_id(contract: Any) -> str:
+    name = _section(contract, "metadata").get("name")
+    return name if isinstance(name, str) and name.strip() else "kdp-001-deployment-proof"
+
+
+def _status_envelope(status: dict, task_id: str) -> dict:
+    status.setdefault("task_id", task_id)
+    status.setdefault("state", status.get("status", "BLOCKED"))
+    status.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+    return status
 
 
 def proof_phase(contract: dict[str, Any], phase: str) -> str:
@@ -80,11 +100,12 @@ def execute(
     target: TargetContext | None = None,
     run_id: str | None = None,
     user_id: str | None = None,
+    *, _rejection: tuple[dict[str, Any], int] | None = None,
 ) -> int:
     """Run the task against the real cluster and let a Validator decide."""
-    task_id = contract["metadata"]["name"]
+    task_id = _task_id(contract)
     try:
-        requested = artifact_dir or (contract.get("artifacts") or {}).get("directory")
+        requested = artifact_dir or _section(contract, "artifacts").get("directory")
         root = ensure_external(
             requested if requested is not None
             else default_state_root() / "runs" / safe_component(run_id or task_id)
@@ -105,18 +126,18 @@ def execute(
         if store.path("status.json").exists() or store.path("manifest.json").exists():
             raise WritePolicyError("task output already contains a formal result; allocate a fresh attempt")
     except (ValueError, OSError) as error:
-        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
+        print(json.dumps(_status_envelope({"status": "BLOCKED", "message": str(error)}, task_id), indent=2))
         return 2
 
     inventory = ArtifactStore(attempt.root)
 
     def finish(status: dict[str, Any], code: int) -> int:
-        status.setdefault("task_id", task_id)
-        status.setdefault("state", status.get("status", "BLOCKED"))
-        status.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
-        if contract.get("execution", {}).get("user_id"):
-            status["user_id"] = contract["execution"]["user_id"]
-        status["evidence_mode"] = contract.get("metadata", {}).get("evidence_mode", "real")
+        _status_envelope(status, task_id)
+        owner = _section(contract, "execution").get("user_id")
+        if isinstance(owner, str) and owner:
+            status["user_id"] = owner
+        mode = _section(contract, "metadata").get("evidence_mode", "real")
+        status["evidence_mode"] = mode if mode in ("real", "simulation") else "real"
         status["artifact_root"] = str(target_dir)
         status["manifest_path"] = str(attempt.root / "manifest.json")
         status["workspace_identity"] = attempt.identity
@@ -159,6 +180,11 @@ def execute(
         return code
 
     try:
+        if _rejection is not None:
+            ArtifactStore(attempt.input).write_json("rejected_task_contract.json", {
+                "contract": contract, "contract_path": str(contract_path) if contract_path else None,
+            })
+            return finish(*_rejection)
         owner = resolve_user_id(user_id, contract.get("execution", {}).get("user_id"))
         recorded_owner = contract.get("execution", {}).get("user_id")
         if recorded_owner and owner != recorded_owner:
@@ -270,8 +296,19 @@ def _execute(contract, target_dir, attach_pod, phase, target, finish) -> int:
 
 
 def run(args) -> int:
+    contract = {}
+
+    def reject(status: dict, code: int = 2) -> int:
+        if args.execute:
+            return execute(contract, args.contract, args.artifact_dir,
+                           run_id=args.run_id, _rejection=(status, code))
+        print(json.dumps(_status_envelope(status, _task_id(contract)), indent=2))
+        return code
 
     try:
+        interval = getattr(args, "health_interval_seconds", None)
+        if interval is not None and interval < 0:
+            return reject({"status": "CONTRACT_INVALID", "message": "health interval must be nonnegative"})
         target = load_target(args.target) if args.target else None
         if args.subject:
             if target is None:
@@ -289,30 +326,24 @@ def run(args) -> int:
             )
         else:
             contract = load_yaml(args.contract)
-        if getattr(args, "evidence_mode", None) == "simulation":
-            contract.setdefault("metadata", {})["evidence_mode"] = "simulation"
         errors = validate_task_contract(contract)
         if errors:
-            print(json.dumps({"status": "CONTRACT_INVALID", "errors": errors}, indent=2))
-            return 2
+            return reject({"status": "CONTRACT_INVALID", "errors": errors})
+        if getattr(args, "evidence_mode", None) == "simulation":
+            contract["metadata"]["evidence_mode"] = "simulation"
         require_supported(contract_target(contract, target))
     except (ValueError, OSError) as error:
-        print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
-        return 2
+        return reject({"status": "BLOCKED", "message": str(error)})
     if args.server_log:
         contract.setdefault("execution", {})["server_log"] = args.server_log
     interval = getattr(args, "health_interval_seconds", None)
     if interval is not None:
-        if interval < 0:
-            print(json.dumps({"status": "CONTRACT_INVALID", "message": "health interval must be nonnegative"}))
-            return 2
         contract.setdefault("execution", {})["health_interval_seconds"] = interval
     phase = proof_phase(contract, args.phase)
     environment_phase = phase == "environment"
     placeholders = [] if args.execute and environment_phase else find_placeholders(contract)
     if placeholders:
-        print(json.dumps({"status": "INPUT_REQUIRED", "paths": placeholders}, indent=2))
-        return 3
+        return reject({"status": "INPUT_REQUIRED", "paths": placeholders}, 3)
     if args.execute:
         return execute(contract, args.contract, args.artifact_dir, args.attach_pod, args.phase,
                        target, args.run_id, getattr(args, "user_id", None))
@@ -324,7 +355,6 @@ def run(args) -> int:
             output = ensure_external(args.output)
             ArtifactStore(output.parent).write_text(output.name, rendered + "\n")
         except (ValueError, OSError) as error:
-            print(json.dumps({"status": "BLOCKED", "message": str(error)}, indent=2))
-            return 2
+            return reject({"status": "BLOCKED", "message": str(error)})
     print(rendered)
     return 0

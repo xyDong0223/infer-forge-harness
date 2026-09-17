@@ -418,3 +418,18 @@ def test_failed_reproof_pauses_real_work_until_same_environment_is_ready(tmp_pat
     assert not scheduler.claim_ready("worker", stage="torch")
     scheduler.bind_environment("run", proof)
     assert scheduler.claim_ready("worker", stage="torch")[0].task_id == task.task_id
+
+
+@pytest.mark.parametrize("owner", [None, ""])
+def test_failed_pod_without_recorded_owner_is_rejected(tmp_path, monkeypatch, owner):
+    monkeypatch.setenv("USER_ID", "ambient-owner")
+    scheduler = TaskScheduler(tmp_path / "state.db")
+    scheduler.create_run(run_id="run", model_id="model")
+    before = scheduler.store.run("run").to_dict()
+    proof = {"state": "INSTALL_FAILED", "pod": "prepared-pod", "user_id": owner}
+    with pytest.raises(ValueError, match="Pod must record its supplied user_id"):
+        scheduler.record_environment_failure("run", proof, "failed")
+    assert scheduler.store.run("run").to_dict() == before
+    # Missing caller input remains recordable before any Pod has been selected.
+    scheduler.record_environment_failure("run", {"state": "INPUT_REQUIRED"}, "missing user_id")
+    assert scheduler.store.run("run").environment["failed_environment_proof"]["pod"] is None

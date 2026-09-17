@@ -26,9 +26,15 @@ python cli/deployment/proof.py /external/generated-service.yaml \
 
 同一环境的恢复必须沿用已记录的 user ID；切换所有者会被拒绝，应为新所有者建立新 run。
 此检查覆盖 CLI 重试、成功或失败 handoff 的 scheduler 导入，以及独立 Graph 恢复。
+`environment --status ... --user-id ...` 会先核对显式使用者与导入证明的所有者，
+不一致时不修改 run。失败证明一旦记录 Pod，也必须记录其所有者；
 缺少 user ID 的旧环境证明必须重新提供完整证明，不能从当前 shell 的 USER_ID 补猜。
 MAT-005 将生成 YAML 的 SHA-256 写入计划状态，Journal 验证状态及 YAML 摘要后才允许复用。
 旧计划缺少摘要或文件已变动时不再复用，需重新执行 MAT-005。
+服务启动命令逐个引用参数，模型名称和路径中的空格、引号或 shell 符号保持原值；
+资源名称及服务日志路径使用安全的派生名称。
+执行入口遇到无效契约或负数健康检查间隔时，也在新 attempt 中发布标准 `status.json`
+及 manifest；同一命令重试会保留上次拒绝证据。计划模式的拒绝输出使用相同状态 schema。
 生成文件属于 run，不写回仓库；测试夹具使用合成数据，
 不作为 Agent 的部署模板。
 

@@ -371,9 +371,12 @@ class TaskScheduler:
         previous = (run.environment.get("failed_environment_proof", {})
                     if run.status == "ENVIRONMENT_FAILED"
                     else run.environment.get("environment_proof", {}))
+        pod = proof.get("pod") or previous.get("pod")
+        if pod and not owner:
+            raise ValueError("a failed environment with a Pod must record its supplied user_id")
         run.status = "ENVIRONMENT_FAILED"
         run.environment = {**run.environment, "failed_environment_proof": {
-            "state": proof.get("state", "FAILED"), "pod": proof.get("pod") or previous.get("pod"),
+            "state": proof.get("state", "FAILED"), "pod": pod,
             "user_id": owner,
             "artifact_root": proof.get("artifact_root"),
             "checks": proof.get("checks", {}), "artifacts": proof.get("artifacts", []),

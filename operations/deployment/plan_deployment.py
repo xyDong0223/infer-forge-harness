@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import shlex
 import sys
 from pathlib import Path
 
@@ -183,6 +184,7 @@ def render_instance(
     profile = _cluster_profile()
     user_id = resolve_user_id(user_id)
     subject = str(report["subject"])
+    resource_subject = safe_component(subject.lower()).replace("_", "-")
     artifact_root = ensure_external(
         runtime_artifact_root if runtime_artifact_root is not None
         else default_state_root() / "runs" / safe_component(f"kdp-001-{subject.lower()}")
@@ -193,20 +195,19 @@ def render_instance(
     weight_gib = int(model.get("total_weight_bytes", 0)) >> 30
     timeout = max(900, weight_gib * 5)
     serve = [
-        "python -m vllm.entrypoints.openai.api_server",
-        "--host 0.0.0.0",
-        "--port 8356",
-        f"--model {model.get('source')}",
+        "python", "-m", "vllm.entrypoints.openai.api_server",
+        "--host", "0.0.0.0", "--port", "8356",
+        "--model", str(model.get('source')),
     ]
     if values.get("trust_remote_code"):
         serve.append("--trust-remote-code")
     serve += [
-        f"--max-model-len {values['max_model_len']}",
-        f"--tensor-parallel-size {values['tensor_parallel_size']}",
-        f"--dtype {values['dtype']}",
-        f"--served-model-name {subject}",
-        f"--block-size {values['block_size']}",
-        f"--gpu-memory-utilization {values['gpu_memory_utilization']}",
+        "--max-model-len", str(values['max_model_len']),
+        "--tensor-parallel-size", str(values['tensor_parallel_size']),
+        "--dtype", str(values['dtype']),
+        "--served-model-name", subject,
+        "--block-size", str(values['block_size']),
+        "--gpu-memory-utilization", str(values['gpu_memory_utilization']),
     ]
     if values.get("enforce_eager"):
         serve.append("--enforce-eager")
@@ -214,7 +215,7 @@ def render_instance(
         "api_version": "infer.kunlun/v1alpha1",
         "kind": "Task",
         "metadata": {
-            "name": f"kdp-001-{subject.lower()}",
+            "name": f"kdp-001-{resource_subject}",
             "task_type": "service_proof",
             "version": "0.1.0",
             "generated_by": "mat-005-deployment-plan",
@@ -248,16 +249,16 @@ def render_instance(
             **({"user_id": user_id} if user_id else {}),
             "mode": "execute",
             "namespace": profile["namespace"],
-            "resource_name": f"{user_id}-kdp001-{subject.lower()}" if user_id
-                             else f"kdp001-{subject.lower()}",
+            "resource_name": f"{user_id}-kdp001-{resource_subject}" if user_id
+                             else f"kdp001-{resource_subject}",
             "startup_timeout_seconds": timeout,
             "health_interval_seconds": 15,
             "health_successes_required": 3,
             "retain_on_failure": True,
-            "server_log": f"/workspace/server_{subject.lower()}.log",
+            "server_log": f"/workspace/server_{resource_subject}.log",
             "commands": {
                 "setup": profile["setup"],
-                "serve": [" ".join(serve)],
+                "serve": [shlex.join(serve)],
             },
         },
         "checks": {
