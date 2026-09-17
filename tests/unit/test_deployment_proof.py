@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import json
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -262,6 +263,39 @@ def test_plan_external_output_is_atomic_and_not_overwritten(tmp_path, monkeypatc
     assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
     assert output.read_bytes() == before
     assert not list(output.parent.glob("*.pending"))
+
+
+@pytest.mark.parametrize("filename,phase_args,expected", [
+    ("qwen3-8b-p800.yaml", [], "environment"),
+    ("qwen3-8b-p800.yaml", ["--phase", "environment"], "environment"),
+    ("qwen3-8b-p800.yaml", ["--phase", "all"], "all"),
+    ("minimax-m25-w8a8-p800.yaml", [], "environment"),
+    ("minimax-m25-w8a8-p800.yaml", ["--phase", "all"], "environment"),
+])
+def test_cli_plan_exposes_effective_phase(monkeypatch, capsys, filename, phase_args, expected):
+    path = CONTRACT.parent / filename
+    monkeypatch.setattr("sys.argv", ["proof", str(path), *phase_args])
+    assert _task_runner_cli.main() == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["phase"] == expected
+    if expected == "environment":
+        assert "start_base_model" in plan["actions"]
+        assert "release_base_service_memory_keep_pod" in plan["actions"]
+        assert "toy_bringup_before_load" not in plan["actions"]
+
+
+@pytest.mark.parametrize("phase", ["environment", "service", "all"])
+def test_reproduce_command_preserves_phase_contract_and_pod(tmp_path, phase):
+    runner = make_runner(tmp_path / "path with spaces")
+    runner.phase = phase
+    runner.pod = "prepared-pod"
+    runner.collect_artifacts("BLOCKED", "reproduction fixture")
+    command = shlex.split((runner.artifact_dir / "reproduce_command.txt").read_text())
+    assert Path(command[3]).is_file()
+    assert command[command.index("--phase") + 1] == phase
+    assert command[command.index("--attach-pod") + 1] == runner.pod
+    assert Path(command[command.index("--artifact-dir") + 1]).is_absolute()
+    assert Path(command[command.index("--artifact-dir") + 1]) != runner.artifact_dir
 
 
 if __name__ == "__main__":

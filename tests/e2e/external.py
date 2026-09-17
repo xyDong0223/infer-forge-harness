@@ -405,6 +405,11 @@ class SimulatedCluster(KunlunP800Adapter):
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))
         if filename == "kdp_drift_precheck.py":
+            if self.settings.get("environment_drift"):
+                return {"state": "RUNTIME_DRIFT", "checks": [{
+                    "id": "simulation-import", "verdict": "DRIFT", "scope": "path",
+                    "gating": "gate", "detail": "synthetic incompatible runtime API",
+                }], "summary": {"checked": 1, "drift": 1}}
             return {"state": "DRIFT_CLEAR", "checks": [{
                 "id": "simulation-import", "verdict": "OK", "scope": "path",
                 "detail": "synthetic runtime import surface",

@@ -17,6 +17,8 @@
 
 用各入口的 `--help` 查看实际参数。`scheduler.py` 是较低层接口，新集成优先使用 `adaptation.py`。文件级算子交接请求不等于 Scheduler 中的任务已经完成。
 
+`deployment/proof.py` 默认 `--phase environment`：只证明 MiniMax-M2.5 基线，跳过 toy，返回 `ENVIRONMENT_READY`。即使传入目标模型示例，也不会启动目标服务。目标适配完成前置检查后，由 Graph 的 `--phase service --attach-pod ...` 执行目标 toy 与服务证明。`--phase all` 保留显式的旧版单次部署入口，不能代替模型适配工作流。契约的 `environment_proof` / `service_proof` 类型仍优先于 `--phase`；MiniMax 示例明确属于环境证明。
+
 ## Worker 的领取与提交
 
 `STATE` 必须指向已有外部数据库。claim 按阶段领取，当前没有 `--run-id` 过滤参数；worker 必须能处理该数据库对应阶段的任务，并核对返回的 run 和环境身份。

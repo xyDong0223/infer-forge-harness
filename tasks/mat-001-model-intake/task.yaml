@@ -11,7 +11,7 @@ spec:
   # for a fact about the checkpoint.
   question: which model, which revision, where, against which stack commit
   produces: ModelRequest
-  consumes: []
+  consumes: [EnvironmentProof]
 context:
   model:
     id: ${MODEL_ID}
@@ -27,8 +27,13 @@ context:
 execution:
   mode: execute
   probe:
-    # An XPU-free throwaway Pod: fingerprinting is filesystem work, so intake
-    # must not compete for cards with real deployments.
+    kind: prepared_pod
+    source: EnvironmentProof.pod
+    required_in_workflow: true
+    auto_delete: false
+  standalone_probe:
+    # Only independent identity intake without --env-status may allocate this.
+    # The model adaptation workflow must use the prepared environment Pod.
     kind: ephemeral_pod
     manifest: tasks/mat-001-model-intake/manifests/probe-pod.template.yaml
     xpu_count: 0
@@ -43,9 +48,8 @@ execution:
   tool: cli/intake/model_intake.py
 actions:
   - resolve_stack_commit
-  - create_probe_pod
+  - attach_environment_pod
   - fingerprint_checkpoint
-  - delete_probe_pod
   - create_model_request_artifact
 checks:
   revision:
@@ -80,6 +84,10 @@ artifacts:
     - resolved_revision.json
     - intake_status.json
     - probe_pod.yaml
+notes:
+  - Graph requires a validated EnvironmentProof and passes --env-status. Intake
+    retains that Pod; standalone identity-only CLI calls may use an ephemeral Pod.
+  - probe_pod.yaml is emitted only by the standalone ephemeral mode.
 validator: validators/intake_validator.py
 exit_states:
   pass: INTAKE_READY

@@ -189,7 +189,10 @@ def test_base_model_execution_preserves_requested_subject_and_persists_validator
     # validator rejection even when the implementation reports a ready state.
     status = {"state": "ENVIRONMENT_READY", "checks": {}, "artifacts": [], "pod": "fixture-pod"}
     monkeypatch.setenv("USER_ID", "fixture")
-    with patch.object(task_runner, "load_yaml", return_value=profile), \
+    def load_fixture(path):
+        return profile if path.name == "p800-cluster.yaml" else yaml.safe_load(path.read_text())
+
+    with patch.object(task_runner, "load_yaml", side_effect=load_fixture), \
             patch("adapters.ClusterConfig.load", return_value=SimpleNamespace(namespace="fixture-namespace")), \
             patch("core.facade.get_hardware") as hardware, \
             patch("runners.deployment_proof.DeploymentProofRunner") as runner:
@@ -204,6 +207,9 @@ def test_base_model_execution_preserves_requested_subject_and_persists_validator
 
 
 def test_graph_different_target_revision_cannot_resume_old_fact(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(graph_runner.NODES, "model_intake", {
+        **graph_runner.NODES["model_intake"], "needs": {},
+    })
     target = write_target(tmp_path / "target.yaml",
                           runtime={"engine": "vllm", "backend": "kunlun", "plugin": "vllm-kunlun",
                                    "revisions": {"model": "new"}})
@@ -215,6 +221,7 @@ def test_graph_different_target_revision_cannot_resume_old_fact(tmp_path, monkey
     monkeypatch.setattr(sys, "argv", [
         "graph", "--subject", "demo", "--target", str(target), "--journal", str(journal),
         "--artifact-root", str(tmp_path / "artifacts"), "--resume",
+        "--from-node", "mat-001-model-intake",
         "--until-node", "mat-001-model-intake", "--set", "model_path=fixture-model",
     ])
     assert _graph_runner_cli.main() == 0
