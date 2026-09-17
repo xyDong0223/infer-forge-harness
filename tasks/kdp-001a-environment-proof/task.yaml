@@ -6,6 +6,19 @@ metadata:
   task_type: environment_proof
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/deployment/proof.py"
+      - "--execute"
+      - "--phase"
+      - "environment"
+      - "--artifact-dir"
+      - "{artifacts}"
+    inputs: {}
+    status_file: status.json
+    success_exit_keys: [pass]
   question: does this stack actually run on this hardware
   produces: EnvironmentProof
   consumes: [ResourceProfile]
@@ -13,8 +26,6 @@ spec:
   # it out: everything downstream that inspects the runtime — model scan,
   # failure triage, operator coverage — can run before any parameter is chosen.
   # It also means a later kernel failure cannot be blamed on the install.
-  runs_with: |
-    python3 cli/deployment/proof.py --user-id <user-supplied-id> --execute --phase environment
 context:
   validation:
     base_model:

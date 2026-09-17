@@ -110,6 +110,12 @@ trusted real Pod/device drivers; unsupported real execution must remain blocked.
 
 ### Source ownership
 
+Executable Task metadata belongs in `tasks/*/task.yaml` under
+`spec.execution_descriptor`. The Graph, Journal kind map and tool catalog derive
+their execution bindings from those definitions; do not add parallel command or
+success-state tables. Keep domain-specific assembly and fan-out in Python.
+See [Task execution and Memory migration](docs/migration/task-execution.zh-CN.md).
+
 Put host-side argument parsing and command entry points under `cli/`. Implement
 task behavior under the matching `operations/` domain: `intake`, `discovery`,
 `deployment`, `validation`, or `operators`. The CLI delegates execution; it does

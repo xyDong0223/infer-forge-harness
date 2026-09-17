@@ -6,9 +6,24 @@ metadata:
   task_type: operator_candidate_integration
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/operator_lifecycle.py"
+      - "integrate"
+      - "--subject"
+      - "{subject}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --baseline: {kind: ServingBaseline, artifact: baseline_manifest.json}
+    status_file: integration_status.json
+    success_exit_keys: [waiting, ready, scheduled_ready]
   question: can one generated operator be integrated without regressing the baseline
   produces: OperatorIntegration
   consumes: [ServingBaseline]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/operators/operator_lifecycle.py integrate --baseline <baseline_manifest.json> \
       --candidate <candidate_manifest.json> --subject <model> --out <artifacts>

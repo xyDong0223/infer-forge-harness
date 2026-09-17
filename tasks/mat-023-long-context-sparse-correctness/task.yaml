@@ -6,9 +6,23 @@ metadata:
   task_type: long_context_sparse_correctness
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/correctness.py"
+      - "long-context"
+      - "--pod"
+      - "{pod}"
+      - "--out"
+      - "{artifacts}"
+    inputs: {}
+    status_file: long_context_status.json
+    success_exit_keys: [pass]
   question: does sparse selection remain correct beyond one block-selection boundary
   produces: LongContextSparseCorrectness
   consumes: [CapabilityMatch, DeploymentProof]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/validation/tensor_diff.py --candidate <candidate.json> --reference <reference.json> \
       --control <shifted-block-control.json> --max-relative-l2 <threshold> \

@@ -6,6 +6,22 @@ metadata:
   task_type: support_matrix
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/update_support_matrix.py"
+      - "--subject"
+      - "{subject}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --accuracy: {kind: AccuracyDifferential, artifact: accuracy_differential.json}
+      --deployment-status: {kind: DeploymentProof, artifact: status.json, optional: true}
+      --budget-status: {kind: MemoryBudget, artifact: budget_status.json, optional: true}
+      --plan: {kind: DeploymentPlan, artifact: deployment_plan.json, optional: true}
+    status_file: matrix_status.json
+    success_exit_keys: [pass]
   question: what may the catalog claim about this model on this hardware
   produces: SupportMatrixEntry
   consumes: [DeploymentProof, AccuracyDifferential]
@@ -14,6 +30,7 @@ spec:
   # The matrix is the artifact people read instead of reading evidence, so a row
   # must carry what it is true of. Writing without --apply prints the row and
   # validates it; the catalog only changes when asked.
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/validation/update_support_matrix.py --subject Qwen3-8B \
       --deployment-status <artifacts>/kdp-001b/status.json \

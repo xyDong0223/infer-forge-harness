@@ -6,6 +6,21 @@ metadata:
   task_type: failure_triage
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/triage.py"
+      - "--pod"
+      - "{pod}"
+      - "--contract-instance"
+      - "{contract_instance}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --env-status: {kind: EnvironmentProof, artifact: status.json}
+    status_file: status.json
+    success_exit_keys: [pass]
   question: which layer owns this failure, and can we fix it or must the vendor
   produces: FailureTriage
   # Before DeploymentPlan exists, preserve the failed task status and logs as
@@ -18,6 +33,7 @@ spec:
     - vllm_kunlun_plugin
     - kunlun_ops_vendor
     - torch_xmlir_vendor
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     # Before a deployment plan: collect the original failed task for diagnosis.
     python3 cli/operators/triage.py --failure-status <failed-status.json> --out <fresh-output>

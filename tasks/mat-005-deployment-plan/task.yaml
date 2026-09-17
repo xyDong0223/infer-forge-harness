@@ -6,6 +6,19 @@ metadata:
   task_type: deployment_plan
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/deployment/plan_deployment.py"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --model-request: {kind: ModelRequest, artifact: model_request.yaml}
+      --classification: {kind: GapClassification, artifact: gap_classification.json}
+      --placed-patch: {kind: PlacedPatch, artifact: placement_report.json, optional: true}
+    status_file: plan_status.json
+    success_exit_keys: [pass]
   question: which launch parameters follow from what has been established
   produces: DeploymentPlan
   # PlacedPatch is optional and matters: a shape-dynamic fallback forces eager
@@ -13,12 +26,6 @@ spec:
   consumes: [ModelRequest, GapClassification]
   consumes_optional: [PlacedPatch]
   offline: true
-  runs_with: |
-    python3 cli/deployment/plan_deployment.py \
-      --model-request <artifacts>/mat-001/model_request.yaml \
-      --classification <artifacts>/mat-004/gap_classification.json \
-      --placed-patch <artifacts>/mat-007/placement_report.json \
-      --out <artifacts>/mat-005
   # This closes the last hand-typed step. Launch parameters were being written by
   # a human into instance contracts, where they became indistinguishable from
   # measured values.

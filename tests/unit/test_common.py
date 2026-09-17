@@ -51,13 +51,9 @@ class TestScriptedPathsResolve(unittest.TestCase):
                 )
 
     def test_every_catalog_command_script_exists(self) -> None:
-        catalog = (REPO_ROOT / "catalog" / "tool_catalog.yaml").read_text(encoding="utf-8")
-        for match in re.finditer(r"command: python3 (\S+\.py)", catalog):
-            with self.subTest(command=match.group(1)):
-                self.assertTrue(
-                    (REPO_ROOT / match.group(1)).exists(),
-                    f"tool_catalog references {match.group(1)}, which does not exist",
-                )
+        from cli.maintenance.check_repo_references import check_tool_catalog
+
+        self.assertEqual(check_tool_catalog(REPO_ROOT), [])
 
     def test_every_task_contract_tool_reference_exists(self) -> None:
         for task_yaml in sorted((REPO_ROOT / "tasks").glob("*/task.yaml")):

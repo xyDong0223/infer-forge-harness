@@ -6,6 +6,23 @@ metadata:
   task_type: model_intake
   version: 0.2.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/intake/model_intake.py"
+      - "--model-id"
+      - "{subject}"
+      - "--model-path"
+      - "{model_path}"
+      - "--attempt-id"
+      - "{attempt}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --env-status: {kind: EnvironmentProof, artifact: status.json}
+    status_file: intake_status.json
+    success_exit_keys: [pass]
   # Intake pins identity only. Every runtime decision (dtype, TP, max_model_len)
   # is made later with evidence; recording a guess here would let it be mistaken
   # for a fact about the checkpoint.

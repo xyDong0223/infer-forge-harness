@@ -23,6 +23,7 @@ from contextlib import ExitStack
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from core.paths import REPO_ROOT
 from core.user_identity import resolve_user_id
@@ -45,251 +46,22 @@ from validators.deployment_validator import (  # noqa: E402
     validate_environment_identity,
 )
 
-# How to invoke each node, and which recorded facts it needs. `artifacts` is the
-# node's own output directory; `fact:<Kind>:<file>` resolves through the Journal.
+# Executable metadata comes from Task definitions. This compatibility view is
+# only a derived lookup: adding/changing a normal node requires no Python table.
+from core.task_execution import default_execution_catalog
+
+TASK_EXECUTIONS = default_execution_catalog()
 NODES: dict[str, dict] = {
-    "model_intake": {
-        "produces": "ModelRequest",
-        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": [
-            "python3", "cli/intake/model_intake.py",
-            "--model-id", "{subject}", "--model-path", "{model_path}",
-            "--attempt-id", "{attempt}", "--out", "{artifacts}",
-        ],
-        "state_file": "intake_status.json",
-    },
-    "environment_proof": {
-        "produces": "EnvironmentProof",
-        "command": [
-            "python3", "cli/deployment/proof.py",
-            "--execute", "--phase", "environment", "--artifact-dir", "{artifacts}",
-        ],
-        "state_file": "status.json",
-    },
-    "model_scan": {
-        "produces": "ModelSupportCard",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
-                  "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/discovery/scan_model_support.py", "--out", "{artifacts}"],
-        "state_file": "scan_status.json",
-    },
-    "runtime_drift_scan": {
-        "produces": "RuntimeDriftReport",
-        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/discovery/scan_runtime_drift.py", "--out", "{artifacts}"],
-        "state_file": "drift_status.json",
-    },
-    "toy_bringup": {
-        "produces": "ToyBringupReport",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
-                  "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/deployment/toy_bringup.py", "--out", "{artifacts}"],
-        "state_file": "bringup_status.json",
-    },
-    "torch_shim_handoff": {
-        "produces": "TorchShimRegistry",
-        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/discovery/scan_torch_shims.py",
-                    "--subject", "{subject}", "--out", "{artifacts}"],
-        "state_file": "shim_status.json",
-    },
-    "capability_match": {
-        "produces": "CapabilityMatch",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
-                  "--support-card": "fact:ModelSupportCard:model_support.json",
-                  "--env-status": "fact:EnvironmentProof:status.json"},
-        "command": ["python3", "cli/discovery/match_capabilities.py", "--out", "{artifacts}"],
-        "state_file": "match_status.json",
-    },
-    "gap_classification": {
-        "produces": "GapClassification",
-        "needs": {"--support-card": "fact:ModelSupportCard:model_support.json",
-                  "--capability-match": "fact:CapabilityMatch:capability_match.json"},
-        "command": ["python3", "cli/discovery/classify_gaps.py", "--out", "{artifacts}"],
-        "state_file": "classification_status.json",
-    },
-    "operator_task_dispatch": {
-        "produces": "OperatorTaskDispatch",
-        "needs": {"--gaps": "fact:GapClassification:gap_classification.json"},
-        "command": [
-            "python3", "cli/operators/operator_lifecycle.py", "dispatch",
-            "--subject", "{subject}", "--out", "{artifacts}",
-        ],
-        "state_file": "dispatch_status.json",
-    },
-    "deployment_plan": {
-        "produces": "DeploymentPlan",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml",
-                  "--classification": "fact:GapClassification:gap_classification.json"},
-        # Optional, and it matters: without the placed patch the plan reports
-        # enforce_eager=False, and the support matrix then records a condition the
-        # deployment did not actually run under.
-        "optional": {"--placed-patch": "fact:PlacedPatch:placement_report.json"},
-        "command": ["python3", "cli/deployment/plan_deployment.py", "--out", "{artifacts}"],
-        "state_file": "plan_status.json",
-    },
-    "service_proof": {
-        "produces": "DeploymentProof",
-        # The plan renders the instance contract, and the pod comes from the
-        # environment proof; both are passed in via --set rather than guessed.
-        "command": [
-            "python3", "cli/deployment/proof.py", "{contract_instance}",
-            "--execute", "--phase", "service", "--attach-pod", "{pod}",
-            "--artifact-dir", "{artifacts}",
-        ],
-        "state_file": "status.json",
-    },
-    "memory_budget": {
-        "produces": "MemoryBudget",
-        "needs": {},
-        "command": [
-            "python3", "cli/deployment/memory_budget.py", "--pod", "{pod}",
-            "--server-log", "{server_log}", "--out", "{artifacts}",
-        ],
-        "state_file": "budget_status.json",
-    },
-    "accuracy_differential": {
-        "produces": "AccuracyDifferential",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
-        "command": [
-            "python3", "cli/validation/accuracy_differential.py", "--pod", "{pod}",
-            "--served-model-name", "{served_model_name}", "--port", "{port}",
-            "--out", "{artifacts}",
-        ],
-        "state_file": "accuracy_status.json",
-    },
-    "baseline_freeze": {
-        "produces": "ServingBaseline",
-        "needs": {
-            "--service": "fact:DeploymentProof:status.json",
-            "--accuracy": "fact:AccuracyDifferential:accuracy_differential.json",
-        },
-        "command": [
-            "python3", "cli/operators/operator_lifecycle.py", "freeze-baseline",
-            "--subject", "{subject}", "--out", "{artifacts}",
-        ],
-        "state_file": "baseline_status.json",
-    },
-    "operator_candidate_integration": {
-        "produces": "OperatorIntegration",
-        "needs": {"--baseline": "fact:ServingBaseline:baseline_manifest.json"},
-        "command": [
-            "python3", "cli/operators/operator_lifecycle.py", "integrate",
-            "--subject", "{subject}", "--out", "{artifacts}",
-        ],
-        "state_file": "integration_status.json",
-    },
-    "support_matrix": {
-        "produces": "SupportMatrixEntry",
-        "needs": {"--accuracy": "fact:AccuracyDifferential:accuracy_differential.json"},
-        "optional": {
-            "--deployment-status": "fact:DeploymentProof:status.json",
-            "--budget-status": "fact:MemoryBudget:budget_status.json",
-            "--plan": "fact:DeploymentPlan:deployment_plan.json",
-        },
-        "command": [
-            "python3", "cli/validation/update_support_matrix.py", "--subject", "{subject}",
-            "--out", "{artifacts}",
-        ],
-        "state_file": "matrix_status.json",
-    },
-    "vendor_handoff": {
-        "produces": "VendorHandoff",
-        "needs": {"--triage": "fact:FailureTriage:triage_report.json"},
-        "command": [
-            "python3", "cli/operators/vendor_handoff.py",
-            "--environment", "{environment_text}", "--out", "{artifacts}",
-        ],
-        "state_file": "handoff_status.json",
-    },
-    # mat-006 as one orchestrated sequence (instrument -> rerun service ->
-    # capture -> isolate -> restore -> verdict). It used to stop the walk as a
-    # MANUAL step, which meant every kernel failure on a new model waited for a
-    # person; the sequence was always mechanical, only unowned.
-    "failure_triage": {
-        "produces": "FailureTriage",
-        "needs": {"--env-status": "fact:EnvironmentProof:status.json"},
-        "command": [
-            "python3", "cli/operators/triage.py",
-            "--pod", "{pod}", "--contract-instance", "{contract_instance}",
-            "--out", "{artifacts}",
-        ],
-        "state_file": "status.json",
-    },
-    # mat-007 likewise: apply the reversible fallback, validate in the server,
-    # compare numerically, record the placement — or reject and remove it.
-    "patch_placement": {
-        "produces": "PlacedPatch",
-        "needs": {"--triage": "fact:FailureTriage:triage_report.json"},
-        "command": [
-            "python3", "cli/operators/place_patch.py",
-            "--pod", "{pod}", "--contract-instance", "{contract_instance}",
-            "--out", "{artifacts}",
-        ],
-        "state_file": "status.json",
-    },
-    # The three correctness gates, sequenced by cli/validation/correctness.py.
-    # Each exercises the real path against an independent reference with a
-    # discriminating control; a control that cannot fail makes the grade
-    # AMBIGUOUS, never a pass.
-    "platform_kernel_correctness": {
-        "produces": "PlatformKernelCorrectness",
-        "command": [
-            "python3", "cli/validation/correctness.py", "kernel",
-            "--pod", "{pod}", "--out", "{artifacts}",
-        ],
-        "state_file": "kernel_status.json",
-    },
-    "end_to_end_accuracy": {
-        "produces": "EndToEndAccuracy",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
-        "command": [
-            "python3", "cli/validation/correctness.py", "end-to-end",
-            "--pod", "{pod}", "--served-model-name", "{served_model_name}",
-            "--port", "{port}", "--out", "{artifacts}",
-        ],
-        "state_file": "accuracy_status.json",
-    },
-    "long_context_sparse_correctness": {
-        "produces": "LongContextSparseCorrectness",
-        "command": [
-            "python3", "cli/validation/correctness.py", "long-context",
-            "--pod", "{pod}", "--out", "{artifacts}",
-        ],
-        "state_file": "long_context_status.json",
-    },
-    # The first node whose width is not known until an upstream artifact is read:
-    # which capability dimensions are worth exercising depends on what the model
-    # demands. `list` prints a JSON array, one child runs per element, and `aggregate`
-    # is the fan-in — the tool owns the artifact format, the executor only walks.
-    "capability_evaluation": {
-        "produces": "CapabilityEvaluation",
-        "needs": {"--capability-match": "fact:CapabilityMatch:capability_match.json"},
-        "fan_out": {
-            "var": "dimension",
-            "list": ["python3", "cli/discovery/evaluate_capability.py", "--list-dimensions"],
-            "aggregate": ["python3", "cli/discovery/evaluate_capability.py", "--aggregate",
-                          "--out", "{artifacts}"],
-        },
-        "command": [
-            "python3", "cli/discovery/evaluate_capability.py", "--dimension", "{dimension}",
-            "--subject", "{subject}", "--pod", "{pod}", "--model-path", "{weights}",
-            "--out", "{artifacts}",
-        ],
-        "state_file": "evaluation_status.json",
-    },
-    # A different question from every numerical node: whether the response has the
-    # right shape. Needs a pod but not a running server, because parsers are pure text
-    # transforms.
-    "api_conformance": {
-        "produces": "ApiConformance",
-        "needs": {"--model-request": "fact:ModelRequest:model_request.yaml"},
-        "command": [
-            "python3", "cli/validation/check_api_conformance.py", "--subject", "{subject}",
-            "--pod", "{pod}", "--out", "{artifacts}",
-        ],
-        "state_file": "conformance_status.json",
-    },
+    name: descriptor.to_node_spec() for name, descriptor in TASK_EXECUTIONS.items()
+}
+
+# Dynamic fan-out remains a Python coordination policy, not a YAML program.
+# The Task owns the child command; this adapter enumerates and aggregates it.
+NODES["capability_evaluation"]["fan_out"] = {
+    "var": "dimension",
+    "list": ["python3", "cli/discovery/evaluate_capability.py", "--list-dimensions"],
+    "aggregate": ["python3", "cli/discovery/evaluate_capability.py", "--aggregate",
+                  "--out", "{artifacts}"],
 }
 
 # Every task type in the workflow now has a sequenced executor. The MANUAL
@@ -325,8 +97,15 @@ def node_task_type(node: dict) -> str | None:
     task = node.get("task")
     if not task or task == "PLANNED":
         return None
-    contract = yaml.safe_load((REPO_ROOT / task).read_text(encoding="utf-8"))
-    return contract["metadata"]["task_type"]
+    path = (REPO_ROOT / task).resolve()
+    contract = yaml.safe_load(path.read_text(encoding="utf-8"))
+    task_type = contract["metadata"]["task_type"]
+    descriptor = TASK_EXECUTIONS.get(task_type)
+    if descriptor is not None and (
+        path != descriptor.task_path or file_digest(path) != descriptor.task_sha256
+    ):
+        raise ValueError("workflow Task differs from the loaded execution contract; reload the Graph")
+    return task_type
 
 
 def resolve(
@@ -526,7 +305,7 @@ def node_passed(artifacts: Path, spec: dict, returncode: int) -> bool:
     payload = read_status(artifacts, spec)
     validator = payload.get("validator")
     return (
-        returncode == 0 and read_state(artifacts, spec) in SUCCESS_STATES
+        returncode == 0 and read_state(artifacts, spec) in success_states(spec)
         and (validator is None or isinstance(validator, dict)
              and validator.get("passed") is True and not validator.get("errors"))
     )
@@ -540,7 +319,7 @@ def write_skill_contract(attempt, skill: dict) -> Path:
 
 def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
                       commands: list[tuple[Path, list[str]]],
-                      skill: dict | None = None, attempt=None):
+                      skill: dict | None = None, attempt=None, task_spec: dict | None = None):
     """Bind a read-only plan to a fresh workspace only when it will execute."""
     attempt = attempt or paths.allocate_attempt(node)
     resolved = [
@@ -554,6 +333,14 @@ def allocate_commands(paths: RunPaths, node: str, artifacts: Path,
     )
     if skill is not None:
         write_skill_contract(attempt, skill)
+    if task_spec and task_binding(task_spec):
+        binding = task_binding(task_spec)
+        if file_digest(Path(binding["path"])) != binding["sha256"]:
+            raise ValueError("Task definition changed before execution; reload the Graph")
+        ArtifactStore(attempt.input).write_json("task_execution.json", {
+            "schema_version": 1, "task_contract": binding,
+            "descriptor": {key: value for key, value in task_spec.items() if key != "fan_out"},
+        })
     return attempt, resolved
 
 
@@ -645,37 +432,42 @@ def validate_run_identity(paths: RunPaths) -> None:
             or not isinstance(identity.get("run_id"), str) or not identity["run_id"].strip()
             or paths.run_id is not None and identity["run_id"] != paths.run_id):
         raise WritePolicyError(f"run identity conflicts with {marker}")
+    paths.run_id = identity["run_id"]
 
 
-SUCCESS_STATES = {
-    "INTAKE_READY",
-    "ENVIRONMENT_READY",
-    "SCAN_READY",
-    "MATCH_READY",
-    "CLASSIFICATION_READY",
-    "EVALUATION_PASS",
-    "PLAN_READY",
-    "DEPLOYMENT_READY",
-    "BUDGET_ACCEPTABLE",
-    "CONFORMANT",
-    "HANDOFF_READY",
-    "TRIAGE_READY",
-    "PATCH_PLACED",
-    "KERNEL_PASS",
-    "ACCURACY_PASS",
-    "LONG_CONTEXT_PASS",
-    "DISPATCHED",
-    "DISPATCH_SKIPPED",
-    "BASELINE_FROZEN",
-    "WAITING_FOR_CANDIDATE",
-    "READY_FOR_INTEGRATION",
-    "DRIFT_CLEAR",
-    "DRIFT_FOUND",
-    "BRINGUP_PASS",
-    "HANDOFF_CLEAR",
-    "MATRIX_READY",
-    "OPERATORS_READY",
-}
+def memory_run_id(args) -> str:
+    """Reserve an identity without making read-only plans create a run."""
+    paths = args.run_paths
+    if paths.run_id is None:
+        validate_run_identity(paths)
+        paths.run_id = paths.run_id or uuid4().hex
+    return paths.run_id
+
+
+def load_task_memory(args) -> dict:
+    return task_memory.load(args.loop_state, args.workflow.stem, args.subject,
+                            journal=args.journal, run_id=memory_run_id(args))
+
+
+def save_task_memory(args, memory: dict) -> None:
+    run_id = memory_run_id(args)
+    args.run_paths.initialize()
+    task_memory.save(args.loop_state, memory, journal=args.journal, run_id=run_id)
+
+
+def task_binding(spec: dict) -> dict | None:
+    if spec.get("task_path") and spec.get("task_sha256"):
+        return {"path": spec["task_path"], "sha256": spec["task_sha256"]}
+    return None
+
+
+SUCCESS_STATES = frozenset(state for spec in NODES.values() for state in spec["success_states"])
+
+
+def success_states(spec: dict):
+    # Synthetic/manual specs may omit a contract. Production descriptors always
+    # carry their own Task's selected exit states, not another node's success.
+    return spec.get("success_states", SUCCESS_STATES)
 
 
 def reusable_fact(
@@ -689,7 +481,7 @@ def reusable_fact(
     hit = journal_module.latest(
         journal, kind, subject=subject, environment=fact_environment(kind, environment)
     )
-    if not hit or hit.get("state") not in SUCCESS_STATES:
+    if not hit or hit.get("state") not in success_states(spec):
         return None
     artifact_dir = Path(hit["artifacts"])
     payload = read_status(artifact_dir, spec)
@@ -702,6 +494,10 @@ def reusable_fact(
     ):
         return None
     detail = hit.get("detail") or {}
+    # Old facts remain readable/reusable under their existing evidence rules.
+    # Newly bound facts cannot survive a changed Task definition unnoticed.
+    if detail.get("task_contract") is not None and detail["task_contract"] != task_binding(spec):
+        return None
     if skill is not None:
         method = skill.get("method")
         recorded = detail.get("skill")
@@ -949,6 +745,8 @@ def record_fact(journal: Path, spec: dict, subject: str, artifacts: Path,
                 child_skills: list[dict] | None = None) -> dict:
     detail = {"status_sha256": file_digest(artifacts / spec["state_file"]),
               "returncode": returncode}
+    if task_binding(spec) is not None:
+        detail["task_contract"] = task_binding(spec)
     if (artifacts / "failure_record.json").is_file():
         detail["failure_sha256"] = file_digest(artifacts / "failure_record.json")
     if skill is not None:
@@ -1147,9 +945,25 @@ def create_interactive_handoff(args, *, node: str, spec: dict, context: dict,
     attempt = locate_attempt(artifacts)
     if attempt is None or attempt.identity["run_id"] != args.run_id:
         raise ValueError("interactive failure must belong to a managed run attempt")
+    if task_binding(spec) is not None and file_digest(Path(spec["task_path"])) != spec["task_sha256"]:
+        raise ValueError("Task definition changed during execution; do not freeze a stale handoff")
+    # A cache rebuild must not invalidate a decision about immutable evidence.
+    # Legacy pending handoffs are returned before this function is reached.
+    snapshot = attempt.input / "task_memory_snapshot.json"
+    memory = load_task_memory(args)
+    if snapshot.exists():
+        if json.loads(snapshot.read_text(encoding="utf-8")) != memory:
+            raise ValueError("handoff Task Memory snapshot already exists with different content")
+    else:
+        ArtifactStore(attempt.input).write_json(snapshot.name, memory)
+    manifest = attempt.root / "manifest.json"
+    outcome = json.loads(manifest.read_text(encoding="utf-8"))["outcome"]
+    ArtifactStore(attempt.root).register(identity=attempt.identity, outcome=outcome)
     files = {}
-    paths = [args.workflow, args.journal, args.loop_state, attempt.root / ".attempt.json",
+    paths = [args.workflow, args.journal, snapshot, attempt.root / ".attempt.json",
              attempt.root / "manifest.json"]
+    if task_binding(spec) is not None:
+        paths.append(Path(spec["task_path"]))
     paths.extend(value for name in ("target", "operator_report", "shim_registry")
                  if (value := getattr(args, name, None)) is not None)
     commands_path = attempt.input / "commands.json"
@@ -1295,7 +1109,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             else:
                 commands = [(planned, resolve(spec, merged, args.journal, environment))]
             attempt, commands = allocate_commands(
-                paths, node, planned, commands, skill=skill, attempt=attempt,
+                paths, node, planned, commands, skill=skill, attempt=attempt, task_spec=spec,
             )
             prepare_regression_attempt(
                 bridge, spec, attempt, args.journal, args.subject, environment,
@@ -1441,15 +1255,15 @@ def execute_graph_decision(args, handoff: dict, decision, scheduler) -> dict:
         retry_context["environment_text"] = ",".join(
             f"{key}={value}" for key, value in sorted(environment.items())
         )
-        memory = task_memory.load(args.loop_state, args.workflow.stem, args.subject)
+        memory = load_task_memory(args)
         task_memory.start_block(
             memory, block_id=f"{node}:decision:{len(memory['completed_loop_blocks']) + 1}",
-            sub_target=node, exit_condition={"success_states": sorted(SUCCESS_STATES)},
+            sub_target=node, exit_condition={"success_states": sorted(success_states(spec))},
             routing=skill_routing(skill, mode="interactive_recovery"),
         )
         task_memory.finish_block(memory, outcome.final_state, artifacts=[final_artifacts],
                                  next_block={"sub_target": node})
-        task_memory.save(args.loop_state, memory)
+        save_task_memory(args, memory)
         # Parameter decisions become durable resume inputs only after the one-shot
         # invocation returns. An unknown execution is kept by its accepted receipt.
         if decision.params:
@@ -1499,7 +1313,7 @@ def finish_scheduled_graph(bridge, args, environment: dict, context: dict) -> in
         emit_summary({"status": "BLOCKED", "reason_code": "DELIVERY_GATE",
                       "message": str(error), "run_id": args.run_id}, args.json)
         return 2
-    memory = task_memory.load(args.loop_state, args.workflow.stem, args.subject)
+    memory = load_task_memory(args)
     task_memory.start_block(
         memory, block_id=f"delivery:{len(memory['completed_loop_blocks']) + 1}",
         sub_target="model-adaptation-delivery",
@@ -1509,7 +1323,7 @@ def finish_scheduled_graph(bridge, args, environment: dict, context: dict) -> in
     task_memory.finish_block(
         memory, "DELIVERED", artifacts=[result["receipt_path"], result["manifest_path"]],
     )
-    task_memory.save(args.loop_state, memory)
+    save_task_memory(args, memory)
     emit_summary({"status": result["state"], "reason_code": "DELIVERY_RECORDED",
                   **result}, args.json)
     return 0
@@ -1676,7 +1490,7 @@ def _run(args, resources: ExitStack) -> int:
             bridge.bind_environment(Path(proof["artifacts"]))
     context["environment_text"] = ",".join(f"{k}={v}" for k, v in sorted(environment.items()))
     loop_state = args.loop_state
-    memory = task_memory.load(loop_state, args.workflow.stem, args.subject)
+    memory = load_task_memory(args)
 
     nodes = load_workflow(args.workflow)
     order = [node["id"] for node in nodes]
@@ -1792,7 +1606,7 @@ def _run(args, resources: ExitStack) -> int:
                 block_id=f"{current}:reused:{len(memory['completed_loop_blocks']) + 1}",
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
-                 "success_states": sorted(SUCCESS_STATES)},
+                 "success_states": sorted(success_states(spec))},
                 routing=skill_routing(skill, mode="reuse_journal_fact"),
             )
             task_memory.finish_block(
@@ -1802,7 +1616,7 @@ def _run(args, resources: ExitStack) -> int:
                 next_block={"sub_target": next_task},
             )
             if args.execute:
-                task_memory.save(loop_state, memory)
+                save_task_memory(args, memory)
             emit_summary(
                 {"status": "REUSED", "node": current, "next_task": next_task,
                  "reason_code": "SUCCESSFUL_FACT_REUSED",
@@ -1864,6 +1678,7 @@ def _run(args, resources: ExitStack) -> int:
         if args.execute:
             attempt, commands = allocate_commands(
                 args.run_paths, current, artifacts, commands, skill=skill, attempt=attempt,
+                task_spec=spec,
             )
             artifacts = attempt.output
             _progress_context.get()["artifacts"] = [str(artifacts)]
@@ -1876,10 +1691,10 @@ def _run(args, resources: ExitStack) -> int:
                 block_id=f"{current}:{len(memory['completed_loop_blocks']) + 1}",
                 sub_target=current,
                 exit_condition={"state_file": spec["state_file"],
-                                "success_states": sorted(SUCCESS_STATES)},
+                                "success_states": sorted(success_states(spec))},
                 routing=skill_routing(skill),
             )
-            task_memory.save(loop_state, memory)
+            save_task_memory(args, memory)
             emit_summary({"status": "RUNNING", "node": current,
                           "reason_code": "NODE_STARTED",
                           "message": "Node execution started; inspect logs/watch records for liveness.",
@@ -1983,7 +1798,7 @@ def _run(args, resources: ExitStack) -> int:
                 artifacts=[str(artifacts)],
                 next_block={"sub_target": next_block},
             )
-            task_memory.save(loop_state, memory)
+            save_task_memory(args, memory)
             if bridge and spec["produces"] == "TorchShimRegistry" and (
                 artifacts / "torch_shim_registry.json"
             ).is_file():
@@ -2001,7 +1816,7 @@ def _run(args, resources: ExitStack) -> int:
                     next_block={"sub_target": current if dispatch_blocked
                                 else node.get("on_success")},
                 )
-                task_memory.save(loop_state, memory)
+                save_task_memory(args, memory)
                 if dispatch_blocked:
                     emit_summary({
                         "status": "BLOCKED", "node": current, "next_task": current,
@@ -2091,7 +1906,7 @@ def _run(args, resources: ExitStack) -> int:
                         memory, issue="command_failure", evidence=[str(artifacts)],
                         environment=environment, source=current,
                     )
-                    task_memory.save(loop_state, memory)
+                    save_task_memory(args, memory)
                     return emit_interactive_boundary(create_interactive_handoff(
                         args, node=current, spec=spec, context=context, artifacts=artifacts,
                         environment=environment, state=state, task_type=task_type,
@@ -2126,14 +1941,14 @@ def _run(args, resources: ExitStack) -> int:
                             memory,
                             block_id=f"{current}:recovered:{len(memory['completed_loop_blocks']) + 1}",
                             sub_target=current,
-                            exit_condition={"success_states": sorted(SUCCESS_STATES)},
+                            exit_condition={"success_states": sorted(success_states(spec))},
                             routing=routing,
                         )
                         task_memory.finish_block(
                             memory, state, artifacts=[str(artifacts)],
                             next_block={"sub_target": node.get("on_success")},
                         )
-                        task_memory.save(loop_state, memory)
+                        save_task_memory(args, memory)
                         emit_summary(
                             {"status": "RECOVERED", "node": current,
                              "next_task": node.get("on_success"),
@@ -2151,7 +1966,7 @@ def _run(args, resources: ExitStack) -> int:
                         environment=environment,
                         source=current,
                     )
-                    task_memory.save(loop_state, memory)
+                    save_task_memory(args, memory)
                     failure = node.get("on_failure", "NEEDS_HUMAN")
                     print(f"[edge] {current} --failure--> {failure}")
                     emit_summary(

@@ -6,12 +6,23 @@ metadata:
   task_type: operator_task_dispatch
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/operator_lifecycle.py"
+      - "dispatch"
+      - "--subject"
+      - "{subject}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --gaps: {kind: GapClassification, artifact: gap_classification.json}
+    status_file: dispatch_status.json
+    success_exit_keys: [dispatched, no_gap]
   question: which confirmed operator gaps should be delegated asynchronously
   produces: OperatorTaskDispatch
   consumes: [GapClassification]
-  runs_with: |
-    python3 cli/operators/operator_lifecycle.py dispatch --gaps <gap_classification.json> \
-      --subject <model> --out <artifacts>
   runs_with_scheduler: |
     python3 cli/operators/operator_lifecycle.py dispatch --gaps <gap_classification.json> \
       --operator-report <measured-operators.json> --scheduler-state <state.sqlite> \

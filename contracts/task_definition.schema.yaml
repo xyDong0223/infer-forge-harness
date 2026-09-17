@@ -1,0 +1,106 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Versioned source Task definition (not a deployment execution instance)
+type: object
+required: [api_version, kind, metadata, acceptance, artifacts, exit_states]
+properties:
+  api_version:
+    type: string
+    pattern: '^infer\.kunlun/v[0-9]+(alpha|beta)[0-9]+$'
+  kind: {const: Task}
+  metadata:
+    type: object
+    required: [name, task_type]
+    properties:
+      name: {type: string, minLength: 1}
+      task_type: {$ref: '#/$defs/identifier'}
+      family: {type: string}
+      version: {type: string}
+      owner: {type: string}
+    additionalProperties: false
+  spec:
+    type: object
+    properties:
+      produces: {$ref: '#/$defs/identifier'}
+      consumes:
+        type: array
+        uniqueItems: true
+        items: {$ref: '#/$defs/identifier'}
+      execution_descriptor: {$ref: '#/$defs/execution_descriptor'}
+    additionalProperties: true
+  context: {type: object}
+  execution: {type: object}
+  actions:
+    type: array
+    minItems: 1
+    items: {type: string, minLength: 1}
+  acceptance: {type: object, minProperties: 1}
+  checks: {type: object}
+  artifacts:
+    oneOf:
+      - type: array
+        items: {type: string, minLength: 1}
+      - type: object
+        properties:
+          directory: {type: string}
+          files: {type: array, items: {type: string}}
+          collect: {type: array, items: {type: string}}
+        additionalProperties: true
+  validator:
+    type: string
+    pattern: '^validators/[A-Za-z0-9_/-]+\.py(:[A-Za-z_][A-Za-z0-9_]*)?$'
+  exit_states:
+    type: object
+    minProperties: 1
+    propertyNames: {$ref: '#/$defs/identifier'}
+    additionalProperties: {type: string, pattern: '^[A-Z][A-Z0-9_]*$'}
+  notes: {type: array}
+  findings: {type: array}
+  limitations: {type: array}
+allOf:
+  - if:
+      required: [spec]
+      properties:
+        spec: {required: [execution_descriptor]}
+    then:
+      required: [validator]
+      properties:
+        spec: {required: [produces, consumes]}
+additionalProperties: false
+$defs:
+  identifier:
+    type: string
+    pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+  relative_file:
+    type: string
+    minLength: 1
+    pattern: '^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*[\\{}*?\[\]:]).+$'
+  execution_descriptor:
+    type: object
+    required: [schema_version, argv, inputs, status_file, success_exit_keys]
+    properties:
+      schema_version: {type: integer, const: 1}
+      argv:
+        type: array
+        minItems: 2
+        prefixItems:
+          - {const: python3}
+          - {type: string, pattern: '^cli/[A-Za-z0-9_/-]+\.py$'}
+        items: {type: string, minLength: 1}
+      inputs:
+        type: object
+        propertyNames: {pattern: '^--[a-z][a-z0-9-]*$'}
+        additionalProperties:
+          type: object
+          required: [kind, artifact]
+          properties:
+            kind: {$ref: '#/$defs/identifier'}
+            artifact: {$ref: '#/$defs/relative_file'}
+            optional: {type: boolean}
+          additionalProperties: false
+      status_file: {$ref: '#/$defs/relative_file'}
+      success_exit_keys:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {$ref: '#/$defs/identifier'}
+    additionalProperties: false

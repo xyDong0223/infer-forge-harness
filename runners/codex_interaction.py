@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.storage import ArtifactStore, RunPaths, ensure_external
+from core.storage import ArtifactStore, RunPaths, ensure_external, locate_attempt
 from engine.brain import Decision
 from engine.interaction import (
     accept_graph_decision, current_graph_handoff, finish_graph_decision,
@@ -120,6 +121,71 @@ def advance_run(scheduler, run_id: str, *, settings=()) -> dict:
         return _view(scheduler, run_id, exit_code=result["exit_code"], artifact_root=artifact_root)
 
 
+def _preflight_graph_retry(run_id: str, handoff: dict, args) -> None:
+    """Reject command drift before accepting an unversioned, pre-descriptor handoff.
+
+    This only reads the old attempt and resolves templates. In particular, it
+    never runs a fan-out list command or applies the new decision's parameters.
+    """
+    from runners import graph_runner
+
+    source, request = handoff["source"], handoff["request"]
+    attempt = locate_attempt(source["artifacts"])
+    if (attempt is None or attempt.identity["run_id"] != run_id
+            or attempt.identity["attempt_id"] != source["attempt_id"]
+            or attempt.identity["task_id"] != source["node"]
+            or Path(source["artifacts"]) != attempt.output):
+        raise ValueError("retry handoff does not identify its original managed attempt")
+    files = source["source_files"]
+
+    def bound_bytes(path: Path) -> bytes:
+        if (str(path) not in files or path.is_symlink() or not path.is_file()
+                or path.resolve() != path):
+            raise ValueError(f"retry source does not bind a regular file: {path}")
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != files[str(path)]:
+            raise ValueError(f"retry source changed: {path}")
+        return payload
+
+    bound_bytes(attempt.root / ".attempt.json")
+    commands = json.loads(bound_bytes(attempt.input / "commands.json"))
+    if (not isinstance(commands, list) or not commands
+            or any(not isinstance(command, list) or not command
+                   or any(not isinstance(part, str) for part in command) for command in commands)):
+        raise ValueError("retry source has invalid recorded commands")
+    task_type = source["task_type"]
+    if task_type not in graph_runner.NODES:
+        raise ValueError(f"retry Task is no longer supported: {task_type}")
+    context = dict(request["context"])
+    spec = graph_runner.scheduled_spec(graph_runner.NODES[task_type], context)
+    binding = graph_runner.task_binding(spec)
+    snapshot = attempt.input / "task_execution.json"
+    versioned = str(snapshot) in files
+    if versioned or (binding and binding["path"] in files):
+        if not versioned or not binding:
+            raise ValueError("retry Task binding is incomplete; inspect the original attempt")
+        task_bytes = bound_bytes(Path(binding["path"]))
+        saved = json.loads(bound_bytes(snapshot))
+        if (hashlib.sha256(task_bytes).hexdigest() != binding["sha256"]
+                or not isinstance(saved, dict) or saved.get("schema_version") != 1
+                or saved.get("task_contract") != binding
+                or saved.get("descriptor") != {key: value for key, value in spec.items()
+                                               if key != "fan_out"}):
+            raise ValueError("retry Task execution descriptor changed; inspect the original attempt")
+    if "fan_out" in spec:
+        if versioned:
+            return  # The child descriptor is bound; enumeration stays runtime-owned.
+        raise ValueError("legacy fan-out retry cannot be verified read-only; inspect and block this handoff")
+    context.update(artifacts=str(attempt.output), attempt=source["attempt_id"])
+    try:
+        command = graph_runner.resolve(spec, context, args.journal,
+                                       dict(request["failure"]["environment"]))
+    except (KeyError, ValueError, OSError, graph_runner.Unresolved) as error:
+        raise ValueError(f"cannot verify original retry command: {error}") from error
+    if commands != [command]:
+        raise ValueError("retry command changed from the original attempt; inspect and block this handoff")
+
+
 def submit_graph_decision(scheduler, run_id: str, handoff_id: str, decision_id: str,
                           expected_version: str, decision: dict) -> dict:
     """Accept once, execute once, then persist the execution/next handoff atomically."""
@@ -129,7 +195,17 @@ def submit_graph_decision(scheduler, run_id: str, handoff_id: str, decision_id: 
         # Replays must work even after execution legitimately changed the
         # workflow/context. Acceptance validates an existing ID first.
         prior = scheduler.store.run(run_id).metadata.get("graph_decisions", {}).get(decision_id)
-        args = None if prior else graph_arguments(scheduler, run_id)
+        retry = isinstance(decision, dict) and decision.get("next_action") in {"RETRY", "RETRY_WITH_PARAMS"}
+        args = graph_arguments(scheduler, run_id) if not prior and retry else None
+        if not prior and retry:
+            handoff = scheduler.store.run(run_id).metadata.get("graph_handoffs", {}).get(handoff_id)
+            if handoff is None:
+                raise ValueError(f"unknown handoff for run {run_id}: {handoff_id}")
+            if handoff.get("source_version") != expected_version:
+                raise ValueError("stale handoff: expected source_version does not match")
+            if handoff.get("state") != "pending":
+                raise ValueError("handoff is not pending; an accepted execution must not be repeated")
+            _preflight_graph_retry(run_id, handoff, args)
         receipt, execute_now = accept_graph_decision(
             scheduler, run_id, handoff_id, decision_id, expected_version, decision,
         )

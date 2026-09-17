@@ -6,17 +6,24 @@ metadata:
   task_type: gap_classification
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/discovery/classify_gaps.py"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --support-card: {kind: ModelSupportCard, artifact: model_support.json}
+      --capability-match: {kind: CapabilityMatch, artifact: capability_match.json}
+    status_file: classification_status.json
+    success_exit_keys: [pass]
   question: what kind of gap is this, and therefore what is the next action
   produces: GapClassification
   consumes: [ModelSupportCard, CapabilityMatch]
   # Reads two static findings and executes nothing, so it runs off the artifacts
   # alone — no pod, no cluster.
   offline: true
-  runs_with: |
-    python3 cli/discovery/classify_gaps.py \
-      --support-card <artifacts>/mat-002/model_support.json \
-      --capability-match <artifacts>/mat-003/capability_match.json \
-      --out <artifacts>/mat-004
   non_goal: deciding whether the model runs
 context:
   input_artifacts:

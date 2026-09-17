@@ -6,16 +6,23 @@ metadata:
   task_type: model_scan
   version: 0.3.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/discovery/scan_model_support.py"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --model-request: {kind: ModelRequest, artifact: model_request.yaml}
+      --env-status: {kind: EnvironmentProof, artifact: status.json}
+    status_file: scan_status.json
+    success_exit_keys: [pass]
   question: which implementation will actually run this architecture on this hardware, and if none, where does one exist
   produces: ModelSupportCard
   # The pod comes from the environment proof, the identity from intake. This Task
   # creates nothing and needs no launch parameter.
   consumes: [ModelRequest, EnvironmentProof]
-  runs_with: |
-    python3 cli/discovery/scan_model_support.py \
-      --model-request <artifacts>/mat-001/model_request.yaml \
-      --env-status <artifacts>/kdp-001a/status.json \
-      --out <artifacts>/mat-002
 context:
   input_artifacts:
     - model_request.yaml

@@ -6,6 +6,22 @@ metadata:
   task_type: service_proof
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/deployment/proof.py"
+      - "{contract_instance}"
+      - "--execute"
+      - "--phase"
+      - "service"
+      - "--attach-pod"
+      - "{pod}"
+      - "--artifact-dir"
+      - "{artifacts}"
+    inputs: {}
+    status_file: status.json
+    success_exit_keys: [pass]
   question: does this model serve on this proven environment
   produces: DeploymentProof
   # The launch parameters come from the deployment plan, not from a guess here;
@@ -13,10 +29,6 @@ spec:
   # refuses to create a pod of its own — doing so would reinstall the runtime and
   # invalidate the environment proof it is supposed to build on.
   consumes: [EnvironmentProof, DeploymentPlan]
-  runs_with: |
-    python3 cli/deployment/proof.py \
-      <DeploymentPlan artifact_root>/kdp_instance.yaml --execute --phase service \
-      --attach-pod <pod from the environment proof's status.json>
 context:
   model:
     name: ${MODEL_NAME}

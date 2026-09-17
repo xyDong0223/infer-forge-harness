@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fcntl
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from core.paths import REPO_ROOT
@@ -23,24 +26,10 @@ from core.paths import REPO_ROOT
 from core.storage import default_state_root, ensure_external
 
 DEFAULT_JOURNAL = default_state_root() / "journal.jsonl"
-# Which produced fact each task_type contributes, mirroring the contracts'
-# `spec.produces`.
-KINDS = {
-    "model_intake": "ModelRequest",
-    "environment_proof": "EnvironmentProof",
-    "model_scan": "ModelSupportCard",
-    "capability_match": "CapabilityMatch",
-    "gap_classification": "GapClassification",
-    "deployment_plan": "DeploymentPlan",
-    "service_proof": "DeploymentProof",
-    "memory_budget": "MemoryBudget",
-    "failure_triage": "FailureTriage",
-    "patch_placement": "PlacedPatch",
-    "vendor_handoff": "VendorHandoff",
-    "platform_kernel_correctness": "PlatformKernelCorrectness",
-    "end_to_end_accuracy": "EndToEndAccuracy",
-    "long_context_sparse_correctness": "LongContextSparseCorrectness",
-}
+from core.task_execution import default_execution_catalog
+
+# Task definitions, not a parallel hand-maintained fact-name registry.
+KINDS = {name: task.produces for name, task in default_execution_catalog().items()}
 
 
 def fingerprint(environment: dict[str, str]) -> str:
@@ -57,6 +46,8 @@ def record(
     artifacts: Path,
     environment: dict[str, str],
     extra: dict | None = None,
+    *,
+    _locked: bool = False,
 ) -> dict:
     journal = ensure_external(journal)
     entry = {
@@ -69,10 +60,43 @@ def record(
     }
     if extra:
         entry["detail"] = extra
+    if _locked:
+        _append(journal, entry)
+    else:
+        with locked(journal):
+            _append(journal, entry)
+    return entry
+
+
+@contextmanager
+def locked(journal: Path):
+    """Serialize cooperating read/append transactions, including projection updates.
+
+    Readers do not acquire this write lock or create a sidecar. The separate lock
+    inode remains stable across an interrupted writer; the Journal is append-only.
+    """
+    journal = ensure_external(journal)
     journal.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = journal.with_name(journal.name + ".lock")
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield journal
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _append(journal: Path, entry: dict) -> None:
     with journal.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return entry
+        handle.flush()
+        os.fsync(handle.fileno())
+    # A newly created Journal must survive a crash along with its contents.
+    directory = os.open(journal.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def load(journal: Path) -> list[dict]:

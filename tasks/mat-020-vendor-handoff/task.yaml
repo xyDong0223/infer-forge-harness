@@ -6,6 +6,19 @@ metadata:
   task_type: vendor_handoff
   version: 0.2.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/vendor_handoff.py"
+      - "--environment"
+      - "{environment_text}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --triage: {kind: FailureTriage, artifact: triage_report.json}
+    status_file: handoff_status.json
+    success_exit_keys: [pass]
   question: what does the vendor need in order to act on this
   produces: VendorHandoff
   consumes: [FailureTriage]
@@ -27,6 +40,7 @@ spec:
       consumes: findings yaml
       routes_by_layer: true
       validator_entry: validate_handoff_package
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/operators/vendor_handoff.py \
       --triage <artifacts>/mat-006/triage_report.json \

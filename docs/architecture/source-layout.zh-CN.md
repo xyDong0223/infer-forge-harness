@@ -55,7 +55,6 @@ Runner 也按相同边界拆分：CLI 解析参数，执行序列留在 `runners
 | 用途 | 当前入口 |
 | --- | --- |
 | 创建/恢复 AdaptationRun、环境绑定、worker 领取和完成 | `cli/adaptation.py` |
-| 原简化 scheduler 命令集合 | `cli/scheduler.py` |
 | Graph 规划与执行 | `cli/workflow/graph.py` |
 | 环境/服务部署证明 | `cli/deployment/proof.py` |
 | 诊断、补丁放置 | `cli/operators/triage.py`、`cli/operators/place_patch.py` |
@@ -80,6 +79,11 @@ python3 cli/maintenance/check_repo_references.py
 ```bash
 python3 -m pip install -e '.[test]'
 ```
+
+run、worker 队列与租约只有 `cli/adaptation.py` 一个公开管理入口。原简化
+scheduler 入口已移除；全库和按 run 的任务查询使用其只读 `list` 子命令。
+原数据库、run ID、attempt 和原始证据不迁移、不改写；CLI 参数及 JSON 输出
+迁移差异见 [CLI 总览](../../cli/README.md#状态与执行边界)。
 
 外部自动化若记录了旧脚本路径或 import 路径，必须显式改用新入口；
 本次不创建兼容跳板，也不重写旧运行记录中的命令和证据。

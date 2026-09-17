@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from engine.contracts import OperatorTask
 from tests.scheduler_helpers import simulation_result, stage_result
@@ -289,25 +292,75 @@ def test_contract_binding_uses_the_runners_absolute_artifact_root(tmp_path, monk
     assert Path(observed["root"]) == expected
 
 
-def test_unknown_run_is_machine_readable_error(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command", ["status", "list"])
+def test_unknown_run_is_machine_readable_error(tmp_path: Path, command: str) -> None:
     from engine.scheduler import EventStore
 
     state = tmp_path / "state.db"
     EventStore(state).close()
-    result = _run(state, "status", "--run-id", "missing")
+    result = _run(state, command, "--run-id", "missing")
     assert result.returncode == 2
     payload = json.loads(result.stdout)
     assert payload["error"] == "unknown run: missing"
-    assert payload["command"] == "status"
+    assert payload["command"] == command
     assert payload["progress"]["next_action"]["action"] == "FIX_COMMAND"
 
 
-def test_status_missing_database_is_read_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("arguments", [("status", "--run-id", "missing"), ("list",),
+                                       ("list", "--run-id", "missing")])
+def test_query_missing_database_is_read_only(tmp_path: Path, arguments) -> None:
     state = tmp_path / "missing/state.db"
-    result = _run(state, "status", "--run-id", "missing")
+    result = _run(state, *arguments)
     assert result.returncode == 2
     assert "existing state database" in json.loads(result.stdout)["error"]
     assert not state.parent.exists()
+
+
+def test_list_reads_all_or_one_run_without_recovering_or_relabelling(tmp_path: Path) -> None:
+    from engine import IOSpec, OperatorSpec, TaskScheduler
+
+    state = tmp_path / "state.db"
+    scheduler = TaskScheduler(state)
+    for run_id, protocol in (("legacy", "legacy-v1"), ("managed", "managed-v2")):
+        scheduler.create_run(run_id=run_id, model_id=run_id, model_revision="model-v1",
+                             plugin_revision="plugin-v1", backend="simulation", metadata={
+            "evidence_mode": "simulation", "worker_protocol": protocol,
+            "artifact_root": str(tmp_path / run_id),
+        })
+        scheduler.discover_operator(run_id, OperatorSpec(
+            operator_id="op", model_id=run_id, model_revision="model-v1",
+            plugin_revision="plugin-v1", backend="simulation",
+            inputs=[IOSpec("x", "float64", [1], "contiguous")],
+            outputs=[IOSpec("y", "float64", [1], "contiguous")],
+            semantics={"formula": "y = x"},
+        ))
+    expired = scheduler.claim_ready("worker", run_id="legacy", lease_seconds=0.001)[0]
+    time.sleep(0.01)
+    assert expired.lease_expires < time.time()
+    expected = [task.to_dict() for task in scheduler.store.tasks()]
+    scheduler.store.close()
+    def durable_files():
+        # SQLite mode=ro can create transient WAL/SHM coordination files; compare
+        # the database and owned run artifacts, not SQLite's lock bookkeeping.
+        paths = [state, *(tmp_path / "legacy").rglob("*"), *(tmp_path / "managed").rglob("*")]
+        return {str(path.relative_to(tmp_path)): path.read_bytes() for path in paths if path.is_file()}
+
+    before = durable_files()
+
+    for arguments, run_id in (((), None), (("--run-id", "legacy"), "legacy"),
+                              (("--run-id", "managed"), "managed")):
+        listed = _run(state, "list", *arguments)
+        assert listed.returncode == 0, listed.stdout + listed.stderr
+        payload = json.loads(listed.stdout)
+        assert payload == {"command": "list", "run_id": run_id,
+                           "tasks": [task for task in expected if run_id is None or task["run_id"] == run_id]}
+
+    assert durable_files() == before
+    assert expected[0]["status"] == "running" and expected[0]["attempt"] == 1
+
+
+def test_removed_scheduler_entry_has_no_compatibility_wrapper() -> None:
+    assert not (ROOT / "cli" / "scheduler.py").exists()
 
 
 def test_discover_requires_environment_proof(tmp_path: Path) -> None:

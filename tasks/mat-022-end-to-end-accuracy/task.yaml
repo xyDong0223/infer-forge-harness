@@ -6,9 +6,28 @@ metadata:
   task_type: end_to_end_accuracy
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/correctness.py"
+      - "end-to-end"
+      - "--pod"
+      - "{pod}"
+      - "--served-model-name"
+      - "{served_model_name}"
+      - "--port"
+      - "{port}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --model-request: {kind: ModelRequest, artifact: model_request.yaml}
+    status_file: accuracy_status.json
+    success_exit_keys: [pass]
   question: does the integrated serving path preserve model outputs
   produces: EndToEndAccuracy
   consumes: [DeploymentProof, ModelRequest]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/validation/accuracy_differential.py --pod <pod> \
       --model-request <model_request.yaml> --served-model-name <name> \

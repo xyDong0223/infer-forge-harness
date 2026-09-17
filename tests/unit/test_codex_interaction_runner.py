@@ -121,6 +121,9 @@ def test_worker_boundary_does_not_silently_discard_explicit_settings(scheduler):
 
 def test_submission_is_durable_before_execution_and_replay_never_reruns(scheduler, monkeypatch, tmp_path):
     from runners import graph_runner
+    # This unit isolates receipt execution; production evidence preflight is
+    # exercised with real failed Graph attempts in test_legacy_graph_handoff.
+    monkeypatch.setattr("runners.codex_interaction._preflight_graph_retry", lambda *args: None)
     item, decision = handoff(scheduler)
     calls = []
 
@@ -149,6 +152,7 @@ def test_submission_is_durable_before_execution_and_replay_never_reruns(schedule
 
 def test_unexpected_execution_failure_stays_uncertain_across_restart(scheduler, monkeypatch):
     from runners import graph_runner
+    monkeypatch.setattr("runners.codex_interaction._preflight_graph_retry", lambda *args: None)
     item, decision = handoff(scheduler)
 
     def crash(*args):

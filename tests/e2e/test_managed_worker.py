@@ -299,3 +299,43 @@ def test_managed_worker_dead_coordinator_requires_process_and_receipt_reconcilia
     new_candidate, new_evidence = case.produce(replacement)
     validation = case.cli(*case.validation_args(replacement, new_candidate, new_evidence, "recovered-controller"))
     assert case.complete(replacement, validation["result_path"])["task"]["status"] == "succeeded"
+
+
+def test_unified_cli_list_preserves_completed_and_expired_tasks_across_restart(managed_scenario):
+    case = managed_scenario
+    task = case.claim()
+    candidate, evidence = case.produce(task)
+    validation = case.cli(*case.validation_args(task, candidate, evidence))
+    assert case.complete(task, validation["result_path"])["task"]["status"] == "succeeded"
+    other = "legacy-observed-run"
+    case.cli("create-run", "--run-id", other, "--model", "legacy-fixture",
+             "--backend", "simulation-cpu", "--metadata", str(case.root / "metadata.json"),
+             "--artifact-root", str(case.root / "legacy-run"))
+    case.cli("discover", "--run-id", other, "--report", str(case.root / "observed-gap.json"))
+    claimed = case.cli("claim", "--run-id", other, "--worker", "legacy-worker",
+                       "--stage", "torch", "--lease-seconds", "0.05")["tasks"][0]
+    time.sleep(0.08)
+    state_before = case.state.read_bytes()
+    roots = [case.root / "run", case.root / "legacy-run"]
+    artifacts_before = {str(path): path.read_bytes()
+                        for root in roots for path in root.rglob("*") if path.is_file()}
+    global_list = case.cli("list")
+    assert global_list["run_id"] is None
+    assert len(global_list["tasks"]) == 3  # completed torch, next xpu, unrelated expired torch
+    assert next(item for item in global_list["tasks"] if item["task_id"] == task["task_id"])["status"] == "succeeded"
+    legacy = case.cli("list", "--run-id", other)
+    assert legacy["tasks"] == [claimed]  # No lease recovery, task relabelling or attempt allocation.
+    assert case.cli("list", "--run-id", other) == legacy  # A fresh CLI process repeats the observation.
+    selected = case.cli("list", "--run-id", case.run_id)
+    assert len(selected["tasks"]) == 2
+    assert all(item["run_id"] == case.run_id for item in selected["tasks"])
+    rejected = case.cli("list", "--run-id", "unknown-run", expected=2)
+    assert rejected["error"] == "unknown run: unknown-run"
+    missing_state = case.root / "absent-state" / "state.sqlite"
+    missing = case.process([sys.executable, str(REPO_ROOT / "cli/adaptation.py"),
+                            "--state", str(missing_state), "list"], expected=2)
+    assert "existing state database" in json.loads(missing.stdout)["error"]
+    assert not missing_state.parent.exists()
+    assert case.state.read_bytes() == state_before
+    assert {str(path): path.read_bytes()
+            for root in roots for path in root.rglob("*") if path.is_file()} == artifacts_before

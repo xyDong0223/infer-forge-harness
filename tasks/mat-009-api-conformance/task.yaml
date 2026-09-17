@@ -9,13 +9,24 @@ metadata:
   task_type: api_conformance
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/check_api_conformance.py"
+      - "--subject"
+      - "{subject}"
+      - "--pod"
+      - "{pod}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --model-request: {kind: ModelRequest, artifact: model_request.yaml}
+    status_file: conformance_status.json
+    success_exit_keys: [pass]
   question: does the served API carry reasoning and tool calls in the right fields
   produces: ApiConformance
   consumes: [ModelRequest, EnvironmentProof]
-  runs_with: |
-    python3 cli/validation/check_api_conformance.py --subject <model-id> \
-      --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
-      --out <artifacts>/mat-009
 context:
   target:
     hardware: Kunlunxin-3-P800

@@ -6,12 +6,24 @@ metadata:
   task_type: baseline_freeze
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/operator_lifecycle.py"
+      - "freeze-baseline"
+      - "--subject"
+      - "{subject}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --service: {kind: DeploymentProof, artifact: status.json}
+      --accuracy: {kind: AccuracyDifferential, artifact: accuracy_differential.json}
+    status_file: baseline_status.json
+    success_exit_keys: [pass]
   question: is the working service stable enough to become the integration baseline
   produces: ServingBaseline
   consumes: [DeploymentProof, AccuracyDifferential]
-  runs_with: |
-    python3 cli/operators/operator_lifecycle.py freeze-baseline --service <status.json> \
-      --accuracy <accuracy_status.json> --subject <model> --out <artifacts>
 context:
   target:
     hardware: Kunlunxin-3-P800

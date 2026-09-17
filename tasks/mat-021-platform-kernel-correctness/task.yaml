@@ -6,9 +6,23 @@ metadata:
   task_type: platform_kernel_correctness
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/correctness.py"
+      - "kernel"
+      - "--pod"
+      - "{pod}"
+      - "--out"
+      - "{artifacts}"
+    inputs: {}
+    status_file: kernel_status.json
+    success_exit_keys: [pass]
   question: does the platform kernel compute the contract independently of model wiring
   produces: PlatformKernelCorrectness
   consumes: [CapabilityMatch, EnvironmentProof]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/validation/tensor_diff.py --candidate <candidate.json> --reference <reference.json> \
       --control <negative-control.json> --max-relative-l2 <threshold> \

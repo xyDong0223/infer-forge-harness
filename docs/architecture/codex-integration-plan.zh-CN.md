@@ -1,6 +1,6 @@
 # Codex 驱动的模型适配：审阅与实施计划
 
-状态：P0/P1 已落地；P2 按本地核心、设备侧驱动两个增量推进，尚未整体完成；P3/P4 未启动。审阅日期：2026-09-17；初始源码基线：`9d4b85b`。
+状态：P0/P1 已落地；P2 本地核心已落地，设备侧驱动尚未完成；P3 已落地并通过完整本地验收；P4 未启动。审阅日期：2026-09-17；初始源码基线：`9d4b85b`。
 本文规划 harness 与 Codex 的接入，不构成任何模型、设备或新工作流已通过验收的声明。
 
 ## 1. 推荐方向与范围
@@ -14,10 +14,12 @@
 - `TaskScheduler`、lease、attempt、诊断记录继续作为默认保障。它们控制的是领域任务与证据，Codex 会话恢复不能替代这些约束。
 - CodexWorker 不作为第一项工程。交互式主 Agent 已能调用 CLI 和委派子 Agent；只有无人值守需求明确后，才增加调用 Codex 的薄执行器。
 - Workflow、Task、Operation、Validator 的分层保留。应消除同一字段的多处维护，而非把所有职责压进一个 YAML。
-- Task Memory 当前包含独占的观察和 claims；完成这些信息的迁移前，不能将它直接删除或视为可丢弃缓存。
-- 原简化 scheduler CLI 最终按仓库迁移协议移除并更新调用者，不新增永久兼容跳板。
+- P3 新执行将 Task Memory 的观察和 claims 持久化到 Journal，再生成可重建视图。尚未迁移的旧 Memory 仍是唯一原始记录，不可直接删除。
+- 原简化 scheduler CLI 已按仓库迁移协议移除并更新调用者，没有新增永久兼容跳板。
 
-## 2. 当前证据与改造重点
+## 2. 初始审阅证据与改造重点
+
+下表记录初始源码基线的问题，不代表所有问题在当前版本仍存在；已完成范围以第 5 节的阶段状态和验收记录为准。
 
 | 观察 | 源码位置 | 对计划的影响 |
 | --- | --- | --- |
@@ -192,9 +194,15 @@ P1 可以先在本地模拟环境证明交互接缝。**真实并行 Pod 执行�
 
 先迁移一个简单节点验证设计，再逐节点替换重复字段。需要 fan-out、聚合或复杂参数装配的逻辑留在 Python Runner/Operation；Workflow 继续只描述节点、边和执行策略。实际 Task 文档形状与 schema 一并核对迁移，不假设当前全部任务已经使用统一 schema。
 
-状态职责明确为：SQLite 管任务与控制事件，Journal 管环境绑定的证据索引，artifacts 管原始输入/输出；Task Memory 是最终要变为可重建的摘要视图。先迁移独占 claims/observations 并验证重建，再减少双写。暂不做整个存储系统合并。
+状态职责明确为：SQLite 管任务与控制事件，Journal 管环境绑定的证据索引和 Task Memory 协调事件，artifacts 管原始输入/输出；Task Memory 是可重建的摘要视图。旧文件在首次执行写入时保留原文与哈希作为未重新验证的 seed；查询不迁移，不将历史摘要升级成正确性证明。暂不做整个存储系统合并。
 
-统一到 `cli/adaptation.py` 后，盘点并迁移 `cli/scheduler.py` 的调用者、测试和文档，在单独变更中移除旧入口。保持当前可恢复 run 的读取和原始证据不变；协议升级需要显式版本处理。
+已统一到 `cli/adaptation.py`，迁移调用者、测试和文档后删除旧 scheduler 入口，不保留兼容跳板。补充只读 `list [--run-id]`。历史 run 的协议、SQLite 状态和原始证据不重写；协议升级需要显式版本处理。
+
+落地范围：24 个 Graph Task 的 argv、输入绑定、状态文件与成功出口均来自只读类型化描述；Graph/Journal/delivery 状态文件映射和工具目录不再各维护同义入口。fan-out 枚举、聚合与领域参数逻辑仍在 Python。新增源 Task schema 与部署实例 schema 分离，不放宽既有验收。
+
+新 attempt 保存 Task 描述及源哈希，新事实拒绝复用已变更的 Task；旧事实保持既有证据门禁。新交互 handoff 绑定不可变 Memory 快照；已有 pending handoff 在投影迁移前返回，保留原凭据校验。详见 [P3 迁移说明](../migration/task-execution.zh-CN.md)。
+
+2026-09-17 验收：完整本地回归 1,294 passed、15 skipped、2 个真实设备/模型测试 deselected，另有 171 个 subtests passed；仓库引用与依赖方向检查通过。新增的只读 CLI、Memory 重建/故障保留/新进程恢复场景均走生产入口、真实 scheduler 和 validators。本地证据不代表硬件就绪，P2 设备侧剩余工作未因 P3 完成而被解除。
 
 ### P4 的 Codex 选择
 

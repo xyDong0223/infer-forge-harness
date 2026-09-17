@@ -356,6 +356,7 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
         json.loads(line)
         for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
     ]
+    facts = [fact for fact in facts if fact["kind"] == "ModelRequest"]
     assert len(facts) == 3
 
 

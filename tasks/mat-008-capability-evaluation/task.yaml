@@ -6,6 +6,25 @@ metadata:
   task_type: capability_evaluation
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/discovery/evaluate_capability.py"
+      - "--dimension"
+      - "{dimension}"
+      - "--subject"
+      - "{subject}"
+      - "--pod"
+      - "{pod}"
+      - "--model-path"
+      - "{weights}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --capability-match: {kind: CapabilityMatch, artifact: capability_match.json}
+    status_file: evaluation_status.json
+    success_exit_keys: [pass]
   question: does the capability actually run on this hardware, and are its numbers right
   produces: CapabilityEvaluation
   consumes: [CapabilityMatch, EnvironmentProof]
@@ -17,9 +36,6 @@ spec:
   fan_out: |
     python3 cli/discovery/evaluate_capability.py --list-dimensions \
       --capability-match <artifacts>/mat-003/capability_match.json
-  runs_with: |
-    python3 cli/discovery/evaluate_capability.py --dimension <dimension> --subject <subject> \
-      --pod <pod> --model-path <weights> --out <artifacts>/mat-008/<dimension>
   fan_in: |
     python3 cli/discovery/evaluate_capability.py --aggregate --out <artifacts>/mat-008 \
       --child <artifacts>/mat-008/<dimension> ...

@@ -75,6 +75,20 @@ does not unlock a new attempt. These cases do not run the complete model-deliver
 graph or prove real XPU/model-service readiness. The builtin real XPU/integration
 driver is deliberately unsupported and returns `BLOCKED`.
 
+The P3 unified-CLI case reuses that worker fixture to complete a measured task,
+then lists it alongside an unrelated expired legacy claim. Global and run-scoped
+`list` calls in fresh CLI processes preserve the database and attempt artifacts;
+unknown runs/databases are rejected without creating state. It does not run the
+full model-delivery graph or upgrade the legacy worker protocol.
+
+P3 cases in `test_memory_projection.py` use real production Graph execution with
+simulated external runtime boundaries and Journal-backed Task Memory. A missing
+or corrupt cache is reconstructed in a new CLI process; read-only display does
+not write, an incorrect run identity is rejected, and graph resume reuses the
+validated facts. Failed toy execution retains its claims and pending decision
+across cache rebuilding, without replacing or automatically submitting that
+decision.
+
 The environment-input case starts without a seed YAML, checks the generated
 contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
 missing-input rejection against the shared status schema before cluster access,

@@ -15,7 +15,7 @@
 | 查询 Journal 和 Task Memory | [state/](state/) |
 | 检查源码引用与目录归属 | [maintenance/check_repo_references.py](maintenance/check_repo_references.py) |
 
-用各入口的 `--help` 查看实际参数。`scheduler.py` 是较低层接口，新集成优先使用 `adaptation.py`。文件级算子交接请求不等于 Scheduler 中的任务已经完成。
+用各入口的 `--help` 查看实际参数。run、算子任务与租约管理统一使用 `adaptation.py`；旧 scheduler 入口已移除，不保留兼容跳板。文件级算子交接请求不等于 Scheduler 中的任务已经完成。
 
 `deployment/proof.py` 默认 `--phase environment`：只证明 MiniMax-M2.5 基线，跳过 toy，返回 `ENVIRONMENT_READY`。即使传入目标模型示例，也不会启动目标服务。目标适配完成前置检查后，由 Graph 的 `--phase service --attach-pod ...` 执行目标 toy 与服务证明。`--phase all` 保留显式的旧版单次部署入口，不能代替模型适配工作流。契约的 `environment_proof` / `service_proof` 类型仍优先于 `--phase`；MiniMax 示例明确属于环境证明。
 
@@ -70,6 +70,16 @@ python cli/adaptation.py --state "$STATE" apply-diagnosis \
 ## 状态与执行边界
 
 使用 `adaptation.py --state "$STATE" status --run-id "$RUN_ID" --events` 查看实际状态。恢复继续用原数据库、run_id、版本和 artifact root；不要重用旧 attempt 作为输出。
+
+查看整个数据库的任务用 `adaptation.py --state "$STATE" list`，按 run 过滤加
+`--run-id "$RUN_ID"`。`list` 只读已有数据库，返回 `command`、`run_id`（全库时为
+`null`）和 `tasks`；不会创建数据库、恢复过期租约或重新验收结果。未知数据库或
+指定的未知 run 返回 exit 2。
+
+从旧 scheduler 入口迁移时，管理命令均使用同名子命令；创建 run 需显式传
+`--backend`。`create-run` 的 JSON 对象位于 `run`，任务变更结果位于 `task`，
+`claim` / `discover` / `list` 仍读取 `tasks`。`discover` 未指定的身份和 revision
+继承原 run，不再从旧默认值或报告猜测；先核对原 run，不重建或改写其历史证据。
 
 需要直接查看停在哪里、为什么停、由谁处理时：
 

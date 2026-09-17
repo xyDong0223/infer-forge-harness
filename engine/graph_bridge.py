@@ -9,6 +9,7 @@ from typing import Any
 
 from core.storage import ArtifactStore, RunPaths, ensure_external, locate_attempt
 from core.target import canonical_hardware
+from core.task_execution import default_execution_catalog
 from validators.accuracy_validator import validate_accuracy_report
 from validators.deployment_validator import (
     ENVIRONMENT_ARTIFACTS, validate_deployment_status, validate_environment_status,
@@ -22,23 +23,18 @@ from .managed_validation import managed_result_binding
 from .scheduler import EventStore, TaskScheduler
 
 
-FACT_STATUS = {
-    "ModelRequest": "intake_status.json",
-    "EnvironmentProof": "status.json",
-    "ModelSupportCard": "scan_status.json",
-    "CapabilityMatch": "match_status.json",
-    "GapClassification": "classification_status.json",
-    "CapabilityEvaluation": "evaluation_status.json",
-    "DeploymentPlan": "plan_status.json",
-    "ToyBringupReport": "bringup_status.json",
-    "TorchShimRegistry": "shim_status.json",
-    "DeploymentProof": "status.json",
-    "AccuracyDifferential": "accuracy_status.json",
-    "ServingBaseline": "baseline_status.json",
-    "OperatorTaskDispatch": "dispatch_status.json",
-    "OperatorIntegration": "integration_status.json",
-    "SupportMatrixEntry": "matrix_status.json",
-}
+# Delivery policy selects mandatory facts; each Task owns its status filename.
+# Optional triage/vendor branches must not become mandatory delivery gates.
+DELIVERY_FACTS = frozenset({
+    "ModelRequest", "EnvironmentProof", "ModelSupportCard", "CapabilityMatch",
+    "GapClassification", "CapabilityEvaluation", "DeploymentPlan", "ToyBringupReport",
+    "TorchShimRegistry", "DeploymentProof", "AccuracyDifferential", "ServingBaseline",
+    "OperatorTaskDispatch", "OperatorIntegration", "SupportMatrixEntry",
+})
+FACT_STATUS = {task.produces: task.status_file for task in default_execution_catalog().values()
+               if task.produces in DELIVERY_FACTS}
+if set(FACT_STATUS) != DELIVERY_FACTS:
+    raise ValueError("delivery facts require executable Task definitions")
 
 
 def _load(path: Path) -> dict:

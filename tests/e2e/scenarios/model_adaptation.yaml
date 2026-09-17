@@ -38,6 +38,11 @@ tiers:
           - test_managed_worker_wrong_numerics_fail_despite_successful_processes
           - test_managed_worker_crash_after_validation_replays_before_submit
           - test_managed_worker_dead_coordinator_requires_process_and_receipt_reconciliation
+          - test_unified_cli_list_preserves_completed_and_expired_tasks_across_restart
+      - test: tests/e2e/test_memory_projection.py
+        cases:
+          - test_memory_projection_rebuild_rejection_and_graph_restart
+          - test_memory_projection_preserves_failure_claims_and_pending_decision
     real_components:
       - cli
       - workflow

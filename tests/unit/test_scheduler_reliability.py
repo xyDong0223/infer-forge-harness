@@ -359,7 +359,7 @@ def test_environment_binding_fingerprints_artifacts_and_rejects_cross_environmen
     assert scheduler.store.run("run").environment["environment_proof"] == bound
 
 
-def test_legacy_cli_discovery_uses_bound_environment(tmp_path):
+def test_unified_cli_discovery_uses_bound_environment(tmp_path):
     scheduler = TaskScheduler(tmp_path / "state.db")
     scheduler.create_run(run_id="run", model_id="model", backend="device")
     run = scheduler.bind_environment("run", environment_proof(tmp_path / "proof"))
@@ -371,7 +371,7 @@ def test_legacy_cli_discovery_uses_bound_environment(tmp_path):
             "outputs": [spec().outputs[0].to_dict()], "semantics": {"description": "identity"},
         }],
     }))
-    script = Path(__file__).resolve().parents[2] / "cli" / "scheduler.py"
+    script = Path(__file__).resolve().parents[2] / "cli" / "adaptation.py"
     completed = subprocess.run([
         sys.executable, str(script), "--state", str(tmp_path / "state.db"),
         "discover", "--run-id", "run", "--model", "model", "--backend", "device",

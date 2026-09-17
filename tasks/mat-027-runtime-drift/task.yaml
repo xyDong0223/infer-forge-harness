@@ -6,15 +6,22 @@ metadata:
   task_type: runtime_drift_scan
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/discovery/scan_runtime_drift.py"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --env-status: {kind: EnvironmentProof, artifact: status.json}
+    status_file: drift_status.json
+    success_exit_keys: [clear, found]
   question: does every module of the installed plugin still import against the installed engine
   produces: RuntimeDriftReport
   # Only the pod. No model, no launch parameter, no weights, no XPU — which is
   # why this can run before anything is chosen about the model.
   consumes: [EnvironmentProof]
-  runs_with: |
-    python3 cli/discovery/scan_runtime_drift.py \
-      --env-status <artifacts>/kdp-001a/status.json \
-      --out <artifacts>/mat-027
 context:
   model:
     # Deliberately empty: drift is a property of the installation, not the model.

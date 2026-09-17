@@ -6,9 +6,25 @@ metadata:
   task_type: patch_placement
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/operators/place_patch.py"
+      - "--pod"
+      - "{pod}"
+      - "--contract-instance"
+      - "{contract_instance}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --triage: {kind: FailureTriage, artifact: triage_report.json}
+    status_file: status.json
+    success_exit_keys: [pass]
   question: where may this fix live, and is it still the same computation
   produces: PlacedPatch
   consumes: [FailureTriage, EnvironmentProof]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 tools/patches/apply_torch_decode_patch.py --pod <pod>
     # rerun kdp-001b-service-proof, then to reproduce the original failure:

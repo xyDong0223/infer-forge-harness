@@ -100,7 +100,8 @@ def test_failure_yields_and_headless_cannot_bypass_handoff(interactive, monkeypa
     assert isinstance(handoff["request"]["context"]["_producer_task_types"], dict)
     assert handoff["request"]["available_actions"] == ["RETRY", "RETRY_WITH_PARAMS", "BLOCKED"]
     files = handoff["source"]["source_files"]
-    assert any(path.endswith("task_memory.json") for path in files)
+    assert any(path.endswith("task_memory_snapshot.json") for path in files)
+    assert not any(path.endswith("task_memory.json") for path in files)
     assert any(path.endswith("node_console.log") for path in files)
     assert any(path.endswith("commands.json") for path in files)
     assert any(path.endswith("skill.json") for path in files)
@@ -113,6 +114,59 @@ def test_failure_yields_and_headless_cannot_bypass_handoff(interactive, monkeypa
     assert "--interaction-mode" in summaries[-1]["resume_command"]
     assert invoke(monkeypatch, interactive.argv + ["--interaction-mode", "headless"]) == 4
     assert len(interactive.calls) == 1
+    assert current_graph_handoff(interactive.scheduler, "r") == handoff
+
+
+def test_rebuilding_memory_cache_does_not_invalidate_pending_decision(interactive, monkeypatch):
+    from engine.state import task_memory
+
+    assert invoke(monkeypatch, interactive.argv) == 4
+    handoff = current_graph_handoff(interactive.scheduler, "r")
+    snapshot = next(Path(path) for path in handoff["source"]["source_files"]
+                    if path.endswith("task_memory_snapshot.json"))
+    manifest = json.loads((snapshot.parent.parent / "manifest.json").read_text())
+    assert any(entry["path"] == "input/task_memory_snapshot.json" for entry in manifest["artifacts"])
+    context = interactive.scheduler.store.run("r").metadata["graph_execution_context"]
+    cache, journal = Path(context["loop_state"]), Path(context["journal"])
+    original = cache.read_bytes()
+    journal_before = journal.read_bytes()
+    cache.unlink()
+    task_memory.rebuild(cache, Path(context["workflow"]).stem, "demo", journal=journal, run_id="r")
+    assert json.loads(cache.read_text()) == json.loads(original)
+    assert journal.read_bytes() == journal_before
+    _, execute = accept_graph_decision(
+        interactive.scheduler, "r", handoff["handoff_id"], "rebuild-decision",
+        handoff["source_version"], {"next_action": "RETRY", "diagnosis": "cache was rebuilt",
+                                  "evidence_refs": [str(snapshot)]},
+    )
+    assert execute
+
+
+def test_pending_legacy_memory_binding_returns_before_projection_migration(interactive, monkeypatch):
+    import engine.interaction as interaction
+
+    original_create = interaction.create_graph_handoff
+
+    def legacy_handoff(scheduler, run_id, source, request):
+        context = scheduler.store.run(run_id).metadata["graph_execution_context"]
+        cache = Path(context["loop_state"])
+        source["source_files"] = {
+            path: digest for path, digest in source["source_files"].items()
+            if not path.endswith("task_memory_snapshot.json")
+        }
+        source["source_files"][str(cache)] = graph_runner.file_digest(cache)
+        return original_create(scheduler, run_id, source, request)
+
+    monkeypatch.setattr(interaction, "create_graph_handoff", legacy_handoff)
+    assert invoke(monkeypatch, interactive.argv) == 4
+    handoff = current_graph_handoff(interactive.scheduler, "r")
+    cache = Path(next(path for path in handoff["source"]["source_files"]
+                      if path.endswith("task_memory.json")))
+    before = cache.read_bytes()
+    monkeypatch.setattr(graph_runner, "load_task_memory",
+                        lambda _: pytest.fail("pending legacy handoff must not migrate memory"))
+    assert invoke(monkeypatch, interactive.argv) == 4
+    assert cache.read_bytes() == before
     assert current_graph_handoff(interactive.scheduler, "r") == handoff
 
 
@@ -142,6 +196,28 @@ def test_replaced_upstream_command_input_rejects_old_decision(interactive, monke
                 "evidence_refs": [str(interactive.input_file)],
             },
         )
+    assert len(interactive.calls) == 1
+
+
+def test_task_definition_change_rejects_pending_decision(interactive, monkeypatch, tmp_path):
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("versioned Task execution definition")
+    monkeypatch.setitem(graph_runner.NODES, "environment_proof", {
+        **graph_runner.NODES["environment_proof"], "task_path": str(task_file),
+        "task_sha256": graph_runner.file_digest(task_file),
+    })
+    assert invoke(monkeypatch, interactive.argv) == 4
+    handoff = current_graph_handoff(interactive.scheduler, "r")
+    assert str(task_file) in handoff["source"]["source_files"]
+    assert any(path.endswith("task_execution.json") for path in handoff["source"]["source_files"])
+    task_file.write_text("a changed execution definition")
+    with pytest.raises(ValueError, match="source evidence changed"):
+        accept_graph_decision(
+            interactive.scheduler, "r", handoff["handoff_id"], "task-change-decision",
+            handoff["source_version"], {"next_action": "RETRY", "diagnosis": "inspect Task change",
+                                      "evidence_refs": [str(task_file)]},
+        )
+    assert current_graph_handoff(interactive.scheduler, "r") == handoff
     assert len(interactive.calls) == 1
 
 

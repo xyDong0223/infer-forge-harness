@@ -1,10 +1,4 @@
-"""Durable Task Loop memory for agent-driven execution.
-
-The Task remains the stable goal. Each graph node or manual investigation is a
-Loop Block with a local target, exit condition, and execution record. This
-module intentionally stores only coordination state; evidence stays in the
-artifact directories and the Journal remains the source of fact provenance.
-"""
+"""Read or explicitly rebuild a Task Memory view from its authoritative Journal."""
 
 from __future__ import annotations
 
@@ -26,9 +20,21 @@ def main() -> int:
     parser.add_argument("--path", type=Path, required=True)
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--subject", required=True)
-    parser.add_argument("--show", action="store_true")
+    parser.add_argument("--journal", type=Path)
+    parser.add_argument("--run-id")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--show", action="store_true")
+    action.add_argument("--rebuild", action="store_true")
     args = parser.parse_args()
-    return execute(args)
+    if args.rebuild and args.journal is None:
+        parser.error("--rebuild requires --journal and --run-id")
+    if (args.journal is None) != (args.run_id is None):
+        parser.error("--journal and --run-id must be supplied together")
+    try:
+        return execute(args)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"Task Memory: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

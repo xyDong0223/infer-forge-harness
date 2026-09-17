@@ -6,6 +6,20 @@ metadata:
   task_type: memory_budget
   version: 0.2.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/deployment/memory_budget.py"
+      - "--pod"
+      - "{pod}"
+      - "--server-log"
+      - "{server_log}"
+      - "--out"
+      - "{artifacts}"
+    inputs: {}
+    status_file: budget_status.json
+    success_exit_keys: [pass]
   question: where did this deployment's HBM go, and is the budget acceptable
   produces: MemoryBudget
   # Needs a serving deployment, and the log of the process that is currently
@@ -13,6 +27,7 @@ spec:
   # utilisation is still a successful deployment, so a capacity threshold must not
   # be able to fail a service proof. Record and gate stay separate.
   consumes: [DeploymentProof]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     export AI_INFRA_SKILLS_DIR=/path/to/AI-Infra-Auto-Driven-SKILLS
     python3 cli/deployment/memory_budget.py \

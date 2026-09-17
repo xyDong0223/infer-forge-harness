@@ -53,7 +53,7 @@ Harness 提供编排和验收基础设施；真实集群、模型权重和实现
 | 目标与成功条件 | Workflow、Task、acceptance contract | 转换为明确输入、输出、失败状态和最终声明 |
 | Shell/Python 脚本 | CLI、Operation、Runner、Adapter 或受管 Tool | 保留执行能力，同时显式声明参数、副作用、输出和重试语义 |
 | 调查方法与决策经验 | `SKILL.md` 和 Skill Catalog | 保留适用前提、决策规则、验证方法和退出条件 |
-| 某次运行的结论 | Journal、Task Memory 和 artifact | 绑定 run、revision、environment 和证据哈希，不误写成全局规则 |
+| 某次运行的结论 | Journal、Task Memory 视图和 artifact | 绑定 run、revision、environment 和证据哈希；新 Memory 可由 Journal 重建，未迁移旧文件仍须保留 |
 | 人工成功判断 | 独立 Validator | 将判断依据变成可重复验证的证据门禁 |
 
 **“不丢能力”不等于保留原目录形态。** 推荐采用以下迁移路径：
@@ -435,6 +435,7 @@ openwiki/      上游、插件和项目工程经验参考
 | [`docs/migration/runtime-write-policy.zh-CN.md`](docs/migration/runtime-write-policy.zh-CN.md) | 外部 run root、attempt、manifest 和写入约束 |
 | [`docs/migration/worker-results.md`](docs/migration/worker-results.md) | worker 结果 envelope、租约和证据要求 |
 | [`docs/migration/managed-worker.zh-CN.md`](docs/migration/managed-worker.zh-CN.md) | P2 本地受管候选验证、进程恢复及设备侧待接入边界 |
+| [`docs/migration/task-execution.zh-CN.md`](docs/migration/task-execution.zh-CN.md) | P3 Task 执行元数据、可重建 Memory 与统一 CLI |
 | [`docs/guides/performance-analysis.md`](docs/guides/performance-analysis.md) | 性能阶段边界和指标解释 |
 | [`openwiki/harness/`](openwiki/harness/) | 已沉淀的模型适配、运行时漂移和算子接入经验 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 修改边界、场景要求和提交规范 |

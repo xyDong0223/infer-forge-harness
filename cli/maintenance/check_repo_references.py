@@ -3,8 +3,18 @@ from __future__ import annotations
 
 import argparse
 import ast
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import shlex
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import yaml  # noqa: E402
+
+from core.task_execution import load_task  # noqa: E402
 
 IGNORED = {".git", ".venv", ".pytest_cache", "__pycache__", "artifacts", "openwiki"}
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".sh", ".json"}
@@ -20,8 +30,69 @@ LEGACY_IMPORT = re.compile(r"\b(?:from|import)\s+(?:patches|implementations)\b")
 LIBRARY_ROOTS = {"core", "engine", "operations", "runners", "adapters", "runtimes", "validators"}
 
 
+def check_tool_catalog(root: Path) -> list[str]:
+    """Validate indirection through the same Task reader used by the Graph."""
+    catalog = root / "catalog" / "tool_catalog.yaml"
+    if not catalog.is_file():
+        return []
+    try:
+        payload = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("kind") != "ToolCatalog":
+            raise ValueError("expected a ToolCatalog mapping")
+        entries = payload.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("entries must be a nonempty list")
+    except (OSError, ValueError, yaml.YAMLError) as error:
+        return [f"catalog/tool_catalog.yaml: {error}"]
+    errors, ids = [], set()
+    for index, entry in enumerate(entries):
+        label = f"catalog/tool_catalog.yaml entry {index}"
+        try:
+            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"].strip():
+                raise ValueError("tool entry requires a nonempty id")
+            label = f"catalog/tool_catalog.yaml {entry['id']}"
+            if entry["id"] in ids:
+                raise ValueError("duplicate tool id")
+            ids.add(entry["id"])
+            modes = {"command", "task_definition", "task_definitions"} & entry.keys()
+            if len(modes) != 1:
+                raise ValueError("provide exactly one command or Task definition reference form")
+            if "command" in modes:
+                command = entry["command"]
+                if not isinstance(command, str):
+                    raise ValueError("standalone command must be a string")
+                argv = shlex.split(command)
+                if len(argv) < 2 or argv[0] != "python3":
+                    raise ValueError("standalone command must name a python3 repository script")
+                path = PurePosixPath(argv[1])
+                if (path.is_absolute() or ".." in path.parts or path.suffix != ".py"
+                        or not (root / path).is_file()):
+                    raise ValueError(f"missing or invalid standalone command script: {argv[1]}")
+                continue
+            references = ([entry["task_definition"]] if "task_definition" in modes
+                          else entry["task_definitions"])
+            if (not isinstance(references, list) or not references
+                    or any(not isinstance(value, str) or not value for value in references)):
+                raise ValueError("Task references must be a nonempty list of paths")
+            if len(references) != len(set(references)):
+                raise ValueError("Task references must not contain duplicates")
+            for reference in references:
+                path = PurePosixPath(reference)
+                if (path.is_absolute() or ".." in path.parts or str(path) != reference
+                        or len(path.parts) != 3 or path.parts[0] != "tasks" or path.name != "task.yaml"):
+                    raise ValueError(f"invalid Task definition reference: {reference}")
+                descriptor = load_task(root / path)
+                if not descriptor.executable:
+                    raise ValueError(f"referenced Task has no execution descriptor: {reference}")
+                if not (root / descriptor.argv[1]).is_file():
+                    raise ValueError(f"Task entrypoint does not exist: {descriptor.argv[1]}")
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            errors.append(f"{label}: {error}")
+    return errors
+
+
 def scan(root: Path) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = check_tool_catalog(root)
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         if (not path.is_file() or path.suffix not in TEXT_SUFFIXES

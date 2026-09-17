@@ -59,12 +59,13 @@ def test_graph_execute_passes_skill_contract_to_fanout_discovery(tmp_path, monke
         json.loads(line)
         for line in (tmp_path / "run" / "journal.jsonl").read_text().splitlines()
     ]
-    assert facts[-1]["detail"]["skill"]["children"] == [{
+    fact = next(item for item in reversed(facts) if item["kind"] == "CapabilityEvaluation")
+    assert fact["detail"]["skill"]["children"] == [{
         "context": {"dimension": "quantization"},
         "id": "fixture",
         "method_sha256": None,
     }]
     memory = json.loads((tmp_path / "run" / "task_memory.json").read_text())
     assert memory["completed_loop_blocks"][-1]["routing"]["child_skills"] == (
-        facts[-1]["detail"]["skill"]["children"]
+        fact["detail"]["skill"]["children"]
     )

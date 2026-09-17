@@ -6,16 +6,29 @@ metadata:
   task_type: accuracy_differential
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/validation/accuracy_differential.py"
+      - "--pod"
+      - "{pod}"
+      - "--served-model-name"
+      - "{served_model_name}"
+      - "--port"
+      - "{port}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --model-request: {kind: ModelRequest, artifact: model_request.yaml}
+    status_file: accuracy_status.json
+    success_exit_keys: [pass]
   question: is the served model still computing the model
   produces: AccuracyDifferential
   consumes: [DeploymentProof, ModelRequest]
   # A deployment proof shows the server answers. It does not show the answer is
   # right, and a wrong attention kernel produces fluent text — which is exactly the
   # risk after replacing a decode kernel with a torch fallback.
-  runs_with: |
-    python3 cli/validation/accuracy_differential.py \
-      --pod <pod> --model-request <artifacts>/mat-001/model_request.yaml \
-      --served-model-name <name> --port <port> --out <artifacts>/mat-013
 context:
   target:
     hardware: Kunlunxin-3-P800

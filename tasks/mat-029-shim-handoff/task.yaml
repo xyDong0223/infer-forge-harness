@@ -6,6 +6,19 @@ metadata:
   task_type: torch_shim_handoff
   version: 0.1.0
 spec:
+  execution_descriptor:
+    schema_version: 1
+    argv:
+      - "python3"
+      - "cli/discovery/scan_torch_shims.py"
+      - "--subject"
+      - "{subject}"
+      - "--out"
+      - "{artifacts}"
+    inputs:
+      --env-status: {kind: EnvironmentProof, artifact: status.json}
+    status_file: shim_status.json
+    success_exit_keys: [clear]
   question: does every torch shim standing in for a vendor kernel have an operator request
   produces: TorchShimRegistry
   # A shim is born where fixes happen (MAT-007 patch placement, the MAT-024
@@ -13,6 +26,7 @@ spec:
   # gate consumes the environment proof for the pod and re-enters from every
   # fix edge in the graph.
   consumes: [EnvironmentProof, OperatorTaskDispatch]
+  # Standalone/manual example only; the Graph uses execution_descriptor.
   runs_with: |
     python3 cli/discovery/scan_torch_shims.py \
       --env-status <artifacts>/kdp-001a/status.json \

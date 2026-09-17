@@ -140,6 +140,9 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--format", choices=("json", "text"), default="json",
                         help="JSON (default) or a readable location/reason/next-action summary")
 
+    listing = sub.add_parser("list", help="read tasks across the database without claiming or recovering")
+    listing.add_argument("--run-id", help="limit the read-only task listing to one existing run")
+
     context = sub.add_parser("context", help="read Agent context without claiming, recovering, or validating")
     context.add_argument("--run-id", required=True)
     context.add_argument("--task-id", help="include one task's input, upstream results, and acceptance requirements")
@@ -450,6 +453,12 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
     if args.command == "context":
         return {"command": "context", **run_context(scheduler.store, args.run_id, args.task_id)}
 
+    if args.command == "list":
+        if args.run_id is not None and scheduler.store.run(args.run_id) is None:
+            raise ValueError(f"unknown run: {args.run_id}")
+        return {"command": "list", "run_id": args.run_id,
+                "tasks": [task.to_dict() for task in scheduler.store.tasks(args.run_id)]}
+
     if args.command == "status":
         run = scheduler.store.run(args.run_id)
         if run is None:
@@ -476,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     store = None
     try:
         # Observations never create/migrate a DB, allocate attempts, or recover leases.
-        readonly = args.command in {"status", "context", "execution-status"}
+        readonly = args.command in {"status", "context", "list", "execution-status"}
         if args.command in {"advance", "submit-decision", "reconcile-execution", "reconcile-validation",
                             "freeze-candidate", "validate-worker", "execute-worker"}:
             probe = EventStore(args.state, readonly=True)
