@@ -42,6 +42,9 @@ GRAPH_REASONS = {
                              "Inspect the bound Pod and environment evidence; re-prove the environment."),
     "ENVIRONMENT_FAILED": ("BLOCKED", "main_agent", "PROVE_ENVIRONMENT",
                            "Inspect the failed proof and repair/re-prove the same prepared Pod."),
+    "ENVIRONMENT_COMMAND_FAILED": ("BLOCKED", "main_agent", "INSPECT_ENVIRONMENT_COMMAND",
+                                   "Inspect the command exit code and logs, repair the failure, then rerun "
+                                   "the environment node without --resume so it executes a fresh attempt."),
     "DISPATCH_BLOCKED": ("BLOCKED", "main_agent", "COMPLETE_OPERATOR_CONTRACT",
                          "Collect the missing measured operator fields; update the report and resume."),
     "SHIM_DISPATCH_BLOCKED": ("BLOCKED", "main_agent", "COMPLETE_SHIM_CONTRACT",
@@ -104,6 +107,9 @@ def graph_progress(summary: dict, resume_command=None) -> dict:
                   "Inspect the original status and evidence before deciding how to resume.")
     if values[2] in {"RESUME_GRAPH", "REVALIDATE_DELIVERY", "EXECUTE_GRAPH"}:
         command = resume_command
+    elif code == "ENVIRONMENT_COMMAND_FAILED" and resume_command:
+        command = [part for part in resume_command if part != "--resume"]
+        command.extend(["--from-node", location, "--until-node", location])
     state, owner, action, instruction = values
     return explanation(state, location, code, message, owner, action, instruction,
                        command=command, evidence=summary.get("artifacts", []),
@@ -283,11 +289,17 @@ def run_progress(store, run_id, *, graph=None, now=None):
                                   "main_agent", "RECONCILE", "Reconcile historical task edges using evidence.",
                                   command=adaptation_command(store.path, "reconcile", "--run-id", run_id),
                                   observed_at=now, missing=sorted(missing)))
-    return result(explanation("READY", "graph", "RESUME_GRAPH" if operators or graph else "START_GRAPH",
+    continuing = bool(operators or graph)
+    action = "RESUME_GRAPH" if continuing else "START_GRAPH"
+    instruction = ("Resume the full graph with the same run and inputs." if continuing else
+                   "Supply model_path and contract_instance inputs, then execute the first graph "
+                   "with --execute for this run.")
+    return result(explanation("READY", "graph", action,
                               "No active operator work remains; graph validation/delivery is still required."
-                              if operators or graph else "The run is ready for graph execution/discovery.",
-                              "main_agent", "RESUME_GRAPH", "Resume the full graph with the same run and inputs.",
-                              command=resume, observed_at=now, evidence_revalidated=False))
+                              if continuing else "The run is ready for graph execution/discovery.",
+                              "main_agent", action, instruction,
+                              command=resume if continuing else None,
+                              observed_at=now, evidence_revalidated=False))
 
 
 def render_progress(progress: dict) -> str:

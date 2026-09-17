@@ -1705,6 +1705,15 @@ def _run(args, resources: ExitStack) -> int:
                 except ValueError as error:
                     emit_summary({"status": "BLOCKED", "node": current,
                                   "reason_code": "ENVIRONMENT_FAILED", "message": str(error)}, args.json)
+                else:
+                    emit_summary({
+                        "status": "BLOCKED", "node": current, "next_task": current,
+                        "reason_code": "ENVIRONMENT_COMMAND_FAILED", "state": state,
+                        "message": "Environment proof was accepted, but the node execution failed "
+                                   f"(exit code {returncode}, state {state}). Inspect the command logs.",
+                        "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
+                        "progress_details": {"command_exit_code": returncode},
+                    }, args.json)
                 return 2
             # Exit code 0 is not success either: the node's own state file
             # is the contract, and a state outside SUCCESS_STATES riding the

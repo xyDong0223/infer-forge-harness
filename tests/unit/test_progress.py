@@ -38,6 +38,22 @@ def complete(scheduler, task, tmp_path, **kwargs):
     scheduler.complete(task.task_id, kwargs.get("worker_id", "worker"), result, task.lease_token)
 
 
+def test_initial_run_guidance_requests_first_execution(tmp_path):
+    scheduler = TaskScheduler(tmp_path / "initial.sqlite")
+    try:
+        scheduler.create_run(run_id="initial", model_id="m", metadata={"evidence_mode": "simulation"})
+        progress = run_progress(scheduler.store, "initial")["progress"]
+        assert progress["reason_code"] == "START_GRAPH"
+        assert progress["next_action"]["action"] == "START_GRAPH"
+        assert "model_path" in progress["next_action"]["instruction"]
+        assert "contract_instance" in progress["next_action"]["instruction"]
+        assert "resume" not in progress["next_action"]["instruction"].lower()
+        # Those inputs have not been supplied: do not invent an executable command.
+        assert progress["next_action"]["command"] is None
+    finally:
+        scheduler.store.close()
+
+
 def test_unclaimed_running_and_expired_are_distinct_read_only_states(scheduler):
     pending = view(scheduler)
     assert pending["reason_code"] == "WORKER_UNCLAIMED"
