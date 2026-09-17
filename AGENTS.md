@@ -88,6 +88,19 @@ model/service path, not only an isolated unit test.
 
 ## Mandatory execution protocol
 
+### Codex interactive entry
+
+For an authorized adaptation, use the project skill
+`.agents/skills/infer-forge-adaptation/SKILL.md` and read
+[the interaction protocol](docs/migration/codex-interaction.zh-CN.md).
+Configure the first connected Graph with `--interaction-mode codex`, then use
+`cli/adaptation.py context --run-id ...` and `advance --run-id ...` against the
+same external state database. Do not combine this with automatic recovery.
+Graph decision handoffs use `submit-decision`; operator failures retain the
+durable diagnosis protocol below. Never replay an accepted decision whose
+execution has no completion receipt. P1 does not provide Pod resource locks or
+replace the required independent execution of validation.
+
 ### Source ownership
 
 Put host-side argument parsing and command entry points under `cli/`. Implement
@@ -320,8 +333,14 @@ Workers claim only the stage they are qualified to execute:
 ```bash
 python3 cli/adaptation.py \
   --state /path/to/adaptation.db \
-  claim --worker <worker-id> --stage torch --limit 1
+  claim --run-id <run-id> --worker <worker-id> --stage torch --limit 1
 ```
+
+Use `--task-id <task-id>` with `--run-id` for a specific assignment. Both
+selection and expired-lease recovery are limited to the requested scope.
+Read `context --run-id <run-id> [--task-id <task-id>]` before dispatch; it is
+read-only and does not authorize execution. The claim-time `input/task.json`
+freezes the task context and acceptance references without a lease token.
 
 The worker must read the complete task payload, write artifacts under the run's
 artifact root, run the independent checks required for that stage, and submit a

@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 
 from core.paths import REPO_ROOT
+from .interaction import active_graph_handoff
 
 
 def explanation(state, location, reason_code, summary, owner, action, instruction,
@@ -144,8 +145,9 @@ def _task_progress(task, tasks, events, state, now):
                            command=command, evidence=evidence, observed_at=now, **details)
 
     claim = adaptation_command(state, "claim", "--worker", f"{task.stage}-worker",
+                               "--run-id", task.run_id, "--task-id", task.task_id,
                                "--stage", task.stage, "--limit", "1")
-    claim_note = ("Start a worker for this stage. Claim is database-wide: verify the returned run/task. "
+    claim_note = ("Start a worker for this task. Claim and expired-lease recovery are scoped to this run/task. "
                   "No worker availability registry exists; unclaimed does not prove no worker is configured.")
     if task.status == "running":
         if task.lease_expires is not None and task.lease_expires <= now:
@@ -232,6 +234,38 @@ def run_progress(store, run_id, *, graph=None, now=None):
     def result(view):
         return {"progress": view, "task_progress": task_views}
 
+    handoff = active_graph_handoff(run)
+    if handoff:
+        pending = handoff["state"] == "pending"
+        uncertain = handoff["state"] == "executing"
+        return result(explanation(
+            "ACTION_REQUIRED" if pending else "BLOCKED", handoff["source"]["node"],
+            "GRAPH_DECISION_REQUIRED" if pending else
+            "GRAPH_EXECUTION_UNCERTAIN" if uncertain else "GRAPH_RECOVERY_BLOCKED",
+            "A persisted Graph failure needs a decision; the runner is not waiting in a shell."
+            if pending else "An accepted execution has no completion receipt; do not execute it again."
+            if uncertain else "Graph recovery is blocked or its retry budget is exhausted.",
+            "main_agent", "SUBMIT_DECISION" if pending else "INSPECT_EXECUTION" if uncertain else "REVIEW_BLOCKER",
+            "Read context, diagnose the bound evidence, then submit one decision with its source_version."
+            if pending else "Inspect the recorded execution and receipt before requesting any further change.",
+            command=adaptation_command(store.path, "context", "--run-id", run_id),
+            evidence=list(handoff["source"]["source_files"]), observed_at=now,
+            handoff_id=handoff["handoff_id"], source_version=handoff["source_version"],
+            remaining_budget=handoff["remaining_budget"], evidence_revalidated=False,
+        ))
+    if (graph.get("reason_code") == "GRAPH_RECOVERY_SUCCEEDED"
+            and run.status not in {"WAITING_FOR_ENVIRONMENT", "ENVIRONMENT_FAILED"}
+            and all(task.status == "succeeded" for task in tasks)):
+        return result(explanation(
+            "READY", graph.get("node", "graph"), "GRAPH_RECOVERY_SUCCEEDED",
+            graph.get("message", "Recovery passed; continue the remaining Graph gates."),
+            "main_agent", "ADVANCE_GRAPH", "Advance the same run; recovery is not model delivery.",
+            command=adaptation_command(store.path, "advance", "--run-id", run_id),
+            evidence=graph.get("artifacts", []), observed_at=now, evidence_revalidated=False,
+        ))
+    if graph.get("reason_code") == "GRAPH_RECOVERY_SUCCEEDED":
+        graph_view = None  # Current environment/worker/diagnosis state takes precedence.
+
     if run.status in {"WAITING_FOR_ENVIRONMENT", "ENVIRONMENT_FAILED"}:
         failures = [event.timestamp for event in events if event.event_type == "environment_failed"]
         if (graph_view and graph.get("observed_at", 0) > max(failures, default=0)
@@ -298,7 +332,9 @@ def run_progress(store, run_id, *, graph=None, now=None):
                               "No active operator work remains; graph validation/delivery is still required."
                               if continuing else "The run is ready for graph execution/discovery.",
                               "main_agent", action, instruction,
-                              command=resume if continuing else None,
+                              command=(adaptation_command(store.path, "advance", "--run-id", run_id)
+                                       if continuing and run.metadata.get("graph_execution_context", {}).get("interaction_mode") == "codex"
+                                       else resume if continuing else None),
                               observed_at=now, evidence_revalidated=False))
 
 

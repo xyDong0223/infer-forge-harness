@@ -37,7 +37,8 @@ def main() -> int:
         run = scheduler.store.run(args.run_id)
         if run is None or run.metadata.get("evidence_mode") != "simulation":
             raise ValueError("the local scenario worker only accepts explicit simulation runs")
-        claim = invoke(args.state, "claim", "--worker", worker, "--stage", args.stage,
+        claim = invoke(args.state, "claim", "--run-id", args.run_id,
+                       "--worker", worker, "--stage", args.stage,
                        "--lease-seconds", args.lease_seconds)
         if claim.returncode:
             print(claim.stdout, end="")
@@ -47,7 +48,7 @@ def main() -> int:
             raise ValueError(f"expected one ready {args.stage} task, got {len(tasks)}")
         task = OperatorTask.from_dict(tasks[0])
         if task.run_id != args.run_id:
-            raise ValueError("scenario worker must use an isolated run database")
+            raise ValueError("scoped claim returned a task from another run")
         output = ArtifactStore(task.input["workspace"]["output"])
         if args.fault == "abandon":
             output.write_json("abandoned.json", {"task_id": task.task_id, "attempt": task.attempt})

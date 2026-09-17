@@ -39,11 +39,12 @@ def source_snapshot() -> dict[str, str]:
 
 
 class Scenario:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, run_id: str = "local-model-adaptation",
+                 state: Path | None = None):
         self.root = root
-        self.run_id = "local-model-adaptation"
+        self.run_id = run_id
         self.run_root = root / "run"
-        self.state = root / "state.sqlite"
+        self.state = state if state is not None else root / "state.sqlite"
         self.fixture = prepare_environment(root / "external")
         self.env = {**os.environ, **self.fixture["env"], "PYTHONDONTWRITEBYTECODE": "1"}
         self.logs = ArtifactStore(root / "driver")
@@ -103,6 +104,19 @@ class Scenario:
         return json.loads(self.adaptation(
             "status", "--run-id", run_id or self.run_id, "--events",
         ).stdout)
+
+    def context(self, task_id: str | None = None) -> dict:
+        arguments = ["context", "--run-id", self.run_id]
+        if task_id is not None:
+            arguments.extend(["--task-id", task_id])
+        return json.loads(self.adaptation(*arguments).stdout)
+
+    def persisted_snapshot(self) -> dict[str, str]:
+        return {
+            str(path): digest(path)
+            for path in [self.state, *self.run_root.rglob("*")]
+            if path.is_file()
+        }
 
     def facts(self) -> list[dict]:
         return [json.loads(line) for line in self.run_root.joinpath("journal.jsonl").read_text().splitlines()]
@@ -415,6 +429,151 @@ def test_model_adaptation_delivers_after_validated_workers(scenario):
     memory = json.loads((scenario.run_root / "task_memory.json").read_text())
     assert memory["status"] == "COMPLETED"
     assert delivery["receipt_path"] in memory["completed_loop_blocks"][-1]["artifacts"]
+
+
+def test_scoped_claim_preserves_other_run_and_rejects_wrong_identity(scenario):
+    scenario.graph(expected=3)
+    selected_task = scenario.status()["tasks"][0]
+    other = Scenario(scenario.root / "other", run_id="other-model-adaptation",
+                     state=scenario.state)
+    other.graph(expected=3)
+    # The older pending task belongs to the first run. The worker must still
+    # claim only its requested run, even when both use the default shared DB.
+    abandoned = json.loads(other.worker(
+        "torch", "--fault", "abandon", "--lease-seconds", "0.15", expected=75,
+    ).stdout)["abandoned"]
+    assert abandoned["run_id"] == other.run_id
+    assert scenario.status()["tasks"][0]["status"] == "pending"
+    time.sleep(max(0, abandoned["lease_expires"] - time.time()) + 0.03)
+    other_before = other.status()
+    assert other_before["tasks"][0]["status"] == "running"
+    assert other_before["progress"]["reason_code"] == "LEASE_EXPIRED"
+    preserved = other.persisted_snapshot()
+    before = scenario.status()
+
+    invalid_claims = [
+        ["--run-id", scenario.run_id, "--task-id", abandoned["task_id"]],
+        ["--run-id", "missing-run"],
+        ["--run-id", scenario.run_id, "--task-id", "missing-task"],
+        ["--run-id", scenario.run_id, "--task-id", selected_task["task_id"],
+         "--stage", "xpu"],
+        ["--task-id", selected_task["task_id"]],
+    ]
+    for arguments in invalid_claims:
+        rejected = scenario.adaptation(
+            "claim", "--worker", "invalid-request", *arguments, expected=None,
+        )
+        assert rejected.returncode != 0
+        assert scenario.status()["tasks"] == before["tasks"]
+        assert scenario.status()["events"] == before["events"]
+        assert other.status()["tasks"] == other_before["tasks"]
+        assert other.persisted_snapshot() == preserved
+
+    # Context is scoped as well, and rejected queries neither recover the old
+    # lease nor allocate an attempt for the mismatched task.
+    rejected = scenario.adaptation(
+        "context", "--run-id", scenario.run_id,
+        "--task-id", abandoned["task_id"], expected=None,
+    )
+    assert rejected.returncode != 0
+    assert other.persisted_snapshot() == preserved
+
+    for stage in ("torch", "xpu", "integration"):
+        scenario.worker(stage)
+        assert other.status()["tasks"] == other_before["tasks"]
+        assert other.status()["events"] == other_before["events"]
+    scenario.delivery(scenario.graph("--resume"))
+    assert other.status()["tasks"] == other_before["tasks"]
+    assert all(digest(Path(path)) == checksum for path, checksum in preserved.items()
+               if Path(path) != scenario.state)
+    other.logs.register(
+        identity={"scenario": "model_adaptation", "run_id": other.run_id},
+        outcome="EXPIRED_CLAIM_PRESERVED",
+    )
+
+
+def test_context_is_readonly_and_restores_graph_from_saved_inputs(scenario):
+    before = scenario.persisted_snapshot()
+    initial = scenario.context()
+    assert initial["schema_version"] == 1
+    assert initial["run"]["run_id"] == scenario.run_id
+    assert initial["task_context"] is None
+    assert initial["restart"]["execution_context"] is None
+    assert scenario.persisted_snapshot() == before
+
+    scenario.env.pop("USER_ID", None)
+    scenario.graph("--set", "user_id=simulation", expected=3)
+    current = scenario.status()
+    torch_task = current["tasks"][0]
+    before = scenario.persisted_snapshot()
+    context = scenario.context(torch_task["task_id"])
+    assert scenario.persisted_snapshot() == before
+    assert context["progress"]["reason_code"] == "WORKER_UNCLAIMED"
+    packet = context["task_context"]
+    assert packet["task_id"] == torch_task["task_id"]
+    assert packet["run_id"] == scenario.run_id
+    assert packet["stage"] == "torch"
+    assert packet["attempt"] == 0
+    assert packet["operator_spec"] == torch_task["input"]["operator_spec"]
+    assert packet["acceptance"] and packet["guidance"]
+    assert "lease_token" not in packet
+    assert all("lease_token" not in item for item in context["tasks"])
+    saved = context["restart"]["execution_context"]
+    assert saved["schema_version"] == 1
+    assert saved["run_id"] == scenario.run_id
+    assert saved["workflow_sha256"] == digest(Path(saved["workflow"]))
+    assert saved["artifact_root"] == str(scenario.run_root)
+    assert saved["scheduler_state"] == str(scenario.state)
+    assert saved["operator_report"] == str(scenario.fixture["operator_report"])
+    assert saved["resolved_context"]["model_path"] == str(scenario.fixture["model_path"])
+    assert saved["resolved_context"]["user_id"] == "simulation"
+    assert "--resume" in context["restart"]["resume_command"]
+
+    for stage in ("torch", "xpu", "integration"):
+        scenario.worker(stage)
+        task = next(item for item in scenario.status()["tasks"] if item["stage"] == stage)
+        snapshot = json.loads((Path(task["input"]["workspace"]["input"]) / "task.json").read_text())
+        assert snapshot["task_id"] == task["task_id"]
+        assert snapshot["run_id"] == scenario.run_id
+        assert snapshot["stage"] == stage
+        assert snapshot["attempt"] == 1
+        assert snapshot["input"] == task["input"]
+        assert snapshot["operator_spec"] == task["input"]["operator_spec"]
+        assert snapshot["acceptance"] and snapshot["guidance"]
+        assert "lease_token" not in snapshot
+        before = scenario.persisted_snapshot()
+        observed = scenario.context(task["task_id"])
+        assert scenario.persisted_snapshot() == before
+        packet_path = Path(task["input"]["workspace"]["input"]) / "task.json"
+        assert observed["claimed_packet"] == {"path": str(packet_path), "sha256": digest(packet_path)}
+        assert observed["task_context"]["status"] == "succeeded"
+        assert snapshot["status"] == "running"
+        if stage != "torch":
+            assert snapshot["upstream_tasks"]
+
+    # Forget the original graph arguments. A fresh CLI process reconstructs
+    # typed argv from the persisted execution inputs, not a shell string or
+    # prepopulated success report. Production --resume rechecks the evidence.
+    scenario.fixture["graph_args"].clear()
+    recovered = scenario.context()
+    assert recovered["progress"]["reason_code"] == "RESUME_GRAPH"
+    saved = recovered["restart"]["execution_context"]
+    arguments = []
+    for name in ("workflow", "subject", "run_id", "artifact_root", "scheduler_state",
+                 "journal", "loop_state", "target", "operator_report", "shim_registry",
+                 "watch_interval"):
+        if saved.get(name) is not None:
+            arguments.extend(["--" + name.replace("_", "-"), str(saved[name])])
+    for name in ("env", "set"):
+        for value in saved[name]:
+            arguments.extend(["--" + name, value])
+    arguments.extend(["--execute", "--resume", "--json"])
+    delivery = scenario.delivery(scenario.process("cli/workflow/graph.py", arguments))
+    final = scenario.context()
+    assert final["progress"]["state"] == "COMPLETED"
+    assert final["progress"]["details"]["raw_status"] == "SIMULATION_PASS"
+    assert Path(delivery["receipt_path"]).is_file()
+    assert len(scenario.status()["tasks"]) == 3
 
 
 def test_missing_worker_evidence_blocks_delivery(scenario):

@@ -13,7 +13,8 @@ Examples::
     python cli/adaptation.py --state state.db discover \
         --run-id deepseek-v4 --report gaps.json
     python cli/adaptation.py --state state.db claim --worker torch-agent \
-        --stage torch
+        --run-id deepseek-v4 --stage torch
+    python cli/adaptation.py --state state.db context --run-id deepseek-v4
     python cli/adaptation.py --state state.db status --run-id deepseek-v4
 """
 
@@ -38,6 +39,7 @@ from core.storage import RunPaths, default_state_root, ensure_external, safe_com
 from core.user_identity import environment_user_id
 from engine.scheduler import EventStore  # noqa: E402
 from engine.progress import graph_progress, render_progress, run_progress  # noqa: E402
+from engine.context import run_context  # noqa: E402
 
 
 def _json_file(path: Path | None, *, field: str) -> dict[str, Any]:
@@ -137,11 +139,29 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--format", choices=("json", "text"), default="json",
                         help="JSON (default) or a readable location/reason/next-action summary")
 
+    context = sub.add_parser("context", help="read Agent context without claiming, recovering, or validating")
+    context.add_argument("--run-id", required=True)
+    context.add_argument("--task-id", help="include one task's input, upstream results, and acceptance requirements")
+
+    advance = sub.add_parser("advance", help="resume recorded Graph inputs until a worker, decision, input or delivery boundary")
+    advance.add_argument("--run-id", required=True)
+    advance.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                         help="explicit context additions/corrections; cannot bypass a pending decision")
+
+    submit = sub.add_parser("submit-decision", help="accept and execute one evidence-backed Graph recovery decision")
+    submit.add_argument("--run-id", required=True)
+    submit.add_argument("--handoff-id", required=True)
+    submit.add_argument("--decision-id", required=True, help="stable client idempotency key for this logical decision")
+    submit.add_argument("--expected-version", required=True, help="source_version returned by context")
+    submit.add_argument("--decision", type=Path, required=True, help="external JSON with existing Decision fields")
+
     reconcile = sub.add_parser("reconcile", help="repair historical missing task edges using evidence")
     reconcile.add_argument("--run-id", required=True)
 
     claim = sub.add_parser("claim", help="claim ready work for a child Agent")
     claim.add_argument("--worker", required=True)
+    claim.add_argument("--run-id", help="limit selection AND expired-lease recovery to this run")
+    claim.add_argument("--task-id", help="claim exactly this task; requires --run-id")
     claim.add_argument("--stage", choices=["torch", "xpu", "integration", "diagnosis"])
     claim.add_argument("--limit", type=int, default=1)
     claim.add_argument("--lease-seconds", type=float, default=300.0)
@@ -178,6 +198,18 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
+    if args.command == "advance":
+        from runners.codex_interaction import advance_run
+        return {"command": "advance", **advance_run(scheduler, args.run_id, settings=args.set)}
+
+    if args.command == "submit-decision":
+        from runners.codex_interaction import submit_graph_decision
+        decision = _json_file(ensure_external(args.decision), field="decision")
+        return {"command": "submit-decision", **submit_graph_decision(
+            scheduler, args.run_id, args.handoff_id, args.decision_id,
+            args.expected_version, decision,
+        )}
+
     if args.command in {"create", "create-run"}:
         metadata = _json_file(args.metadata, field="metadata")
         metadata.setdefault("environment_required", True)
@@ -299,6 +331,8 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
             stage=args.stage,
             lease_seconds=args.lease_seconds,
             limit=args.limit,
+            run_id=args.run_id,
+            task_id=args.task_id,
         )
         return {"command": "claim", "worker": args.worker, "tasks": [task.to_dict() for task in tasks]}
 
@@ -329,6 +363,9 @@ def _run(args: argparse.Namespace, scheduler: TaskScheduler) -> dict[str, Any]:
         )
         return {"command": "renew-lease", "task": task.to_dict()}
 
+    if args.command == "context":
+        return {"command": "context", **run_context(scheduler.store, args.run_id, args.task_id)}
+
     if args.command == "status":
         run = scheduler.store.run(args.run_id)
         if run is None:
@@ -354,9 +391,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     store = None
     try:
-        # Status is an observation: never create/migrate a DB or recover leases.
-        store = EventStore(args.state, readonly=args.command == "status")
-        if args.command == "status":
+        # Observations never create/migrate a DB, allocate attempts, or recover leases.
+        readonly = args.command in {"status", "context"}
+        if args.command in {"advance", "submit-decision"}:
+            probe = EventStore(args.state, readonly=True)
+            try:
+                if probe.run(args.run_id) is None:
+                    raise ValueError(f"unknown run: {args.run_id}")
+            finally:
+                probe.close()
+        store = EventStore(args.state, readonly=readonly)
+        if readonly:
             store.db.execute("BEGIN")
         result = _run(args, TaskScheduler(store))
         run_id = result.get("run", {}).get("run_id") or result.get("task", {}).get("run_id")
@@ -383,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n" + render_progress(progress))
     else:
         print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.command in {"advance", "submit-decision"}:
+        return result["exit_code"]
     return 6 if result.get("error") or result.get("blocked") or result.get("task", {}).get("status") == "failed" else 0
 
 

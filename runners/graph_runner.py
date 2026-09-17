@@ -22,6 +22,7 @@ import time
 from contextlib import ExitStack
 from contextvars import ContextVar
 from pathlib import Path
+from types import SimpleNamespace
 
 from core.paths import REPO_ROOT
 from core.user_identity import resolve_user_id
@@ -33,7 +34,7 @@ from engine import skill_registry
 from engine.state import task_memory
 from engine.progress import graph_progress, render_progress, run_progress
 from core.facade import resolve_adapters  # noqa: E402
-from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external, safe_component  # noqa: E402
+from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external, safe_component, locate_attempt  # noqa: E402
 from core.target import (  # noqa: E402
     bind_subject, canonical_hardware, contract_target, load_target, require_supported,
     target_environment,
@@ -993,6 +994,47 @@ def node_watch(args, node: str, artifacts: Path):
 _progress_context: ContextVar[dict | None] = ContextVar("graph_progress_context", default=None)
 
 
+def graph_execution_context(args, environment: dict, context: dict) -> dict:
+    """Snapshot validated graph inputs, without transient walk/attempt state.
+
+    The scheduler owns this versioned coordination record. A later controller
+    can reconstruct an invocation and check its workflow hash without parsing a
+    historical shell command. Only explicit graph inputs and resolved graph
+    configuration are included; the host process environment is never copied.
+    """
+    workflow = Path(args.workflow).resolve()
+    snapshot = {
+        "schema_version": 1,
+        "workflow": str(workflow),
+        "workflow_sha256": hashlib.sha256(workflow.read_bytes()).hexdigest(),
+        "subject": args.subject,
+        "run_id": args.run_id,
+        # Retain repeated options in order as well as their resolved values.
+        "env": list(args.env),
+        "set": list(args.set),
+        "resolved_environment": dict(environment),
+        "resolved_context": {
+            key: value for key, value in context.items()
+            if not key.startswith("_") and key not in {
+                "attempt", "artifacts", "subject", "environment_text",
+            }
+        },
+        "auto_recover": args.auto_recover,
+        "interaction_mode": getattr(args, "interaction_mode", "headless"),
+        "brain": args.brain,
+        "recovery_budget": args.recovery_budget,
+        "decide_command": args.decide_command,
+        "decide_timeout": args.decide_timeout,
+        "watch_interval": args.watch_interval,
+    }
+    for name in ("artifact_root", "scheduler_state", "journal", "loop_state",
+                 "target", "operator_report", "shim_registry"):
+        value = getattr(args, name, None)
+        if value is not None:
+            snapshot[name] = str(Path(value).resolve())
+    return snapshot
+
+
 def resume_command(args) -> list[str]:
     """Replay the full graph with pinned inputs; omit partial-walk boundaries."""
     command = [sys.executable, str(REPO_ROOT / "cli/workflow/graph.py"),
@@ -1007,6 +1049,11 @@ def resume_command(args) -> list[str]:
     for name in ("env", "set"):
         for value in getattr(args, name, []):
             command.extend(["--" + name, value])
+    if getattr(args, "watch_interval", None) is not None:
+        command.extend(["--watch-interval", str(args.watch_interval)])
+    if getattr(args, "interaction_mode", "headless") != "headless":
+        command.extend(["--interaction-mode", args.interaction_mode,
+                        "--recovery-budget", str(args.recovery_budget)])
     if args.auto_recover:
         command.append("--auto-recover")
         for name in ("brain", "recovery_budget", "decide_command", "decide_timeout"):
@@ -1060,6 +1107,9 @@ def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
         return str(validator["errors"])
     if payload.get("reason_code"):
         return str(payload["reason_code"])
+    error_path = artifacts.parent / "logs" / "execution_error.json"
+    if error_path.is_file():
+        return str(json.loads(error_path.read_text()).get("message", "execution failed"))
     return f"node ended in state {state}"
 
 
@@ -1091,9 +1141,79 @@ def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
     ArtifactStore(attempt.input).write_json("scheduler_snapshot.json", snapshot)
 
 
+def create_interactive_handoff(args, *, node: str, spec: dict, context: dict,
+                               artifacts: Path, environment: dict, state: str,
+                               task_type: str, skill: dict, bridge,
+                               remaining_budget: int | None = None, history=None) -> dict:
+    """Freeze an observed failed attempt only after its evidence/state writes."""
+    from engine.brain import DecisionRequest, FailureEvidence
+    from engine.interaction import canonical_digest, create_graph_handoff
+
+    artifacts = Path(artifacts).resolve()
+    attempt = locate_attempt(artifacts)
+    if attempt is None or attempt.identity["run_id"] != args.run_id:
+        raise ValueError("interactive failure must belong to a managed run attempt")
+    files = {}
+    paths = [args.workflow, args.journal, args.loop_state, attempt.root / ".attempt.json",
+             attempt.root / "manifest.json"]
+    paths.extend(value for name in ("target", "operator_report", "shim_registry")
+                 if (value := getattr(args, name, None)) is not None)
+    commands_path = attempt.input / "commands.json"
+    if commands_path.is_file():
+        for command in json.loads(commands_path.read_text()):
+            # Bind concrete input files passed to the command, including upstream
+            # facts outside this attempt. Programs and directories are not input
+            # blobs (in particular do not recursively inventory model weights).
+            paths.extend(Path(value) for value in command[2:]
+                         if isinstance(value, str) and Path(value).is_absolute()
+                         and Path(value).is_file())
+    for directory in (attempt.input, attempt.output, attempt.logs):
+        paths.extend(path for path in directory.rglob("*") if path.is_file())
+    for value in paths:
+        path = Path(value)
+        if path.is_symlink():
+            raise ValueError(f"handoff evidence cannot be a symlink: {path}")
+        if path.is_file():
+            path = path.resolve()
+            files[str(path)] = file_digest(path)
+    run = bridge.scheduler.store.run(args.run_id)
+    request = DecisionRequest(
+        model=args.subject, backend=environment.get("hardware", "p800"),
+        failure=FailureEvidence(
+            node=node, state=state, reason=_failure_reason(artifacts, spec, state),
+            artifacts=[str(artifacts)], environment=dict(environment),
+        ),
+        context=dict(context), skill=skill, history=list(history or []),
+        available_actions=["RETRY", "RETRY_WITH_PARAMS", "BLOCKED"],
+        attempts_remaining=args.recovery_budget if remaining_budget is None else remaining_budget,
+    )
+    source = {
+        "node": node, "task_type": task_type, "attempt_id": attempt.identity["attempt_id"],
+        "artifacts": str(artifacts), "state": state, "state_file": spec["state_file"],
+        "source_files": files,
+        "execution_context_sha256": canonical_digest(run.metadata.get("graph_execution_context")),
+        "environment_sha256": canonical_digest(run.environment),
+    }
+    return create_graph_handoff(bridge.scheduler, args.run_id, source, request)
+
+
+def emit_interactive_boundary(handoff: dict, args) -> int:
+    state = handoff["state"]
+    reason = {"pending": "GRAPH_DECISION_REQUIRED", "executing": "GRAPH_EXECUTION_UNCERTAIN",
+              "blocked": "GRAPH_RECOVERY_BLOCKED"}[state]
+    emit_summary({
+        "status": "WAITING" if state == "pending" else "BLOCKED",
+        "node": handoff["source"]["node"], "run_id": args.run_id,
+        "reason_code": reason, "handoff": handoff,
+        "artifacts": [handoff["source"]["artifacts"]],
+        "message": "Inspect the durable decision handoff before any further graph execution.",
+    }, args.json)
+    return 4 if state == "pending" else 2
+
+
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
                      environment: dict, state: str, task_type: str | None,
-                     skill: dict, bridge=None) -> object:
+                     skill: dict, bridge=None, submitted_decision=None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -1115,7 +1235,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         model=args.subject,
         backend=environment.get("hardware", "p800"),
         failure=failure_evidence, attempts_remaining=args.recovery_budget,
-        context={k: str(v) for k, v in context.items()},
+        context=dict(context),
         skill=skill,
     )
     def report_decision(request_path, response_path):
@@ -1143,17 +1263,25 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
          "decide_timeout": args.decide_timeout, "on_request": report_decision,
          "on_decision": report_decision_received},
         run_dir,
-    )
+    ) if submitted_decision is None else None
+    if submitted_decision is not None:
+        class SubmittedDecision:
+            def decide(self, request):
+                return submitted_decision
+        brain = SubmittedDecision()
 
     final_artifacts = ""
 
     def rerun(decision) -> tuple[bool, str]:
         nonlocal final_artifacts
-        protected = {"artifacts", "attempt", "subject", "target_file", "contract_instance",
-                     "user_id",
-                     "_environment_pod", "environment_text", "run_id", "journal", "loop_state",
-                     "scheduler_state", "operator_report", "shim_registry", "evidence_mode"}
-        if any(key not in context or key in protected for key in decision.params):
+        from engine.interaction import PROTECTED_RETRY_KEYS, validate_retry_parameters
+        if submitted_decision is not None:
+            try:
+                validate_retry_parameters(task_type, context, decision.params)
+            except ValueError as error:
+                return False, f"BLOCKED: {error}"
+        elif any(key not in context or key in PROTECTED_RETRY_KEYS or key.startswith("_")
+                 or key.endswith(("_path", "_file", "_root", "_dir")) for key in decision.params):
             return False, "BLOCKED: retry cannot override managed paths or undeclared context"
         planned = paths.root / "{attempt-output}"
         merged = {**context, **{str(key): str(value)
@@ -1227,7 +1355,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             child_skills=fan_out_skill_bindings(spec, command_skill_cache),
         )
         failure_evidence.artifacts.append(str(attempt.output))
-        if passed:
+        if passed or submitted_decision is not None:
             final_artifacts = str(attempt.output)
         return passed, new_state
 
@@ -1235,8 +1363,11 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         REPO_ROOT, {"subject": args.subject, "pod": context.get("pod", "")}, run_dir,
         skill=skill,
     )
-    controller = RecoveryController(brain, rerun, actions, budget=args.recovery_budget)
+    controller = RecoveryController(brain, rerun, actions,
+                                    budget=1 if submitted_decision is not None else args.recovery_budget)
     outcome = controller.recover(request)
+    if submitted_decision is not None and outcome.status != "RECOVERED" and final_artifacts:
+        outcome.status = "REWORK"
     outcome.final_artifacts = final_artifacts
     outcome.recovery_artifacts = str(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,12 +1378,98 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         identity=recovery_attempt.identity, outcome=outcome.status,
         required=("output/recovery_outcome.json",),
     )
-    if outcome.status != "RECOVERED":
+    if outcome.status != "RECOVERED" and submitted_decision is None:
         emit_summary({"status": "BLOCKED", "node": node, "reason_code": "RECOVERY_BLOCKED",
                       "message": outcome.last_decision.diagnosis if outcome.last_decision
                       else "Recovery stopped without a successful validated rerun.",
                       "artifacts": [str(run_dir / "recovery_outcome.json")]}, args.json)
     return outcome
+
+
+def execute_graph_decision(args, handoff: dict, decision, scheduler) -> dict:
+    """Execute exactly one accepted decision, never another Graph walk/brain."""
+    from engine.brain import Decision
+    from engine.graph_bridge import GraphSchedulerBridge
+    from engine.interaction import validate_retry_parameters
+
+    if isinstance(decision, dict):
+        decision = Decision.from_dict(decision)
+    if decision.next_action not in {"RETRY", "RETRY_WITH_PARAMS"}:
+        raise ValueError("graph execution accepts only an authorized retry decision")
+    source, request = handoff["source"], handoff["request"]
+    context = dict(request["context"])
+    validate_retry_parameters(source["task_type"], context, decision.params)
+    environment = dict(request["failure"]["environment"])
+    node, task_type, skill = source["node"], source["task_type"], request["skill"]
+    spec = scheduled_spec(NODES[task_type], context)
+    args.run_paths = RunPaths(args.artifact_root, args.run_id)
+    bridge = GraphSchedulerBridge(
+        Path(args.scheduler_state), args.run_id, args.subject, Path(args.artifact_root),
+        environment, execute=True,
+    )
+    try:
+        bound = bridge.run.environment.get("environment_proof")
+        failed = bridge.run.environment.get("failed_environment_proof", {})
+        pod = (bound or failed).get("pod")
+        if pod:
+            if context.get("pod") not in (None, pod):
+                raise ValueError("retry Pod conflicts with the scheduler environment")
+            context["pod"] = pod
+        if spec["produces"] != "EnvironmentProof":
+            if not bound:
+                raise ValueError("retry requires a validated environment proof")
+            bridge.bind_environment(Path(bound["artifact_root"]))
+            bind_proven_environment(context, environment, Path(args.journal))
+        outcome = attempt_recovery(
+            args, node=node, spec=spec, context=context,
+            artifacts=Path(source["artifacts"]), environment=environment,
+            state=request["failure"]["state"], task_type=task_type, skill=skill,
+            bridge=bridge, submitted_decision=decision,
+        )
+        final_artifacts = outcome.final_artifacts or source["artifacts"]
+        retry_context = {**context, **{key: str(value) for key, value in decision.params.items()}}
+        retry_context["artifacts"] = final_artifacts
+        final_attempt = locate_attempt(final_artifacts)
+        if final_attempt is not None:
+            retry_context["attempt"] = final_attempt.identity["attempt_id"]
+        if outcome.final_artifacts and spec["produces"] == "EnvironmentProof":
+            try:
+                bridge.bind_environment(Path(final_artifacts))
+            except ValueError:
+                if outcome.status == "RECOVERED":
+                    raise
+            if outcome.status == "RECOVERED":
+                environment.pop("environment_fingerprint", None)
+                environment.pop("environment_pod", None)
+                bind_proven_environment(retry_context, environment, Path(args.journal))
+        retry_context["environment_text"] = ",".join(
+            f"{key}={value}" for key, value in sorted(environment.items())
+        )
+        memory = task_memory.load(args.loop_state, args.workflow.stem, args.subject)
+        task_memory.start_block(
+            memory, block_id=f"{node}:decision:{len(memory['completed_loop_blocks']) + 1}",
+            sub_target=node, exit_condition={"success_states": sorted(SUCCESS_STATES)},
+            routing=skill_routing(skill, mode="interactive_recovery"),
+        )
+        task_memory.finish_block(memory, outcome.final_state, artifacts=[final_artifacts],
+                                 next_block={"sub_target": node})
+        task_memory.save(args.loop_state, memory)
+        # Parameter decisions become durable resume inputs only after the one-shot
+        # invocation returns. An unknown execution is kept by its accepted receipt.
+        if decision.params:
+            args.set = [*args.set, *(f"{key}={value}" for key, value in decision.params.items())]
+        scheduler.record_graph_transition(
+            args.run_id, "graph_execution_context",
+            graph_execution_context(args, environment, retry_context),
+        )
+        return {
+            "status": outcome.status, "node": node, "final_artifacts": final_artifacts,
+            "state": outcome.final_state, "recovery_artifacts": outcome.recovery_artifacts,
+            "retry_context": retry_context, "environment": environment, "skill": skill,
+            "task_type": task_type, "attempts": outcome.attempts,
+        }
+    finally:
+        bridge.close()
 
 
 def scheduled_spec(spec: dict, context: dict) -> dict:
@@ -1307,6 +1524,9 @@ def run(args) -> int:
     try:
         with ExitStack() as resources:
             try:
+                if getattr(args, "scheduler_state", None) and args.execute:
+                    from engine.run_control import control_run
+                    resources.enter_context(control_run(args.scheduler_state, args.run_id))
                 return _run(args, resources)
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 emit_summary({"status": "BLOCKED",
@@ -1323,6 +1543,12 @@ def _run(args, resources: ExitStack) -> int:
         scheduler_state = getattr(args, "scheduler_state", None)
         operator_report = getattr(args, "operator_report", None)
         shim_registry = getattr(args, "shim_registry", None)
+        interaction_mode = getattr(args, "interaction_mode", "headless")
+        if interaction_mode == "codex":
+            if not scheduler_state:
+                raise ValueError("--interaction-mode codex requires --scheduler-state")
+            if args.auto_recover or args.decide_command:
+                raise ValueError("Codex interaction cannot use --auto-recover or --decide-command")
         if scheduler_state and not args.run_id:
             raise ValueError("--scheduler-state requires --run-id")
         if operator_report and not scheduler_state:
@@ -1407,6 +1633,10 @@ def _run(args, resources: ExitStack) -> int:
         resources.callback(bridge.close)
         if args.execute:
             _progress_context.get()["scheduler"] = bridge.scheduler
+            from engine.interaction import current_graph_handoff
+            handoff = current_graph_handoff(bridge.scheduler, args.run_id)
+            if handoff is not None:
+                return emit_interactive_boundary(handoff, args)
         if environment.get("evidence_mode") not in (None, bridge.evidence_mode):
             raise ValueError("--env evidence_mode conflicts with the adaptation run")
         environment["evidence_mode"] = bridge.evidence_mode
@@ -1453,6 +1683,8 @@ def _run(args, resources: ExitStack) -> int:
     nodes = load_workflow(args.workflow)
     order = [node["id"] for node in nodes]
     start = order.index(args.from_node) if args.from_node else 0
+    if args.until_node and args.until_node not in order:
+        raise ValueError(f"unknown --until-node: {args.until_node}")
     by_id = {node["id"]: node for node in nodes}
     context["_producer_task_types"] = {
         spec["produces"]: task_type
@@ -1461,6 +1693,12 @@ def _run(args, resources: ExitStack) -> int:
         for spec in [NODES.get(task_type or "")]
         if task_type and spec and spec.get("produces")
     }
+    # Keep this candidate private until a node's inputs and command resolve.
+    # A partial restart can omit required --set values even after its run and
+    # workflow identities pass. It must not replace the last usable snapshot.
+    pending_execution_context = (
+        graph_execution_context(args, environment, context) if bridge and args.execute else None
+    )
 
     current = order[start]
     visits: dict[str, int] = {}
@@ -1669,6 +1907,14 @@ def _run(args, resources: ExitStack) -> int:
                         args.json,
                     )
                     return 2
+                if pending_execution_context is not None:
+                    # Read-only fan-out discovery can precede this point; the
+                    # first actual node execution always has durable inputs.
+                    # A reuse-only walk keeps the previous snapshot intact.
+                    bridge.scheduler.record_graph_transition(
+                        args.run_id, "graph_execution_context", pending_execution_context,
+                    )
+                    pending_execution_context = None
                 # A node's console output is evidence, not noise: it is teed
                 # live to the terminal (a long bring-up must show progress) and
                 # to node_console.log, and a non-zero exit is snapshotted to a
@@ -1687,11 +1933,17 @@ def _run(args, resources: ExitStack) -> int:
                             "INFER_FORGE_SKILL_CONTRACT": skill_contract,
                         },
                     )
-                except (OSError, ValueError):
+                except (OSError, ValueError) as error:
                     ArtifactStore(attempt.root).register(
                         identity=attempt.identity, outcome="BLOCKED",
                     )
-                    raise
+                    if interaction_mode != "codex":
+                        raise
+                    ArtifactStore(attempt.logs).write_json("execution_error.json", {
+                        "error_type": type(error).__name__, "message": str(error),
+                        "command": command,
+                    })
+                    result = SimpleNamespace(returncode=1, crash_log=None)
                 finally:
                     if watch is not None:
                         watch.stop("node finished")
@@ -1771,6 +2023,18 @@ def _run(args, resources: ExitStack) -> int:
                         "artifacts": [str(artifacts)],
                     }, args.json)
                     return 3 if waiting else 2
+                if interaction_mode == "codex" and spec["produces"] == "OperatorTaskDispatch":
+                    gate = bridge.delivery_status()
+                    if gate["state"] != "OPERATORS_READY":
+                        waiting = gate["state"] == "WAITING_FOR_OPERATORS"
+                        emit_summary({
+                            "status": "WAITING" if waiting else "BLOCKED",
+                            "node": current, "next_task": current,
+                            "reason_code": gate["state"], "run_id": args.run_id,
+                            "message": "Operator work must finish before advancing runtime work.",
+                            "artifacts": [str(artifacts)],
+                        }, args.json)
+                        return 3 if waiting else 2
             if spec["produces"] == "EnvironmentProof" and not passed:
                 if bridge is None:
                     emit_summary({
@@ -1783,19 +2047,28 @@ def _run(args, resources: ExitStack) -> int:
                 try:
                     bridge.bind_environment(artifacts)
                 except ValueError as error:
-                    emit_summary({"status": "BLOCKED", "node": current,
-                                  "next_task": current, "state": state,
-                                  "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
-                                  "reason_code": "ENVIRONMENT_FAILED", "message": str(error)}, args.json)
+                    if interaction_mode != "codex" or state == "INPUT_REQUIRED":
+                        emit_summary({"status": "BLOCKED", "node": current,
+                                      "next_task": current, "state": state,
+                                      "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
+                                      "reason_code": "INPUT_REQUIRED" if state == "INPUT_REQUIRED"
+                                      else "ENVIRONMENT_FAILED", "message": str(error)}, args.json)
                 else:
-                    emit_summary({
-                        "status": "BLOCKED", "node": current, "next_task": current,
-                        "reason_code": "ENVIRONMENT_COMMAND_FAILED", "state": state,
-                        "message": "Environment proof was accepted, but the node execution failed "
-                                   f"(exit code {returncode}, state {state}). Inspect the command logs.",
-                        "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
-                        "progress_details": {"command_exit_code": returncode},
-                    }, args.json)
+                    if interaction_mode != "codex":
+                        emit_summary({
+                            "status": "BLOCKED", "node": current, "next_task": current,
+                            "reason_code": "ENVIRONMENT_COMMAND_FAILED", "state": state,
+                            "message": "Environment proof was accepted, but the node execution failed "
+                                       f"(exit code {returncode}, state {state}). Inspect the command logs.",
+                            "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
+                            "progress_details": {"command_exit_code": returncode},
+                        }, args.json)
+                if interaction_mode == "codex" and state != "INPUT_REQUIRED":
+                    return emit_interactive_boundary(create_interactive_handoff(
+                        args, node=current, spec=spec, context=context, artifacts=artifacts,
+                        environment=environment, state=state, task_type=task_type,
+                        skill=skill, bridge=bridge,
+                    ), args)
                 return 2
             # Exit code 0 is not success either: the node's own state file
             # is the contract, and a state outside SUCCESS_STATES riding the
@@ -1809,6 +2082,23 @@ def _run(args, resources: ExitStack) -> int:
                               "artifacts": [str(artifacts)]}, args.json)
                 return 2
             if returncode != 0 or state_mismatch:
+                if interaction_mode == "codex":
+                    if state == "INPUT_REQUIRED":
+                        emit_summary({"status": "BLOCKED", "node": current,
+                                      "reason_code": "INPUT_REQUIRED",
+                                      "message": _failure_reason(artifacts, spec, state),
+                                      "artifacts": [str(artifacts)]}, args.json)
+                        return 2
+                    task_memory.record_observed_issue(
+                        memory, issue="command_failure", evidence=[str(artifacts)],
+                        environment=environment, source=current,
+                    )
+                    task_memory.save(loop_state, memory)
+                    return emit_interactive_boundary(create_interactive_handoff(
+                        args, node=current, spec=spec, context=context, artifacts=artifacts,
+                        environment=environment, state=state, task_type=task_type,
+                        skill=skill, bridge=bridge,
+                    ), args)
                 reason_code = "STATE_NOT_SUCCESS" if state_mismatch else "COMMAND_FAILED"
                 recovered = False
                 if args.auto_recover:

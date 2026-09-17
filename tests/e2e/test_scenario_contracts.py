@@ -30,6 +30,11 @@ def test_scenario_registry_is_nonempty_and_executable():
         module = ast.parse((REPO_ROOT / local["test"]).read_text())
         tests = {node.name for node in module.body if isinstance(node, ast.FunctionDef)}
         assert set(local["cases"]) <= tests
+        for additional in local.get("additional_tests", []):
+            module = ast.parse((REPO_ROOT / additional["test"]).read_text())
+            tests = {node.name for node in module.body if isinstance(node, ast.FunctionDef)}
+            assert additional["cases"]
+            assert set(additional["cases"]) <= tests
         for tier in ("device_smoke", "real_model"):
             optional = scenario["tiers"][tier]
             assert optional["required"] is False
