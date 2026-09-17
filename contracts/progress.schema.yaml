@@ -1,0 +1,29 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: Adaptation Progress Explanation
+description: Read-only coordination projection; never an acceptance verdict or evidence fact.
+type: object
+required: [schema_version, state, location, reason_code, summary, next_action, evidence, observed_at, details]
+properties:
+  schema_version: {const: 1}
+  state:
+    enum: [RUNNING, WAITING, BLOCKED, ACTION_REQUIRED, READY, COMPLETED]
+  location: {type: string}
+  reason_code: {type: string}
+  summary: {type: string}
+  next_action:
+    type: object
+    required: [owner, action, instruction, command]
+    properties:
+      owner: {type: string}
+      action: {type: string}
+      instruction: {type: string}
+      command:
+        type: [array, 'null']
+        items: {type: string}
+    additionalProperties: false
+  evidence:
+    type: array
+    items: {type: string}
+  observed_at: {type: number}
+  details: {type: object}
+additionalProperties: false

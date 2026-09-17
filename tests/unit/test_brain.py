@@ -157,6 +157,20 @@ class BrainConfigTest(unittest.TestCase):
             brain_from_config({"brain": "oracle"}, Path("/tmp"))
 
 
+def test_decision_notifications_bracket_the_real_file_handshake(tmp_path):
+    observations = []
+
+    def on_request(request_path, response_path):
+        assert request_path.is_file()
+        observations.append("waiting")
+        response_path.write_text(json.dumps({"next_action": "RETRY", "diagnosis": "transient"}))
+
+    brain = AgentBrain(tmp_path, on_request=on_request,
+                       on_decision=lambda decision: observations.append(decision.next_action))
+    assert brain.decide(request()).next_action == "RETRY"
+    assert observations == ["waiting", "RETRY"]
+
+
 def _rm(path: Path) -> None:
     import shutil
 

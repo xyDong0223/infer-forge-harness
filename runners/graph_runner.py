@@ -17,7 +17,10 @@ import json
 import os
 import re
 import subprocess
+import sys
+import time
 from contextlib import ExitStack
+from contextvars import ContextVar
 from pathlib import Path
 
 from core.paths import REPO_ROOT
@@ -27,6 +30,7 @@ from runners import watch as watch_module  # noqa: E402
 from engine.state import journal as journal_module
 from engine import skill_registry
 from engine.state import task_memory
+from engine.progress import graph_progress, render_progress, run_progress
 from core.facade import resolve_adapters  # noqa: E402
 from core.storage import ArtifactStore, RunPaths, WritePolicyError, ensure_external, safe_component  # noqa: E402
 from core.target import (  # noqa: E402
@@ -925,9 +929,55 @@ def node_watch(args, node: str, artifacts: Path):
     ).start()
 
 
+_progress_context: ContextVar[dict | None] = ContextVar("graph_progress_context", default=None)
+
+
+def resume_command(args) -> list[str]:
+    """Replay the full graph with pinned inputs; omit partial-walk boundaries."""
+    command = [sys.executable, str(REPO_ROOT / "cli/workflow/graph.py"),
+               "--subject", args.subject, "--execute", "--resume", "--json"]
+    for name in ("workflow", "run_id", "artifact_root", "scheduler_state", "target",
+                 "operator_report", "shim_registry", "journal", "loop_state"):
+        value = getattr(args, name, None)
+        if value is not None:
+            # The suggested command must also work after a caller changes cwd.
+            value = str(value) if name == "run_id" else str(Path(value).resolve())
+            command.extend(["--" + name.replace("_", "-"), value])
+    for name in ("env", "set"):
+        for value in getattr(args, name, []):
+            command.extend(["--" + name, value])
+    if args.auto_recover:
+        command.append("--auto-recover")
+        for name in ("brain", "recovery_budget", "decide_command", "decide_timeout"):
+            value = getattr(args, name, None)
+            if value is not None:
+                command.extend(["--" + name.replace("_", "-"), str(value)])
+    return command
+
+
 def emit_summary(summary: dict, json_output: bool) -> None:
+    context = _progress_context.get() or {}
+    summary = dict(summary)
+    summary.setdefault("observed_at", time.time())
+    if context.get("node"):
+        summary.setdefault("node", context["node"])
+    if context.get("artifacts"):
+        summary.setdefault("artifacts", context["artifacts"])
+    args = context.get("args")
+    replay = resume_command(args) if args is not None else None
+    summary["resume_command"] = replay
+    progress = graph_progress(summary, replay)
+    scheduler = context.get("scheduler")
+    if scheduler is not None:
+        # Coordination only: never a fact accepted by a node validator.
+        scheduler.record_graph_transition(args.run_id, "graph_progress", summary)
+        if summary.get("reason_code") in {"WAITING_FOR_OPERATORS", "OPERATORS_BLOCKED"}:
+            snapshot = run_progress(scheduler.store, args.run_id, graph=summary)
+            progress = snapshot["progress"]
+            summary["task_progress"] = snapshot["task_progress"]
+    summary["progress"] = progress
     if json_output:
-        print(json.dumps(summary, ensure_ascii=False))
+        print(json.dumps(summary, ensure_ascii=False), flush=True)
     else:
         print(
             f"[summary] {summary['status']} node={summary.get('node')} "
@@ -935,15 +985,32 @@ def emit_summary(summary: dict, json_output: bool) -> None:
         )
         if summary.get("message"):
             print(summary["message"])
+        print(render_progress(progress), flush=True)
 
 
 def _failure_reason(artifacts: Path, spec: dict, state: str) -> str:
     """Read what the node itself said, before falling back to the bare state."""
     payload = read_status(artifacts, spec)
-    for key in ("reason", "reason_code", "validation_errors"):
+    for key in ("reason", "message", "error", "errors", "validation_errors"):
         if payload.get(key):
             return str(payload[key])
+    validator = payload.get("validator")
+    if isinstance(validator, dict) and validator.get("errors"):
+        return str(validator["errors"])
+    if payload.get("reason_code"):
+        return str(payload["reason_code"])
     return f"node ended in state {state}"
+
+
+def emit_terminal(node: str, terminal: str | None, args) -> None:
+    delivered = terminal == "DELIVERED"
+    emit_summary({
+        "status": ("DELIVERED" if delivered else "NEEDS_HUMAN") if args.execute else "PLANNED",
+        "node": node, "next_task": terminal,
+        "reason_code": ("GRAPH_ONLY_COMPLETE" if delivered else "WORKFLOW_STOPPED")
+        if args.execute else "PLAN_COMPLETE",
+        "message": f"Workflow reached {terminal or 'an unspecified terminal'}.",
+    }, args.json)
 
 
 def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
@@ -990,9 +1057,30 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         context={k: str(v) for k, v in context.items()},
         skill=skill,
     )
+    def report_decision(request_path, response_path):
+        emit_summary({
+            "status": "WAITING", "node": node, "reason_code": "WAITING_FOR_DECISION",
+            "message": (f"Waiting up to {args.decide_timeout:g}s for a recovery decision. "
+                        + ("The configured decider command is responsible for the response."
+                           if args.decide_command else
+                           "No decider command is configured; an external agent must write the response.")),
+            "artifacts": [str(request_path)],
+            "progress_details": {"request_path": str(request_path),
+                                 "response_path": str(response_path),
+                                 "timeout_seconds": args.decide_timeout,
+                                 "decider_configured": bool(args.decide_command)},
+        }, args.json)
+
+    def report_decision_received(decision):
+        emit_summary({"status": "RUNNING", "node": node,
+                      "reason_code": "RECOVERY_DECISION_RECEIVED",
+                      "message": f"Decision received: {decision.next_action}. {decision.diagnosis}",
+                      "artifacts": [str(run_dir)]}, args.json)
+
     brain = brain_from_config(
         {"brain": args.brain, "decide_command": args.decide_command,
-         "decide_timeout": args.decide_timeout},
+         "decide_timeout": args.decide_timeout, "on_request": report_decision,
+         "on_decision": report_decision_received},
         run_dir,
     )
 
@@ -1096,6 +1184,11 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         identity=recovery_attempt.identity, outcome=outcome.status,
         required=("output/recovery_outcome.json",),
     )
+    if outcome.status != "RECOVERED":
+        emit_summary({"status": "BLOCKED", "node": node, "reason_code": "RECOVERY_BLOCKED",
+                      "message": outcome.last_decision.diagnosis if outcome.last_decision
+                      else "Recovery stopped without a successful validated rerun.",
+                      "artifacts": [str(run_dir / "recovery_outcome.json")]}, args.json)
     return outcome
 
 
@@ -1147,8 +1240,18 @@ def finish_scheduled_graph(bridge, args, environment: dict, context: dict) -> in
 
 
 def run(args) -> int:
-    with ExitStack() as resources:
-        return _run(args, resources)
+    token = _progress_context.set({"args": args})
+    try:
+        with ExitStack() as resources:
+            try:
+                return _run(args, resources)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                emit_summary({"status": "BLOCKED",
+                              "reason_code": "WRITE_POLICY" if isinstance(error, WritePolicyError)
+                              else "INVALID_INPUT", "message": str(error)}, args.json)
+                return 2
+    finally:
+        _progress_context.reset(token)
 
 
 def _run(args, resources: ExitStack) -> int:
@@ -1238,6 +1341,8 @@ def _run(args, resources: ExitStack) -> int:
             environment, execute=args.execute,
         )
         resources.callback(bridge.close)
+        if args.execute:
+            _progress_context.get()["scheduler"] = bridge.scheduler
         if environment.get("evidence_mode") not in (None, bridge.evidence_mode):
             raise ValueError("--env evidence_mode conflicts with the adaptation run")
         environment["evidence_mode"] = bridge.evidence_mode
@@ -1296,9 +1401,12 @@ def _run(args, resources: ExitStack) -> int:
     current = order[start]
     visits: dict[str, int] = {}
     while current:
+        _progress_context.get().update(node=current, artifacts=[])
         node = by_id.get(current)
         if node is None or node.get("task") in (None, "PLANNED"):
             print(f"stop: {current} has no contract yet")
+            emit_summary({"status": "BLOCKED", "node": current,
+                          "reason_code": "NO_CONTRACT"}, args.json)
             break
         # Failure edges can declare a cycle (mat-006 --failure--> mat-020
         # --failure--> mat-006) that is legitimate once — a second upstream
@@ -1403,9 +1511,14 @@ def _run(args, resources: ExitStack) -> int:
                 args.json,
             )
             if args.until_node and current == args.until_node:
+                emit_summary({"status": "READY" if args.execute else "PLANNED", "node": current,
+                              "reason_code": "UNTIL_NODE_REACHED" if args.execute else "PLAN_COMPLETE",
+                              "next_task": next_task}, args.json)
                 return 0
             if bridge and args.execute and next_task == "DELIVERED":
                 return finish_scheduled_graph(bridge, args, environment, context)
+            if next_task not in by_id:
+                emit_terminal(current, next_task, args)
             current = next_task if next_task in by_id else None
             continue
         attempt = None
@@ -1453,6 +1566,7 @@ def _run(args, resources: ExitStack) -> int:
                 args.run_paths, current, artifacts, commands, skill=skill, attempt=attempt,
             )
             artifacts = attempt.output
+            _progress_context.get()["artifacts"] = [str(artifacts)]
             context.update(artifacts=str(artifacts), attempt=attempt.identity["attempt_id"])
             prepare_regression_attempt(
                 bridge, spec, attempt, args.journal, args.subject, environment,
@@ -1466,6 +1580,10 @@ def _run(args, resources: ExitStack) -> int:
                 routing=skill_routing(skill),
             )
             task_memory.save(loop_state, memory)
+            emit_summary({"status": "RUNNING", "node": current,
+                          "reason_code": "NODE_STARTED",
+                          "message": "Node execution started; inspect logs/watch records for liveness.",
+                          "artifacts": [str(artifacts), str(attempt.logs)]}, args.json)
         if not args.execute:
             for _, command in commands:
                 print(f"[plan] {current}: {' '.join(command)}")
@@ -1566,6 +1684,7 @@ def _run(args, resources: ExitStack) -> int:
                     emit_summary({
                         "status": "BLOCKED", "node": current, "next_task": current,
                         "reason_code": "SHIM_DISPATCH_BLOCKED", "run_id": args.run_id,
+                        "message": "; ".join(str(error) for error in dispatch.get("errors", [])),
                         "artifacts": [str(artifacts)], "dispatch": dispatch,
                     }, args.json)
                     return 2
@@ -1576,11 +1695,25 @@ def _run(args, resources: ExitStack) -> int:
                         "status": "WAITING" if waiting else "BLOCKED",
                         "node": current, "next_task": current,
                         "reason_code": state, "run_id": args.run_id,
+                        "message": _failure_reason(artifacts, spec, state),
                         "artifacts": [str(artifacts)],
                     }, args.json)
                     return 3 if waiting else 2
             if bridge and spec["produces"] == "EnvironmentProof" and not passed:
-                bridge.bind_environment(artifacts)
+                try:
+                    bridge.bind_environment(artifacts)
+                except ValueError as error:
+                    emit_summary({"status": "BLOCKED", "node": current,
+                                  "reason_code": "ENVIRONMENT_FAILED", "message": str(error)}, args.json)
+                else:
+                    emit_summary({
+                        "status": "BLOCKED", "node": current, "next_task": current,
+                        "reason_code": "ENVIRONMENT_COMMAND_FAILED", "state": state,
+                        "message": "Environment proof was accepted, but the node execution failed "
+                                   f"(exit code {returncode}, state {state}). Inspect the command logs.",
+                        "artifacts": [str(artifacts), str(attempt.logs), *crash_logs],
+                        "progress_details": {"command_exit_code": returncode},
+                    }, args.json)
                 return 2
             # Exit code 0 is not success either: the node's own state file
             # is the contract, and a state outside SUCCESS_STATES riding the
@@ -1648,6 +1781,7 @@ def _run(args, resources: ExitStack) -> int:
                     emit_summary(
                         {"status": "REWORK", "node": current, "next_task": failure,
                          "reason_code": reason_code, "state": state,
+                         "message": _failure_reason(artifacts, spec, state),
                          "skill": skill["id"],
                          "artifacts": [str(artifacts)] + crash_logs},
                         args.json,
@@ -1672,12 +1806,16 @@ def _run(args, resources: ExitStack) -> int:
                 )
 
         if args.until_node and current == args.until_node:
+            emit_summary({"status": "READY" if args.execute else "PLANNED", "node": current,
+                          "reason_code": "UNTIL_NODE_REACHED" if args.execute else "PLAN_COMPLETE",
+                          "next_task": node.get("on_success")}, args.json)
             return 0
         nxt = node.get("on_success")
         if nxt not in by_id:
             print(f"[edge] {current} --> {nxt}")
             if bridge and args.execute and nxt == "DELIVERED":
                 return finish_scheduled_graph(bridge, args, environment, context)
+            emit_terminal(current, nxt, args)
             break
         if args.execute:
             emit_summary(

@@ -65,6 +65,76 @@ def graph_fixture(tmp_path, monkeypatch, outcomes):
     return argv, calls
 
 
+@pytest.mark.parametrize("auto_recover", [False, True])
+def test_valid_environment_proof_with_failed_command_persists_blocked_progress(
+    tmp_path, monkeypatch, capsys, auto_recover,
+):
+    from engine.progress import run_progress
+    from engine.scheduler import EventStore, TaskScheduler
+    from tests.unit.test_graph_scheduler_bridge import proof
+
+    argv, _ = graph_fixture(tmp_path, monkeypatch, [])
+    state = tmp_path / "state.sqlite"
+    scheduler = TaskScheduler(state)
+    scheduler.create_run(run_id="r", model_id="demo", metadata={
+        "evidence_mode": "simulation", "environment_required": False,
+        "artifact_root": str(tmp_path / "run"),
+    })
+    scheduler.store.close()
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: [
+        {"id": "environment", "task": "fixture", "on_success": "DELIVERED", "on_failure": "REWORK"},
+    ])
+    monkeypatch.setattr(graph_runner, "node_task_type", lambda _: "environment_proof")
+    monkeypatch.setitem(graph_runner.NODES, "environment_proof", {
+        "produces": "EnvironmentProof", "state_file": "status.json",
+        "command": ["fixture", "--out", "{artifacts}"],
+    })
+
+    attempts = []
+
+    def execute(command, *, log_path, **kwargs):
+        out = Path(command[command.index("--out") + 1])
+        attempts.append(out)
+        proof(out)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("proof written; command cleanup failed")
+        return SimpleNamespace(returncode=17 if len(attempts) == 1 else 0, crash_log=None)
+
+    monkeypatch.setattr(graph_runner.evidence, "run_logged", execute)
+    monkeypatch.setattr(graph_runner, "attempt_recovery",
+                        lambda *args, **kwargs: pytest.fail("The environment gate must still exit."))
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--scheduler-state", str(state), "--run-id", "r",
+    ] + (["--auto-recover"] if auto_recover else []))
+    assert _graph_runner_cli.main() == 2
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    assert summaries[-1]["status"] == "BLOCKED"
+    assert summaries[-1]["reason_code"] == "ENVIRONMENT_COMMAND_FAILED"
+    assert summaries[-1]["progress"]["details"]["command_exit_code"] == 17
+    command = summaries[-1]["progress"]["next_action"]["command"]
+    assert "--resume" not in command
+    assert command[command.index("--from-node") + 1] == "environment"
+    assert command[command.index("--until-node") + 1] == "environment"
+    assert all(Path(path).exists() for path in summaries[-1]["progress"]["evidence"])
+    # Reopen the actual DB: observers must see the exit, not stale NODE_STARTED.
+    store = EventStore(state, readonly=True)
+    try:
+        assert store.run("r").status == "ENVIRONMENT_READY"
+        progress = run_progress(store, "r")["progress"]
+        assert progress["state"] == "BLOCKED"
+        assert progress["reason_code"] == "ENVIRONMENT_COMMAND_FAILED"
+    finally:
+        store.close()
+    # After repairing the command, the suggestion executes a fresh proof attempt.
+    old_proof = (attempts[0] / "status.json").read_bytes()
+    monkeypatch.setattr(sys, "argv", command[1:])
+    assert _graph_runner_cli.main() == 0
+    assert len(attempts) == 2
+    assert attempts[0] != attempts[1]
+    assert (attempts[0] / "status.json").read_bytes() == old_proof
+
+
 def test_graph_two_invocations_preserve_reports_and_resume_journal_paths(tmp_path, monkeypatch):
     argv, calls = graph_fixture(tmp_path, monkeypatch, [])
     monkeypatch.setattr(sys, "argv", argv + ["--execute"])
@@ -179,6 +249,54 @@ def test_graph_plan_and_plan_resume_do_not_write(tmp_path, monkeypatch):
     assert _graph_runner_cli.main() == 0
     assert files == {p: p.read_bytes() for p in (tmp_path / "run").rglob("*") if p.is_file()}
     assert len(calls) == 1
+
+
+def test_graph_reports_decision_paths_before_waiting(tmp_path, monkeypatch, capsys):
+    argv, calls = graph_fixture(tmp_path, monkeypatch, [
+        {"state": "FAILED", "validator": {"passed": False, "errors": ["kernel mismatch"]}},
+    ])
+    monkeypatch.setattr(sys, "argv", argv + [
+        "--execute", "--auto-recover", "--brain", "agent", "--decide-timeout", "0",
+    ])
+    assert _graph_runner_cli.main() == 0  # legacy graph-only exit contract
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    waiting = next(item for item in summaries if item["reason_code"] == "WAITING_FOR_DECISION")
+    details = waiting["progress"]["details"]
+    assert Path(details["request_path"]).is_file()
+    assert Path(details["response_path"]).name == "decision.json"
+    assert not details["decider_configured"]
+    assert "No decider command" in waiting["progress"]["summary"]
+    blocked = next(item for item in summaries if item["reason_code"] == "RECOVERY_BLOCKED")
+    assert "no decision.json" in blocked["progress"]["summary"]
+    failure = next(item for item in summaries if item["status"] == "REWORK")
+    assert "kernel mismatch" in failure["message"]
+
+
+def test_partial_graph_has_explicit_non_delivery_explanation(tmp_path, monkeypatch, capsys):
+    argv, _ = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute", "--until-node", "intake"])
+    assert _graph_runner_cli.main() == 0
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    assert summaries[-1]["reason_code"] == "UNTIL_NODE_REACHED"
+    assert summaries[-1]["progress"]["state"] == "READY"
+    command = summaries[-1]["progress"]["next_action"]["command"]
+    assert "--resume" in command
+    assert "--until-node" not in command
+
+
+def test_custom_terminal_is_not_reported_as_delivery(tmp_path, monkeypatch, capsys):
+    argv, _ = graph_fixture(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(graph_runner, "load_workflow", lambda _: [
+        {"id": "intake", "task": "fixture", "on_success": "NEEDS_REVIEW"},
+    ])
+    monkeypatch.setattr(sys, "argv", argv + ["--execute"])
+    assert _graph_runner_cli.main() == 0
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                 if line.startswith('{"status":')]
+    assert summaries[-1]["status"] == "NEEDS_HUMAN"
+    assert summaries[-1]["progress"]["reason_code"] == "WORKFLOW_STOPPED"
 
 
 @pytest.mark.parametrize("extra", [

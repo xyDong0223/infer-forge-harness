@@ -2,6 +2,27 @@
 
 先记录 run_id、失败 task_id / attempt、实际命令、代码版本和原始 stderr，再查看状态文件、validator 错误及证据。用 `cli/adaptation.py ... status --run-id ... --events` 查询持久状态；不直接改 SQLite，不覆盖失败 attempt。
 
+先用 `status --run-id ... --format text` 查看统一解释。`Reason` 给出具体原因，
+`Next` 指明责任人和动作，`Command` 是可选的下一步命令，`Evidence` 指向原始证据。
+JSON 的同一信息位于 `progress`；并行算子各自的下一步位于 `task_progress`。
+
+| reason_code | 下一步 |
+| --- | --- |
+| `START_GRAPH` | 提供 `model_path`、`contract_instance`，用 `--execute` 首次执行当前 run 的 Graph |
+| `ENVIRONMENT_COMMAND_FAILED` | 环境证明已被接受，但节点执行失败；查看退出码和日志，修复后按提示不带 `--resume` 重跑环境节点，再恢复完整 Graph |
+| `WORKER_UNCLAIMED` / `DIAGNOSIS_PENDING` | 启动对应 stage 的 worker 并领取任务，核对返回 run；不代表已经证实没有 worker |
+| `WORKER_RUNNING` | 看当前 attempt 的日志并按需续租；有效租约不是存活证明 |
+| `LEASE_EXPIRED` | 重新领取，Scheduler 会分配新 token/attempt；查询本身不会恢复租约 |
+| `DIAGNOSIS_NOT_APPLIED` | Main Agent 阅读已验证的结论，再执行提示中的 `apply-diagnosis` |
+| `EXTERNAL_REPAIR_REQUIRED` | 按结论修改实现或重新发现契约，不能把它改成 RETRY 绕过修复 |
+| `DISPATCH_BLOCKED` / `SHIM_DISPATCH_BLOCKED` | 根据原始错误补充实测字段或 shim 登记，再恢复 Graph |
+| `WAITING_FOR_DECISION` | 查看 request/response 路径；未配置 decider 时由外部 Agent 写入回复 |
+| `RESUME_GRAPH` | 算子队列已无待执行工作，恢复 Graph 做最终验证 |
+
+自动恢复等待决策时，Graph 会在开始等待之前输出请求文件、回复路径、等待上限和
+是否配置 `--decide-command`。默认文件等待仍保持原有行为，不会替用户自动生成决策。
+`--until-node` 完成会明确输出 `UNTIL_NODE_REACHED`；这只是部分执行完成。
+
 ## 常见现象
 
 | 现象 | 检查与处理 |
