@@ -1,5 +1,7 @@
 # Documentation
 
+> 中文译本见 [README.zh-CN.md](README.zh-CN.md);如有不一致,以本英文版为准。
+
 - [Local quickstart](guides/quickstart.zh-CN.md): installation, the complete local
   scenario, artifact inspection and an optional tensor comparison example.
 - [CLI guide](../cli/README.md) and [configuration](../config/README.md):

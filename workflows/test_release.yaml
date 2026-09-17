@@ -3,6 +3,7 @@ kind: Workflow
 metadata:
   name: test_release
 spec:
+  # 流程骨架:占位 validator 引用,未注册为可交付场景,不要交给 graph runner 执行。
   description: Independent validation and reviewable release evidence.
   entry_task: test-001-functional
   nodes:

@@ -1,5 +1,7 @@
 # Configuration
 
+> 中文译本见 [README.zh-CN.md](README.zh-CN.md);如有不一致,以本英文版为准。
+
 Use these inputs to connect your own environment, not as proof that resources
 exist or that a model is supported.
 

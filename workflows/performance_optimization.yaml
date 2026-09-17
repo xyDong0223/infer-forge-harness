@@ -3,6 +3,7 @@ kind: Workflow
 metadata:
   name: performance_optimization
 spec:
+  # 流程骨架:占位 task 引用,未注册为可交付场景,不要交给 graph runner 执行。
   description: Baseline, profile, candidate validation, and evidence-driven performance loop.
   entry_task: kdp-001-deployment-proof
   nodes:

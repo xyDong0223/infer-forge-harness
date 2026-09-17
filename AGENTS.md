@@ -1,5 +1,7 @@
 # Infer-Forge Agent Protocol
 
+> 中文译本见 [AGENTS.zh-CN.md](AGENTS.zh-CN.md);如有不一致,以本英文版为准。
+
 This file is the execution protocol for any Agent working in this repository.
 Read it before changing code, running an adaptation, or reporting a result. The
 repository is a durable orchestration harness: an Agent must use its task

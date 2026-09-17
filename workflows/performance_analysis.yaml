@@ -1,27 +1,61 @@
-api_version: infer.forge/v1alpha1
+api_version: infer.kunlun/v1alpha1
 kind: Workflow
 metadata:
   name: performance_analysis
   version: 0.1.0
-description: Shared-core performance workflow; platform actions come from adapters.
-stages:
-  - id: environment_proof
-    task: environment_proof
-  - id: runtime_prepare
-    task: runtime_prepare
-  - id: model_intake
-    task: model_intake
-  - id: workload_prepare
-    task: workload_prepare
-  - id: benchmark
-    task: benchmark
-  - id: profiler_collect
-    task: profiler_collect
-  - id: metric_extract
-    task: metric_extract
-  - id: baseline_compare
-    task: baseline_compare
-  - id: performance_gate
-    task: performance_gate
-  - id: report
-    task: report
+spec:
+  # 流程骨架:表达性能分析阶段的拓扑意图,尚未注册为完整可交付场景。
+  # 节点 task 引用为占位符,不要交给 cli/workflow/graph.py 执行;
+  # 可执行拓扑的唯一当前示例是 model_adaptation.yaml。
+  # 新增节点时必须同时提供 tasks/<task-id>/task.yaml 契约和本地 E2E 场景。
+  description: Shared-core performance workflow; platform actions come from adapters.
+  entry_task: environment_proof
+  nodes:
+    - id: environment_proof
+      task: tasks/kdp-001a-environment-proof/task.yaml
+      on_success: runtime_prepare
+      on_failure: NEEDS_HUMAN
+    - id: runtime_prepare
+      # 占位:尚无独立 task 契约;当前由 kdp-001a 的运行时检查覆盖。
+      task: tasks/kdp-001a-environment-proof/task.yaml
+      on_success: model_intake
+      on_failure: NEEDS_HUMAN
+    - id: model_intake
+      task: tasks/mat-001-model-intake/task.yaml
+      on_success: workload_prepare
+      on_failure: NEEDS_HUMAN
+    - id: workload_prepare
+      # 占位:固定 benchmark 矩阵的 workload 契约尚未建立。
+      task: tasks/mat-001-model-intake/task.yaml
+      on_success: benchmark
+      on_failure: NEEDS_HUMAN
+    - id: benchmark
+      # 占位:baseline 采集契约;指标身份要求见 docs/guides/performance-analysis.md。
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: profiler_collect
+      on_failure: NEEDS_HUMAN
+    - id: profiler_collect
+      # 占位:可选 profiler 捕获;profiler 开销不得计入吞吐。
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: metric_extract
+      on_failure: NEEDS_HUMAN
+    - id: metric_extract
+      # 占位:从 trace/日志提取指标,绑定模型/plugin revision、硬件、dtype、并发等身份。
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: baseline_compare
+      on_failure: NEEDS_HUMAN
+    - id: baseline_compare
+      # 占位:与冻结基线对比;正确性回归先于性能结论。
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: performance_gate
+      on_failure: NEEDS_HUMAN
+    - id: performance_gate
+      # 占位:promote 或 rollback 的判定点,不得绕过正确性回归。
+      task: tasks/mat-025-baseline-freeze/task.yaml
+      on_success: report
+      on_failure: NEEDS_HUMAN
+    - id: report
+      # 占位:性能报告与功能判定分离,证据含完整运行身份。
+      task: tasks/mat-016-support-matrix/task.yaml
+      on_success: DONE
+      on_failure: NEEDS_HUMAN
