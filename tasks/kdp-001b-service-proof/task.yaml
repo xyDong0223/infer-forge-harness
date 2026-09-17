@@ -25,7 +25,6 @@ context:
     hardware: Kunlunxin-3-P800
     namespace: ${KUNLUN_NAMESPACE}
 actions:
-  - engine_core_drift_precheck
   - toy_bringup_before_load
   - start_server
   - poll_health

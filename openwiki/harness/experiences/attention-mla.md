@@ -9,7 +9,6 @@ first_seen:
 sources:
 - repo://tools/probe/layer0_golden.py
 - repo://tools/probe/layer_swap.py
-- repo://tools/probe/engine_core_drift_precheck.py
 ---
 
 # attention-mla
@@ -45,7 +44,7 @@ DeepSeekV2 风格的 MLA 层（q/kv lora 投影、q_a/kv_a layernorm、rope 共�
 ### DSA indexer
 
 - 插件路径 `v1/attention/backends/mla/indexer.py` + `flashmla_sparse.py`，是
-  drift 预检的 hard-gate 面（见 [engine-drift](engine-drift.md)）。
+  toy bring-up 和真实服务路径需要覆盖的关键面（见 [engine-drift](engine-drift.md)）。
 
 ## 工具
 

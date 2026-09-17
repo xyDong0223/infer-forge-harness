@@ -72,10 +72,11 @@ failed handoffs, even if ambient USER_ID changes. Generated-plan tampering block
 service, triage and patch placement before external operations; intact plans
 remain reusable after restart.
 
-The environment-drift case rejects a synthetic runtime incompatibility before
-intake in both scheduler-connected and standalone Graph modes, retains the failed
-proof and Pod, and resumes into intake on that same Pod. Environment failures
-stop at a diagnostic terminal; model triage requires a successful environment.
+The failed environment handoff case injects a runtime import error at the
+external command boundary, checks the persisted INSTALL_FAILED proof and import
+log, rejects an owner change, and retries with the same owner and Pod.
+Environment failures stop at a diagnostic terminal; model triage requires a
+successful environment.
 Workflow intake requires EnvironmentProof and never creates its standalone
 ephemeral probe Pod.
 

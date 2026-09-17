@@ -411,12 +411,22 @@ engine/state/  Journal 和 Task Memory
 runners/       Graph、部署证明和任务执行序列
 validators/    独立验收门禁
 adapters/      硬件与集群差异
-runtimes/      推理引擎/backend/plugin 差异
+runtimes/      推理软件栈适配：环境、安装检查、启动命令和 fallback 特征
 core/          共享契约、目标解析、路径和存储
 tools/         可移植 probe、可重放 patch、Torch 参考
 tests/e2e/     能力场景及外部边界替身
 openwiki/      上游、插件和项目工程经验参考
 ```
+
+阅读或修改代码前，可从各层自己的说明进入：[`cli/`](cli/README.md)、
+[`operations/`](operations/README.md)、[`runners/`](runners/README.md)、
+[`engine/`](engine/README.md)、[`core/`](core/README.md)、
+[`adapters/`](adapters/README.md)、[`runtimes/`](runtimes/README.md) 和
+[`validators/`](validators/README.md)。声明式资产分别见
+[`workflows/`](workflows/README.md)、[`tasks/`](tasks/README.md)、
+[`contracts/`](contracts/README.md)、[`compatibility/`](compatibility/README.md)、
+[`catalog/`](catalog/README.md)、[`skills/`](skills/README.md) 与
+[`tools/`](tools/README.md)。
 
 新增源码前先阅读[源码归类说明](docs/architecture/source-layout.zh-CN.md)。运行时修复必须同时提供 `tools/patches/` 下幂等、可重放的源码补丁，不能只修改某个 Pod 的 site-packages。
 

@@ -338,6 +338,8 @@ class SimulatedCluster(KunlunP800Adapter):
                     "torch 2.9.0\nvllm 0.25.1\nvllm-kunlun 0.25.1\n"
                     + self.settings["plugin_revision"] + "\n")
         if 'python3 -c "import json, torch, vllm, vllm_kunlun' in script:
+            if self.settings.get("runtime_import_failure"):
+                return {"returncode": 1, "stderr": "ImportError: synthetic runtime import failure"}
             return {"torch": "2.9.0-simulation", "vllm": "0.25.1-simulation",
                     "vllm_kunlun": "0.25.1-simulation"}
         if 'python3 -c "import torch, vllm, vllm_kunlun"' in script:
@@ -413,16 +415,6 @@ class SimulatedCluster(KunlunP800Adapter):
             if argv != [model]:
                 raise RuntimeError(f"unexpected intake path: {argv!r}")
             return _fingerprint(Path(model))
-        if filename == "kdp_drift_precheck.py":
-            if self.settings.get("environment_drift"):
-                return {"state": "RUNTIME_DRIFT", "checks": [{
-                    "id": "simulation-import", "verdict": "DRIFT", "scope": "path",
-                    "gating": "gate", "detail": "synthetic incompatible runtime API",
-                }], "summary": {"checked": 1, "drift": 1}}
-            return {"state": "DRIFT_CLEAR", "checks": [{
-                "id": "simulation-import", "verdict": "OK", "scope": "path",
-                "detail": "synthetic runtime import surface",
-            }], "summary": {"checked": 1, "drift": 0}}
         if filename == "mat027_probe.py":
             return {"state": "DRIFT_CLEAR",
                     "engine": {"name": "vllm", "path": "simulation://runtime/vllm"},

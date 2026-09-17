@@ -249,9 +249,10 @@ as part of proving the environment. The deployment CLI defaults to `environment`
 
 **Diagnose before repairing.** Deployment no longer auto-discovers or executes
 `tools/patches/patch_*.py`, including the commit-specific Kunlun drift repair.
-The drift precheck remains read-only. Repair only an observed incompatibility
-against the installed revisions, record the diff and evidence, and keep the
-repair replayable in versioned source. No blanket drift-patch step is required.
+Repair only an incompatibility observed by runtime import, toy bring-up, or the
+real service path against the installed revisions; record the diff and evidence,
+and keep the repair replayable in versioned source. No blanket drift-patch or
+static drift-precheck step is required.
 
 **Toy before target weights.** Run MAT-028 with dummy weights and require engine
 construction, prefill and at least two decoded tokens. After any repair, repeat

@@ -3,7 +3,7 @@
 Repairs must be reviewable and replayable against their recorded runtime revisions.
 Deployment and environment proof never discover or execute this directory automatically.
 Diagnose the installed source and validate a focused repair in the existing Pod,
-then repeat the drift precheck and toy bring-up before loading target weights.
+then repeat toy bring-up before loading target weights.
 
 - `patch_vllm_kunlun_drift.py`: historical, version-specific repair reference;
   excluded from the adaptation workflow. It is not a prerequisite for environment

@@ -112,7 +112,7 @@ Runner 协调一次任务的执行步骤、运行上下文、产物收集及校�
 
 `task_runner` 默认输出计划，只有显式 `--execute` 才进入执行。当前其 `execute()` 接通的是 `deployment_proof`、`environment_proof`、`service_proof` 三种任务，而不是所有 Task 的通用执行插件系统；其他节点大量通过 `graph_runner.NODES` 映射到工具命令。
 
-`DeploymentProofRunner` 负责 Pod 准备或 attach、运行时安装、补丁重放、环境检查、服务检查和证据收集。安装器、导入命令、版本查询、启动命令构造和 fallback 标记等行为已部分移至 Runtime Adapter。
+`DeploymentProofRunner` 负责 Pod 准备或 attach、运行时安装、环境检查、toy bring-up、服务检查和证据收集。安装器、导入命令、版本查询、启动命令构造和 fallback 标记等行为已部分移至 Runtime Adapter。
 
 **意义：** 让任务契约与执行细节独立演进，并把长任务、中断、重试产生的结果保存在文件中，而不是只打印到终端。
 
@@ -145,7 +145,7 @@ Runner 协调一次任务的执行步骤、运行上下文、产物收集及校�
 
 环境证明把 Pod、代码、可导入运行时、设备以及基础模型服务检查绑定到 run。后续运行时扫描、toy bring-up 和算子任务复用这个准备好的 Pod；换一个临时 Pod 不能自动继承原有证明。
 
-修复运行时必须有仓库内可幂等重放的补丁。部署证明会在安装／attach 路径应用补丁，并执行漂移预检查，防止修复只存在于某个 Pod 的 site-packages 中。
+修复运行时必须有仓库内可幂等重放的补丁，但部署证明不会自动发现或应用补丁。修复应基于同一 Pod 中 runtime import、toy bring-up 或真实服务路径观察到的失败，并在修复后重新执行这些真实验证。
 
 **意义：** 让结果可复现，避免把“某次手工调通的环境”误认为可交付的软件能力。
 
@@ -266,7 +266,7 @@ sequenceDiagram
     T->>D: 注入 hardware 实例和 runtime 对象
     D->>R: 安装器、导入命令、版本与指纹命令
     D->>H: Pod 操作、传输、执行、设备检查
-    D->>D: 补丁重放、漂移预检查、基础服务检查、保存证据
+    D->>D: runtime import、toy bring-up、基础服务检查、保存证据
     D-->>T: status 与 artifacts
     T->>V: 环境或部署状态校验
     V-->>T: 校验错误列表

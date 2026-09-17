@@ -38,7 +38,6 @@ actions:
   - preflight
   - prepare_environment
   - verify_runtime_importable
-  - engine_core_drift_precheck
   - discover_base_model
   - start_base_model
   - run_base_prefill_decode_smoke
