@@ -3,7 +3,10 @@ kind: Workflow
 metadata:
   name: test_release
 spec:
-  # 流程骨架:占位 validator 引用,未注册为可交付场景,不要交给 graph runner 执行。
+  # 流程骨架:节点只有 validator 引用、没有 task 契约,Graph Runner 对无 task
+  # 节点立即以 NO_CONTRACT 停止,因此本文件不可执行。
+  # 转正条件与守卫见 performance_analysis.yaml 头部注释和
+  # tests/unit/test_workflow_skeletons.py。
   description: Independent validation and reviewable release evidence.
   entry_task: test-001-functional
   nodes:

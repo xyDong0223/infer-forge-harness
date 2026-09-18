@@ -307,7 +307,7 @@ sequenceDiagram
 
 [PerformanceRunner](../../runners/performance_runner.py) 当前调用 `prepare_workload -> run_benchmark -> collect_trace -> extract_metrics -> compare_metrics`，返回指标、产物引用和门禁字典。它会创建产物目录，但本身没有把完整报告写入持久化任务系统；无 baseline 时门禁可以是 `UNKNOWN`，外层仍可返回 `PASS`，不能解释为性能达标。
 
-[performance_analysis.yaml](../../workflows/performance_analysis.yaml) 目前采用顶层 `stages` 声明；现有 Graph Runner 读取的是 `spec.nodes`，也没有为这些性能阶段接好全部执行映射。因此它是流程骨架，不是可以直接替换模型工作流运行的完整任务图。功能就绪和性能优化仍须分开验收。
+[performance_analysis.yaml](../../workflows/performance_analysis.yaml) 已统一到 `spec.nodes` 声明,但所有节点仍是 `task: PLANNED` 占位;Graph Runner 对 PLANNED 节点以 NO_CONTRACT 停止,也没有为这些性能阶段接好全部执行映射。因此它是流程骨架,不是可以直接替换模型工作流运行的完整任务图。功能就绪和性能优化仍须分开验收。
 
 后续扩展应按以下顺序选择改动位置：
 

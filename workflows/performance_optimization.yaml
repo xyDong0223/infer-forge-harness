@@ -3,19 +3,24 @@ kind: Workflow
 metadata:
   name: performance_optimization
 spec:
-  # 流程骨架:占位 task 引用,未注册为可交付场景,不要交给 graph runner 执行。
+  # 流程骨架:所有节点为 task: PLANNED,Graph Runner 会以 NO_CONTRACT 停止,
+  # 不可执行。转正条件与守卫同 performance_analysis.yaml 头部注释。
   description: Baseline, profile, candidate validation, and evidence-driven performance loop.
-  entry_task: kdp-001-deployment-proof
+  entry_task: perf-101-baseline
   nodes:
-    - id: kdp-001-deployment-proof
-      task: tasks/kdp-001-deployment-proof/task.yaml
-      on_success: perf-001-baseline
-    - id: perf-001-baseline
-      task: tasks/kdp-001-deployment-proof/task.yaml
-      on_success: perf-002-profile
-    - id: perf-002-profile
-      task: tasks/kdp-001-deployment-proof/task.yaml
-      on_success: perf-003-candidate-validation
-    - id: perf-003-candidate-validation
-      task: tasks/kdp-001-deployment-proof/task.yaml
-      on_success: performance_validator
+    - id: perf-101-baseline
+      task: PLANNED  # 目标:固定矩阵基线采集契约
+      on_success: perf-102-profile
+      on_failure: NEEDS_HUMAN
+    - id: perf-102-profile
+      task: PLANNED  # 目标:profiler 捕获契约
+      on_success: perf-103-candidate-validation
+      on_failure: NEEDS_HUMAN
+    - id: perf-103-candidate-validation
+      task: PLANNED  # 目标:候选优化的正确性 + benchmark 回归契约
+      on_success: perf-104-performance-gate
+      on_failure: NEEDS_HUMAN
+    - id: perf-104-performance-gate
+      task: PLANNED  # 目标:promote/rollback 判定与证据发布
+      on_success: DONE
+      on_failure: NEEDS_HUMAN

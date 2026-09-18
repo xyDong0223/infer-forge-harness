@@ -5,57 +5,52 @@ metadata:
   version: 0.1.0
 spec:
   # 流程骨架:表达性能分析阶段的拓扑意图,尚未注册为完整可交付场景。
-  # 节点 task 引用为占位符,不要交给 cli/workflow/graph.py 执行;
-  # 可执行拓扑的唯一当前示例是 model_adaptation.yaml。
-  # 新增节点时必须同时提供 tasks/<task-id>/task.yaml 契约和本地 E2E 场景。
+  # 所有节点都是 task: PLANNED —— Graph Runner 对 PLANNED 节点立即以
+  # NO_CONTRACT 停止,因此本文件即使被误传给 --execute 也不会触发任何
+  # 集群操作。tests/unit/test_workflow_skeletons.py 对此有守卫。
+  # 转正条件:为每个节点建立真实 task 契约、接入执行映射,并在 metadata 中
+  # 登记 regression_scenario 指向 tests/e2e/scenarios/ 下的必选本地场景。
   description: Shared-core performance workflow; platform actions come from adapters.
-  entry_task: environment_proof
+  entry_task: perf-001-environment-proof
   nodes:
-    - id: environment_proof
-      task: tasks/kdp-001a-environment-proof/task.yaml
-      on_success: runtime_prepare
+    # 占位说明中的 task 路径是转正时的目标契约,当前故意不存在。
+    - id: perf-001-environment-proof
+      task: PLANNED  # 目标:复用 tasks/kdp-001a-environment-proof/task.yaml
+      on_success: perf-002-runtime-prepare
       on_failure: NEEDS_HUMAN
-    - id: runtime_prepare
-      # 占位:尚无独立 task 契约;当前由 kdp-001a 的运行时检查覆盖。
-      task: tasks/kdp-001a-environment-proof/task.yaml
-      on_success: model_intake
+    - id: perf-002-runtime-prepare
+      task: PLANNED  # 目标:独立运行时准备契约(当前由 kdp-001a 覆盖)
+      on_success: perf-003-model-intake
       on_failure: NEEDS_HUMAN
-    - id: model_intake
-      task: tasks/mat-001-model-intake/task.yaml
-      on_success: workload_prepare
+    - id: perf-003-model-intake
+      task: PLANNED  # 目标:复用 tasks/mat-001-model-intake/task.yaml
+      on_success: perf-004-workload-prepare
       on_failure: NEEDS_HUMAN
-    - id: workload_prepare
-      # 占位:固定 benchmark 矩阵的 workload 契约尚未建立。
-      task: tasks/mat-001-model-intake/task.yaml
-      on_success: benchmark
+    - id: perf-004-workload-prepare
+      task: PLANNED  # 目标:固定 benchmark 矩阵的 workload 契约
+      on_success: perf-005-benchmark
       on_failure: NEEDS_HUMAN
-    - id: benchmark
-      # 占位:baseline 采集契约;指标身份要求见 docs/guides/performance-analysis.md。
-      task: tasks/mat-025-baseline-freeze/task.yaml
-      on_success: profiler_collect
+    - id: perf-005-benchmark
+      task: PLANNED  # 目标:baseline 采集;指标身份见 docs/guides/performance-analysis.md
+      on_success: perf-006-profiler-collect
       on_failure: NEEDS_HUMAN
-    - id: profiler_collect
-      # 占位:可选 profiler 捕获;profiler 开销不得计入吞吐。
-      task: tasks/mat-025-baseline-freeze/task.yaml
-      on_success: metric_extract
+    - id: perf-006-profiler-collect
+      task: PLANNED  # 目标:可选 profiler 捕获;profiler 开销不得计入吞吐
+      on_success: perf-007-metric-extract
       on_failure: NEEDS_HUMAN
-    - id: metric_extract
-      # 占位:从 trace/日志提取指标,绑定模型/plugin revision、硬件、dtype、并发等身份。
-      task: tasks/mat-025-baseline-freeze/task.yaml
-      on_success: baseline_compare
+    - id: perf-007-metric-extract
+      task: PLANNED  # 目标:指标提取,绑定 revision/硬件/dtype/并发等身份
+      on_success: perf-008-baseline-compare
       on_failure: NEEDS_HUMAN
-    - id: baseline_compare
-      # 占位:与冻结基线对比;正确性回归先于性能结论。
-      task: tasks/mat-025-baseline-freeze/task.yaml
-      on_success: performance_gate
+    - id: perf-008-baseline-compare
+      task: PLANNED  # 目标:与冻结基线对比;正确性回归先于性能结论
+      on_success: perf-009-performance-gate
       on_failure: NEEDS_HUMAN
-    - id: performance_gate
-      # 占位:promote 或 rollback 的判定点,不得绕过正确性回归。
-      task: tasks/mat-025-baseline-freeze/task.yaml
-      on_success: report
+    - id: perf-009-performance-gate
+      task: PLANNED  # 目标:promote 或 rollback 判定,不得绕过正确性回归
+      on_success: perf-010-report
       on_failure: NEEDS_HUMAN
-    - id: report
-      # 占位:性能报告与功能判定分离,证据含完整运行身份。
-      task: tasks/mat-016-support-matrix/task.yaml
+    - id: perf-010-report
+      task: PLANNED  # 目标:性能报告与功能判定分离,证据含完整运行身份
       on_success: DONE
       on_failure: NEEDS_HUMAN

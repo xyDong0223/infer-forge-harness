@@ -43,4 +43,9 @@ ID、变更层级、已运行的测试、已知限制和可复现命令。
 
 ```bash
 python -m pytest -q tests
+python cli/maintenance/check_repo_references.py
+python -m pytest -q -m local_e2e tests/e2e
 ```
+
+P800 集成测试为显式 opt-in,执行前必须标明 namespace、镜像 digest、模型
+revision、硬件和清理策略。
