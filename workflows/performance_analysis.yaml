@@ -52,5 +52,5 @@ spec:
       on_failure: NEEDS_HUMAN
     - id: perf-010-report
       task: PLANNED  # 目标:性能报告与功能判定分离,证据含完整运行身份
-      on_success: DONE
+      on_success: DELIVERED
       on_failure: NEEDS_HUMAN

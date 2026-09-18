@@ -22,5 +22,5 @@ spec:
       on_failure: NEEDS_HUMAN
     - id: perf-104-performance-gate
       task: PLANNED  # 目标:promote/rollback 判定与证据发布
-      on_success: DONE
+      on_success: DELIVERED
       on_failure: NEEDS_HUMAN
