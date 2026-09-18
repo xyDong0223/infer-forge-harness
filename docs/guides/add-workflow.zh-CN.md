@@ -111,7 +111,7 @@ Profiler 是诊断输入，不是性能通过条件；正确性回归必须先�
 在 `workflows/<capability>.yaml` 中声明节点和边：
 
 ```yaml
-api_version: infer.forge/v1alpha1
+api_version: infer.kunlun/v1alpha1
 kind: Workflow
 metadata:
   name: example_capability

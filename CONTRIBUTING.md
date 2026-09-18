@@ -1,5 +1,7 @@
 # Contributing
 
+> 中文译本见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md);如有不一致,以本英文版为准。
+
 ## Change boundaries
 
 Every change must identify whether it modifies a Contract, Workflow, Task, Skill, Tool, Runner, Adapter, Validator, Catalog, or documentation. Do not mix unrelated layers in one change.

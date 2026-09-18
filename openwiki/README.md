@@ -1,5 +1,7 @@
 # OpenWiki
 
+> 中文译本见 [README.zh-CN.md](README.zh-CN.md);如有不一致,以本英文版为准。
+
 Layered engineering reference material, split by provenance so the layers are
 never confused with each other:
 

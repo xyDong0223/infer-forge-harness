@@ -1,5 +1,7 @@
 # Capability scenarios
 
+> 中文译本见 [README.zh-CN.md](README.zh-CN.md);如有不一致,以本英文版为准。
+
 Model adaptation is the first executable capability scenario. Its registry entry
 is [scenarios/model_adaptation.yaml](scenarios/model_adaptation.yaml), referenced
 by the production workflow. Performance optimization and context/memory tuning
