@@ -1,17 +1,23 @@
 # 自我迭代系统：运行 → 复盘 → 提炼 → 进化
 
-> 状态：设计提案（2026-09-18）。依据 run `step35-flash-p800-003` 的完整证据
-> （`evidence/step35-flash-p800-003-evidence`）与既有机制设计。
+> 状态：设计提案（2026-09-18）。依据 run `step35-flash-p800-003` 的完整证据。
+> 证据包是运行时产物，按仓库协议**不进入版本化源码**；其不可变标识为
+> tarball sha256 `8fd95917cc1e05664b5f7c6889cbb23549cd810f6d04a4c6a2eea3bc94fb7146`
+> （包内 `MANIFEST.sha256` 覆盖全部 826 个文件），由运行所有者保存，
+> 供第 7 节基准回放与第 10 节分期实施引用。
 
 ## 1. 问题
 
 harness 已经有经验的**目的地**（`openwiki/harness/experiences/` 能力轴页面 +
-`.claims/` 证据绑定）和经验的**原料**（Journal 事实账本、Task Memory 循环块、
-attempt 产物），但中间缺少**明确的机制**：
+`openwiki/harness/.claims/` 页面级 sidecar 证据绑定——目前仅有
+`practice-experience.json`，能力轴页面尚无对应 sidecar）和经验的**原料**
+（Journal 事实账本、Task Memory 循环块、attempt 产物），但中间缺少**明确的机制**：
 
 - 一次 run 结束后，"总结经验"目前是 Agent 的手工动作。step35-flash-p800-003
-  对 `experiences/moe.md` 的增补（sigmoid 无分组路由一节）是人工完成的，
-  没有任何任务契约要求它发生，也没有验证器检查它的证据绑定。
+  对 `experiences/moe.md` 的增补（sigmoid 无分组路由一节）只发生在运行侧的
+  工作副本（见证据包 `harness-repo/uncommitted.diff`），**从未进入版本化源码**
+  ——本 checkout 的 moe.md 不含该增补，对应的 `.claims/moe.json` 也不存在。
+  没有任何任务契约要求提炼发生，也没有验证器检查它的证据绑定。
 - 失败的重试热点（mat-006 分诊 11 次、mat-013 精度差分 8 次、mat-009 API
   一致性 5 次全败）只留在账本里，没有被转化为对 harness 自身的改进项。
 - 能力沉淀与 harness 进化混在一起：经验页回答"下一个模型怎么做"，
@@ -31,12 +37,19 @@ attempt 产物），但中间缺少**明确的机制**：
 ## 2. 闭环总览
 
 ```text
-适配 run 到达终态（FUNCTIONAL_READY / BLOCKED / 人工中止）
+适配 run 到达图终态（DELIVERED / NEEDS_HUMAN；见 workflows/model_adaptation.yaml）
   -> evo-001 run-retrospective      机械复盘：从账本生成结构化复盘，禁止自由发挥
   -> evo-002 experience-distillation 能力提炼：可泛化结论 -> 能力轴页面 + claims
   -> evo-003 harness-evolution       自身进化：harness 缺陷 -> 改进提案任务
-  -> adoption gate                   采纳门禁：测试 + E2E + 提交，下一个 run 继承
+  -> adoption gate                   采纳门禁：测试 + E2E + 基准回放 + 提交，下一个 run 继承
 ```
+
+注意：`FUNCTIONAL_READY` 是交付回执的 verdict，不是图终态；图的终态边是
+`DELIVERED` 与 `NEEDS_HUMAN`（mat-016 / mat-020 的 `on_success` 直接指向
+`DELIVERED`，终态之后没有可挂接的下游节点）。因此 evo-001 **不能**作为
+图内下游节点触发，而是由独立的复盘入口在 run 到达终态后显式触发
+（CLI 命令或外部调度），复用 run 的状态目录；重跑语义与普通任务一致：
+每次执行创建新的 attempt，不回写历史 attempt。
 
 三个 evo 节点是**持久任务**，走 TaskScheduler，与适配节点同样的
 input/output/logs/manifest 结构与证据门禁。它们不改变已冻结基线，
@@ -52,13 +65,16 @@ manifest.json 与 status）、run-index。
 - `retrospective.json`（结构化）+ `retrospective.md`（人读）：
   - 节点 × 尝试矩阵、最终状态、总尝试数；
   - **重试热点**：尝试数 > 1 的节点，按次数排序，附每次失败
-    的 `failure_record.json` 哈希链；
+    的 `failure_record.json` 及其 sha256 清单（按 attempt-id 排序。
+    Journal 目前只为每次失败记录独立的 `failure_sha256`，没有链字段；
+    若复盘需要链式不可篡改性，链的生成与校验格式必须作为 evo-001
+    契约的一部分另行定义，不能假定账本已有）；
   - 未关闭项：终态非成功且无后续成功 attempt 的节点
     （本 run 即 mat-006 TRIAGE_FAILED、mat-009 UNKNOWN）；
   - 证据完整性：manifest 缺失、output 为空、哈希断链的节点清单
     （本 run 即 graph-shim-discovery、mat-008 最新 attempt 无 manifest）；
   - 时间线：各节点起止、墙钟耗时占比。
-- 写入 run 的 `tasks/evo-001-run-retrospective/attempts/<n>/output/`，
+- 写入 run 的 `tasks/evo-001-run-retrospective/attempts/<attempt-id>/output/`，
   记 Journal kind `RunRetrospective`。
 
 **验证器**（规划：`validators/` 下新增 retrospective validator）：复盘中的
@@ -86,11 +102,14 @@ capability axes 同源）：
 版本化源码改动 + `distillation_report.json`（每条结论 → 目标页面 → 证据列表）。
 记 Journal kind `ExperienceDistillation`。
 
-**验证器**：每条 claim 的证据路径真实存在；`first_seen` 引用的 run/attempt
-在账本中存在；页面 diff 只触及声明的段落。无证据绑定的段落不许落地。
+**验证器**：证据引用按类型分支校验——`repo://` 引用检查仓库路径真实存在；
+run 产物引用（attempt 产物路径或 sha256）检查其在账本中的 artifacts/哈希
+绑定存在，而不是当作文件路径检查。`first_seen` 引用的 run/attempt 在账本中
+存在；页面 diff 只触及声明的段落。无证据绑定的段落不许落地。
 
 本 run 的 moe.md 增补（sigmoid 路由两处 glue 缺陷 + 反模式 + accuracy 门禁
-语义）即为这一步的人工实例，证明了模式可行——evo-002 把它变成契约要求。
+语义）是这一步的**人工实例**：它证明了提炼的内容形态可行，但它没有走契约、
+没有 sidecar claims、也未进入版本化源码——evo-002 要补的正是这三件事。
 
 ## 5. evo-003 harness-evolution（自身进化）
 
@@ -117,14 +136,18 @@ capability axes 同源）：
 |---|---|---|
 | L1 | 经验/文档类：能力轴页面、漂移地图、claims | 普通 adoption gate |
 | L2 | 工具代码类：探针、契约、任务、补丁 | 普通 adoption gate + 能力基准不回退（第 7 节） |
-| L3 | 改"怎么改"：evo 流程自身、验证器与门禁的松紧 | 必须人工签署（mat-030 通道），与放宽门禁同级 |
+| L3 | 改"怎么改"：evo 流程自身、验证器与门禁的松紧 | 必须人工签署（偏差接受通道，见第 5 节硬约束 2），与放宽门禁同级 |
 
 **硬约束**（防止自我进化退化为自我放水）：
 
 1. 提案是**任务**，不是直接改代码。落地走正常源码改动流程，
    带任务上下文与证据。
-2. 任何**放宽既有门禁**的提案（阈值、验证器、契约）必须走 mat-030 同款的
-   人工签署通道，且目录中保留原始失败记录——机器无权批准自己变宽容。
+2. 任何**放宽既有门禁**的提案（阈值、验证器、契约）必须走人工签署通道，
+   且目录中保留原始失败记录——机器无权批准自己变宽容。本 run 首次使用了
+   这样的通道（偏差接受任务 mat-030 + 验收记录 CLI），但其任务定义与实现
+   只存在于运行侧未提交状态（证据包 `harness-repo/untracked/`），**本仓库
+   尚无此机制**；把它正式入仓是 evo 一期的前置工作，在此之前 L3 与门禁
+   放宽提案只能停留在提案态。
 3. 增强类提案（新探针、新检查）只需证明它在本 run 证据上会做出正确判断
    （回放式验证）。
 
@@ -176,7 +199,7 @@ autoresearch 式循环能转起来，靠的是每圈改动都有一个几分钟�
 |---|---|
 | CLI 入口（仅参数解析） | `cli/evolution/` |
 | 任务行为 | `operations/evolution/`（retrospect / distill / evolve） |
-| 工作流编排 | `runners/` 下新增 evolution runner，挂入 `workflows/model_adaptation.yaml` 终态之后 |
+| 工作流编排 | `runners/` 下新增 evolution runner；**不挂入** `workflows/model_adaptation.yaml` 图内（终态 `DELIVERED` 之后无下游可挂），由独立 CLI 入口在 run 到达终态后显式触发 |
 | 任务契约 | `tasks/evo-001-run-retrospective/`、`evo-002-experience-distillation/`、`evo-003-harness-evolution/` |
 | 验证器 | `validators/` 下新增 retrospective / distillation / evolution 三个验证器 |
 | Journal 新 kind | `RunRetrospective` / `ExperienceDistillation` / `HarnessEvolution` |
@@ -190,8 +213,9 @@ autoresearch 式循环能转起来，靠的是每圈改动都有一个几分钟�
 - **Journal / Task Memory** 是原料，不改动其 schema；evo 节点只是新的
   writer/reader。
 - **能力轴经验页**是 evo-002 的目的地，词汇与结构沿用既有约定。
-- **mat-030 偏差接受**是"人工签署"通道的既有先例，evo-003 的门禁放宽
-  提案复用同一机制。
+- **偏差接受的人工签署**在本 run 中首次以任务形态使用（mat-030），但其
+  定义未入仓；evo-003 的门禁放宽与 L3 提案复用同一签署模式，正式契约
+  随第一期落地。
 - **openwiki 不覆盖任务契约**的原则不变：经验页指导 Agent 选择路径，
   但每个 evo 节点的通过与否只由契约与验证器判定。
 
@@ -200,6 +224,8 @@ autoresearch 式循环能转起来，靠的是每圈改动都有一个几分钟�
 1. **evo-001 + 验证器 + E2E**：机械复盘，纯聚合，风险最低，先落地。
    用 step35-flash-p800-003 的证据包做回放验证（预期产出：重试热点
    mat-006×11 / mat-013×8 / mat-009×5，未关闭项 2 个，manifest 缺失 2 处）。
+   同期把偏差接受通道（mat-030 任务定义 + 验收记录 CLI，目前在证据包
+   `harness-repo/untracked/`）正式入仓，作为人工签署先例。
 2. **evo-003 + 能力基准便宜层**：提案生成与人工签署通道，把本 run 的 5 个
    进化方向转为首批提案实例；同时把 step35-flash-p800-003 证据包固化为
    第一份基准考卷。
