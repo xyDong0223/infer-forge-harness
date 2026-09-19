@@ -17,6 +17,9 @@ Groups by purpose:
   `swiglu_oai_probe.py`, `kernel_ut_replay.py`.
 - Reference: `cpu_reference_logits_probe.py`, which stays conservative so a
   reference run can never quietly share the candidate's device.
+- Timeline: `timeline_overlap_probe.py`, which reads a captured Chrome trace
+  and answers whether KV transfer overlapped DeepEP dispatch/combine or was
+  serialized behind a GIL-holding CPU op.
 
 Probes run inside the recorded pod of the environment proof; they cite that
 pod's fingerprint rather than opening a new one.

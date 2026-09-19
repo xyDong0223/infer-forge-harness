@@ -93,6 +93,12 @@ entries:
     side_effect: pod_exec
     retryable: false
     outputs: [trace.json]
+  - id: timeline_overlap_scan
+    command: python3 tools/probe/timeline_overlap_probe.py
+    purpose: measure whether KV transfer overlaps DeepEP dispatch/combine and locate GIL-blocked transfer gaps in a captured trace
+    side_effect: read_only
+    retryable: true
+    outputs: [timeline_overlap.json]
   - id: apply_torch_decode_patch
     command: python3 tools/patches/apply_torch_decode_patch.py
     purpose: place and verify a reversible torch fallback
