@@ -1341,7 +1341,7 @@ def run(args) -> int:
                             args.scheduler_state, args.run_id, memory_path=args.loop_state,
                             workflow_id=args.workflow.stem,
                         )
-                    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+                    except Exception as error:
                         assessment = {"status": "REWORK", "error": str(error)}
                     assessment["reason_code"] = (
                         "EFFICIENCY_RECORDED" if assessment["status"] == "RECORDED"
