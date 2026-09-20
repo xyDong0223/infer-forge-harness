@@ -13,6 +13,7 @@
 | `deployment_manifest.schema.yaml` | 部署请求和环境参数结构 |
 | `platform.schema.yaml` | hardware/engine/backend/plugin 目标描述 |
 | `performance.schema.yaml` | workload、benchmark 和性能指标请求 |
+| `harness_efficiency.schema.yaml` | Harness 运行结束后的耗时、重复工作与证据来源；不改变功能验收 |
 
 ## 修改规则
 

@@ -8,6 +8,10 @@ tiers:
     evidence_mode: simulation
     test: tests/e2e/test_model_adaptation.py
     cases:
+      - test_efficiency_completion_and_manual_replay
+      - test_efficiency_rejection_preserves_functional_failure
+      - test_efficiency_restart_preserves_history_and_unknown_attempt_time
+      - test_efficiency_measures_each_automatic_recovery_rerun
       - test_proof_input_rejections_publish_standard_status
       - test_environment_retry_and_import_preserve_recorded_owner
       - test_graph_rejects_modified_generated_plan

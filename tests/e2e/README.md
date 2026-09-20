@@ -52,6 +52,12 @@ stale accuracy after a fresh service proof, and refusal to import a simulation
 proof into a real run. Each case checks that the scenario did not modify
 repository source files.
 
+Post-run harness efficiency uses the same production Graph and scheduler. Its
+required cases verify automatic reports on completion and rejection, manual
+replay without scheduler mutations, and unknown durations for abandoned workers
+after restart. Reports retain simulation identity and source snapshots; these
+metrics describe orchestration, not device throughput.
+
 The environment-input case starts without a seed YAML, checks the generated
 contract and its source metadata, and removes legacy `USER_ID`, checks the persisted
 missing-input rejection against the shared status schema before cluster access,

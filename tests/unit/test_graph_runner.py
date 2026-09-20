@@ -353,6 +353,12 @@ def test_recovery_preserves_original_and_propagates_successful_attempt(tmp_path,
     assert hit["artifacts"] == str(reports[-1].parent)
     memory = json.loads((root / "task_memory.json").read_text())
     assert str(reports[-1].parent) in json.dumps(memory["completed_loop_blocks"][-1])
+    reruns = [block for block in memory["completed_loop_blocks"]
+              if block["routing"].get("mode") == "recovery_execution"]
+    assert len(reruns) == 2
+    assert [block["state"] for block in reruns] == ["FAILED", "INTAKE_READY"]
+    assert all(block["finished_at"] >= block["started_at"] for block in reruns)
+    assert [block["artifacts"] for block in reruns] == [[str(path.parent)] for path in reports[1:]]
     facts = [
         json.loads(line)
         for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
