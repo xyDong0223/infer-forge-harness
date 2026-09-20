@@ -11,8 +11,13 @@ spec:
   consumes: [SchedulerEvents, TaskMemory]
   runs_with: |
     python3 cli/validation/harness_efficiency.py --state <external-state.sqlite> --run-id <run-id>
+context:
+  target:
+    scope: persisted_run
 execution:
   mode: execute
+  namespace: local
+  resource_name: harness-efficiency
   tools: [cli/validation/harness_efficiency.py]
   trigger: connected_graph_invocation_exit
 actions:
@@ -26,6 +31,12 @@ acceptance:
   parallel_intervals_are_counted_once: true
   missing_telemetry_is_unknown: true
   repeats_are_not_automatically_waste: true
+checks:
+  health:
+    path: efficiency_report.json
+    expected_status: RECORDED
+  chat:
+    path: validation.json
 artifacts:
   - efficiency_report.json
   - efficiency_report.md
