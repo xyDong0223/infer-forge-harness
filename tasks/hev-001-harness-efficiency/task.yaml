@@ -1,0 +1,36 @@
+api_version: infer.kunlun/v1alpha1
+kind: Task
+metadata:
+  name: hev-001-harness-efficiency
+  family: harness_evaluation
+  task_type: harness_efficiency
+  version: 0.1.0
+spec:
+  question: where did this run spend its recorded time and repeat work
+  produces: HarnessEfficiencyReport
+  consumes: [SchedulerEvents, TaskMemory]
+  runs_with: |
+    python3 cli/validation/harness_efficiency.py --state <external-state.sqlite> --run-id <run-id>
+execution:
+  mode: execute
+  tools: [cli/validation/harness_efficiency.py]
+  trigger: connected_graph_invocation_exit
+actions:
+  - snapshot_persisted_scheduler_events_and_task_memory
+  - account_closed_intervals_and_repeated_work
+  - independently_validate_accounting
+  - persist_report_in_fresh_managed_attempt
+acceptance:
+  scheduler_is_read_only: true
+  functional_verdict_is_unchanged: true
+  parallel_intervals_are_counted_once: true
+  missing_telemetry_is_unknown: true
+  repeats_are_not_automatically_waste: true
+artifacts:
+  - efficiency_report.json
+  - efficiency_report.md
+  - validation.json
+exit_states:
+  recorded: RECORDED
+  rejected: REWORK
+validator: validators/harness_efficiency_validator.py:validate_efficiency

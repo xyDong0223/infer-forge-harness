@@ -1,6 +1,12 @@
 api_version: infer.kunlun/v1alpha1
 kind: ToolCatalog
 entries:
+  - id: harness_efficiency
+    command: python3 cli/validation/harness_efficiency.py
+    purpose: account run time and repeated work from persisted scheduler and Task Memory records
+    side_effect: write_artifact
+    retryable: true
+    outputs: [efficiency_report.json, efficiency_report.md, validation.json]
   - id: model_intake
     command: python3 cli/intake/model_intake.py
     purpose: identify the model artifact and reject invalid checkpoints

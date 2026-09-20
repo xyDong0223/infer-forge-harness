@@ -410,6 +410,14 @@ class SimulatedCluster(KunlunP800Adapter):
     def _probe(self, filename, argv, config):
         model = self.settings["model_path"]
         if filename == "mat001_probe.py":
+            transient_failures = self.settings.get("intake_transient_failures", 0)
+            if transient_failures:
+                cluster = self._load()
+                observed = cluster.get("intake_transient_failures", 0)
+                if observed < transient_failures:
+                    cluster["intake_transient_failures"] = observed + 1
+                    self._save(cluster)
+                    return {"state": "MODEL_UNAVAILABLE", "reason": "synthetic probe timeout"}
             if self.settings.get("intake_failure"):
                 return {"state": "MODEL_UNAVAILABLE", "reason": "synthetic missing checkpoint shard"}
             if argv != [model]:

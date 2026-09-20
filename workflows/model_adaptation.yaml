@@ -3,6 +3,7 @@ kind: Workflow
 metadata:
   name: model_adaptation
   regression_scenario: tests/e2e/scenarios/model_adaptation.yaml
+  post_execution_assessment: tasks/hev-001-harness-efficiency/task.yaml
 spec:
   description: Evidence-driven model adaptation for vLLM-Kunlun.
   entry_task: kdp-001a-environment-proof

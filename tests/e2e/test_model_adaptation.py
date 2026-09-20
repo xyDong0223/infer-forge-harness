@@ -140,6 +140,132 @@ def scenario(tmp_path, request):
     assert source_snapshot() == source_before
 
 
+def efficiency_report(result) -> dict:
+    records = [json.loads(line) for line in result.stdout.splitlines()
+               if line.startswith('{"assessment": "harness_efficiency"')]
+    message = next(item for item in records if item.get("reason_code") == "EFFICIENCY_RECORDED")
+    report = json.loads(Path(message["report_path"]).read_text())
+    schema = yaml.safe_load((REPO_ROOT / "contracts/harness_efficiency.schema.yaml").read_text())
+    Draft202012Validator(schema).validate(report)
+    assert report["run"]["evidence_mode"] == "simulation"
+    assert digest(Path(report["provenance"]["snapshot_path"])) == report["provenance"]["snapshot_sha256"]
+    assert json.loads(Path(report["provenance"]["validation_path"]).read_text())["valid"]
+    assert Path(message["markdown_path"]).is_file()
+    manifest = json.loads(Path(message["manifest_path"]).read_text())
+    for artifact in manifest["artifacts"]:
+        assert digest(Path(message["manifest_path"]).parent / artifact["path"]) == artifact["sha256"]
+    return report
+
+
+def test_efficiency_completion_and_manual_replay(scenario):
+    waiting = efficiency_report(scenario.graph(expected=3))
+    assert waiting["window"]["scope"] == "snapshot"
+    for stage in ("torch", "xpu", "integration"):
+        scenario.worker(stage)
+    result = scenario.graph("--resume")
+    scenario.delivery(result)
+    report = efficiency_report(result)
+    assert report["window"]["scope"] == "completed"
+    assert report["outcome"]["delivery_state"] == "SIMULATION_PASS"
+    assert report["metrics"]["worker_attempts"] == 3
+    assert report["metrics"]["worker_retries"] == 0
+    assert report["metrics"]["graph_reuses"] > 0
+    before = scenario.status()
+    manual = scenario.process("cli/validation/harness_efficiency.py", [
+        "--state", str(scenario.state), "--run-id", scenario.run_id,
+    ])
+    replay = json.loads(Path(json.loads(manual.stdout)["report_path"]).read_text())
+    assert replay["metrics"] == report["metrics"]
+    assert scenario.status()["events"] == before["events"]
+    assert scenario.status()["tasks"] == before["tasks"]
+
+
+def test_efficiency_rejection_preserves_functional_failure(scenario):
+    scenario.graph(expected=3)
+    scenario.worker("torch", "--fault", "missing-evidence", expected=6)
+    report = efficiency_report(scenario.graph("--resume", expected=2))
+    assert report["window"]["scope"] == "snapshot"
+    assert report["outcome"]["delivery_state"] is None
+    assert report["metrics"]["failed_worker_attempts"] == 1
+    assert report["metrics"]["diagnosis_attempts"] == 0
+    # Reject an invalid run identity before allocating an evaluation attempt.
+    attempts = list(scenario.run_root.glob("tasks/harness-efficiency/attempts/*"))
+    rejected = scenario.process("cli/validation/harness_efficiency.py", [
+        "--state", str(scenario.state), "--run-id", "unknown-run",
+    ], expected=2)
+    assert "unknown run" in rejected.stdout
+    assert list(scenario.run_root.glob("tasks/harness-efficiency/attempts/*")) == attempts
+    # Corrupt a timing observation, not a scheduler verdict. Accounting must
+    # preserve the rejected input and cannot invent a nonnegative duration.
+    memory_path = scenario.run_root / "task_memory.json"
+    memory = json.loads(memory_path.read_text())
+    block = memory["completed_loop_blocks"][-1]
+    block["finished_at"] = block["started_at"] - 1
+    memory_path.write_text(json.dumps(memory))
+    invalid = scenario.process("cli/validation/harness_efficiency.py", [
+        "--state", str(scenario.state), "--run-id", scenario.run_id,
+    ], expected=2)
+    assert "efficiency evaluation rejected" in invalid.stdout
+    rejected_root = sorted(scenario.run_root.glob("tasks/harness-efficiency/attempts/*"))[-1]
+    assert (rejected_root / "input/snapshot.json").is_file()
+    assert not json.loads((rejected_root / "output/validation.json").read_text())["valid"]
+    assert not (rejected_root / "output/efficiency_report.json").exists()
+
+
+def test_efficiency_restart_preserves_history_and_unknown_attempt_time(scenario):
+    first = efficiency_report(scenario.graph(expected=3))
+    original = Path(first["provenance"]["snapshot_path"])
+    original_hash = digest(original)
+    abandoned = json.loads(scenario.worker(
+        "torch", "--fault", "abandon", "--lease-seconds", "0.15", expected=75,
+    ).stdout)["abandoned"]
+    time.sleep(max(0, abandoned["lease_expires"] - time.time()) + 0.03)
+    for stage in ("torch", "xpu", "integration"):
+        scenario.worker(stage)
+    report = efficiency_report(scenario.graph("--resume"))
+    assert report["metrics"]["worker_retries"] == 1
+    assert report["metrics"]["unclosed_worker_attempts"] == 1
+    assert report["worker_attempts"][0]["duration_seconds"] is None
+    assert digest(original) == original_hash
+    assert report["provenance"]["snapshot_path"] != str(original)
+
+
+def test_efficiency_measures_each_automatic_recovery_rerun(scenario):
+    settings = json.loads(scenario.fixture["settings"].read_text())
+    settings["intake_transient_failures"] = 2
+    scenario.fixture["settings"].write_text(json.dumps(settings))
+    # Intake preserves an early probe rejection in its console log, before a
+    # status file exists. The external Agent reads that evidence to justify a
+    # retry; no validator or routing decision is replaced inside the harness.
+    decider = scenario.logs.write_text("decide.py", '''import json
+import sys
+from pathlib import Path
+request = json.loads(Path(sys.argv[1]).read_text())
+logs = [log for artifact in request["failure"]["artifacts"]
+        for log in (Path(artifact).parent / "logs").rglob("node_console.log")]
+evidence = [str(log) for log in logs if "synthetic probe timeout" in log.read_text()]
+Path(sys.argv[2]).write_text(json.dumps({
+    "next_action": "RETRY" if evidence else "BLOCKED",
+    "diagnosis": "Observed a simulated transient probe timeout in the preserved log.",
+    "evidence_refs": evidence, "confidence": 1.0,
+}))
+''')
+    result = scenario.graph(
+        "--auto-recover", "--brain", "agent", "--recovery-budget", "2",
+        "--decide-command", f"{sys.executable} {decider}", expected=3,
+    )
+    report = efficiency_report(result)
+    stage = next(row for row in report["stages"]
+                 if row["source"] == "graph" and row["stage"] == "mat-001-model-intake")
+    assert stage["count"] == 3
+    assert stage["closed_interval_seconds"] > 0
+    reruns = [block for block in report["graph_blocks"] if block["routing_mode"] == "recovery_execution"]
+    assert len(reruns) == 2
+    assert [block["state"] for block in reruns] == ["UNKNOWN", "INTAKE_READY"]
+    assert all(block["duration_seconds"] > 0 for block in reruns)
+    assert report["metrics"]["repeated_graph_executions"] >= 2
+
+
 def test_environment_user_id_input_and_restart(scenario):
     scenario.env.pop("USER_ID", None)
     arguments = ["environment", "--run-id", scenario.run_id,

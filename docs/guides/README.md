@@ -8,6 +8,8 @@
   pinned model/runtime and scheduler-backed execution.
 - [Troubleshooting](troubleshooting.zh-CN.md): preserve evidence, identify
   rejections and choose the appropriate recovery mechanism.
+- [Harness efficiency](harness-efficiency.zh-CN.md): automatic post-run time and
+  repeated-work accounting, source evidence and telemetry limitations.
 
 ## Extending the harness
 

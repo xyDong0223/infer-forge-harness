@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -1093,7 +1094,7 @@ def prepare_regression_attempt(bridge, spec: dict, attempt, journal: Path,
 
 def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: Path,
                      environment: dict, state: str, task_type: str | None,
-                     skill: dict, bridge=None) -> object:
+                     skill: dict, bridge=None, memory: dict | None = None) -> object:
     """Engage the brain on a failed node; None-handling is the caller's.
 
     The controller owns the loop; this function only supplies the two things
@@ -1147,6 +1148,12 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
 
     final_artifacts = ""
 
+    def finish_rerun(state: str, artifacts: Path) -> None:
+        if memory is not None:
+            task_memory.finish_block(memory, state, artifacts=[str(artifacts)],
+                                     next_block={"sub_target": node})
+            task_memory.save(args.loop_state, memory)
+
     def rerun(decision) -> tuple[bool, str]:
         nonlocal final_artifacts
         protected = {"artifacts", "attempt", "subject", "target_file", "contract_instance",
@@ -1183,6 +1190,13 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
         except (Unresolved, KeyError, ValueError, OSError) as error:
             return False, f"UNRESOLVED: {error}"
         returncode = 0
+        if memory is not None:
+            task_memory.start_block(
+                memory, block_id=f"{node}:rerun:{len(memory['completed_loop_blocks']) + 1}",
+                sub_target=node, exit_condition={"state_file": spec["state_file"]},
+                routing=skill_routing(skill, mode="recovery_execution"),
+            )
+            task_memory.save(args.loop_state, memory)
         command_skill_cache: dict[str, Path] = {}
         for target, command in commands:
             print(f"[rerun ] {node}: {' '.join(command)}")
@@ -1193,6 +1207,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                     merged, skill, command_skill_cache,
                 )
             except (OSError, skill_registry.SkillResolutionError) as error:
+                finish_rerun("UNRESOLVED", attempt.output)
                 return False, f"UNRESOLVED: task_type={task_type}: {error}"
             # Same crash-first contract as the main walk: a recovery rerun
             # writes the live node_console.log, and a dead child is snapshotted
@@ -1209,6 +1224,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
                     },
                 )
             except (OSError, ValueError):
+                finish_rerun("BLOCKED", attempt.output)
                 ArtifactStore(attempt.root).register(identity=attempt.identity, outcome="BLOCKED")
                 raise
             finally:
@@ -1227,6 +1243,7 @@ def attempt_recovery(args, *, node: str, spec: dict, context: dict, artifacts: P
             child_skills=fan_out_skill_bindings(spec, command_skill_cache),
         )
         failure_evidence.artifacts.append(str(attempt.output))
+        finish_rerun(new_state, attempt.output)
         if passed:
             final_artifacts = str(attempt.output)
         return passed, new_state
@@ -1313,6 +1330,29 @@ def run(args) -> int:
                               "reason_code": "WRITE_POLICY" if isinstance(error, WritePolicyError)
                               else "INVALID_INPUT", "message": str(error)}, args.json)
                 return 2
+            finally:
+                # The scheduler connection remains open until ExitStack exits.
+                # Post-run accounting cannot overwrite progress or promote a run.
+                if (_progress_context.get() or {}).get("scheduler") is not None:
+                    from operations.validation.harness_efficiency import execute as assess_efficiency
+
+                    try:
+                        assessment = assess_efficiency(
+                            args.scheduler_state, args.run_id, memory_path=args.loop_state,
+                            workflow_id=args.workflow.stem,
+                        )
+                    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+                        assessment = {"status": "REWORK", "error": str(error)}
+                    assessment["reason_code"] = (
+                        "EFFICIENCY_RECORDED" if assessment["status"] == "RECORDED"
+                        else "EFFICIENCY_EVALUATION_FAILED"
+                    )
+                    if args.json:
+                        print(json.dumps({"assessment": "harness_efficiency", **assessment},
+                                         ensure_ascii=False), flush=True)
+                    else:
+                        print(f"[efficiency] {assessment.get('markdown_path') or assessment['error']}",
+                              flush=True)
     finally:
         _progress_context.reset(token)
 
@@ -1816,6 +1856,7 @@ def _run(args, resources: ExitStack) -> int:
                         args, node=current, spec=spec, context=context,
                         artifacts=artifacts, environment=environment, state=state,
                         task_type=task_type, skill=skill, bridge=bridge,
+                        memory=memory,
                     )
                     if outcome.status == "RECOVERED":
                         recovered = True
